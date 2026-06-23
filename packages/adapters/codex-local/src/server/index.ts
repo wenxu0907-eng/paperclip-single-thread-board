@@ -1,5 +1,6 @@
 export { execute, ensureCodexSkillsInjected } from "./execute.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
+export { ensureSymlink, pathExists, resolveSharedCodexHomeDir } from "./codex-home.js";
 export { testEnvironment } from "./test.js";
 export { parseCodexJsonl, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {

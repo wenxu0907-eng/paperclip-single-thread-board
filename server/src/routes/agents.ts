@@ -89,7 +89,15 @@ import {
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
 } from "@paperclipai/adapter-acpx-local";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
+import {
+  ensureSymlink as ensureCodexLocalSymlink,
+  pathExists as codexLocalPathExists,
+  resolveSharedCodexHomeDir,
+} from "@paperclipai/adapter-codex-local/server";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -1201,6 +1209,19 @@ export function agentRoutes(
     return { ...adapterConfig, env };
   }
 
+  async function ensureCodexLocalAgentAuthSymlink(
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    if (adapterType !== "codex_local") return;
+    const env = asRecord(adapterConfig.env) ? adapterConfig.env as Record<string, unknown> : {};
+    const codexHome = asEnvBindingString(env.CODEX_HOME);
+    if (!codexHome) return;
+    const source = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    if (!(await codexLocalPathExists(source))) return;
+    await ensureCodexLocalSymlink(path.join(codexHome, "auth.json"), source);
+  }
+
   function applyCreateDefaultsByAdapterType(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
@@ -1222,6 +1243,9 @@ export function agentRoutes(
       return ensureGatewayDeviceKey(adapterType, next);
     }
     if (adapterType === "codex_local") {
+      if (!asNonEmptyString(next.model)) {
+        next.model = DEFAULT_CODEX_LOCAL_MODEL;
+      }
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
         typeof next.dangerouslyBypassSandbox === "boolean";
@@ -2279,6 +2303,7 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    await ensureCodexLocalAgentAuthSymlink(agent.adapterType, requestedAdapterConfig);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -2461,6 +2486,7 @@ export function agentRoutes(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    await ensureCodexLocalAgentAuthSymlink(createInput.adapterType, requestedAdapterConfig);
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
 
     const actor = getActorInfo(req);
@@ -2908,6 +2934,7 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      await ensureCodexLocalAgentAuthSymlink(requestedAdapterType, effectiveAdapterConfig);
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
     if (requestedRuntimeConfig) {
