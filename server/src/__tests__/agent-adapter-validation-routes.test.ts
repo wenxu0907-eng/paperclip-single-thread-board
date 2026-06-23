@@ -314,7 +314,7 @@ describe("agent routes adapter validation", () => {
     expect(res.body.adapterType).toBe("external_test");
   });
 
-  it("adds isolated CODEX_HOME and empty OPENAI_API_KEY override when creating codex_local agents", async () => {
+  it("does not inject CODEX_HOME or OPENAI_API_KEY when creating a keyless codex_local agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
@@ -328,20 +328,17 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    const agentId = String(createInput.id);
-    expect(agentId).toMatch(/^[0-9a-f-]{36}$/i);
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
-    const env = adapterConfig.env as Record<string, unknown>;
+    const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
     expect(adapterConfig.model).toBe("gpt-5.5");
-    expect(env.OPENAI_API_KEY).toBe("");
-    expect(env.CODEX_HOME).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
-    expect(String(env.CODEX_HOME)).not.toContain("/companies/company-1/codex-home");
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CODEX_HOME).toBeUndefined();
     const authPath = path.join(String(env.CODEX_HOME), "auth.json");
     await expect(fs.lstat(authPath).then((stat) => stat.isSymbolicLink())).resolves.toBe(true);
     await expect(fs.readlink(authPath)).resolves.toBe(path.join(sharedCodexHome!, "auth.json"));
   });
 
-  it("adds isolated CODEX_HOME and empty OPENAI_API_KEY override when updating codex_local agents", async () => {
+  it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
@@ -354,20 +351,41 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          adapterConfig: {
+            env: {
+              OPENAI_API_KEY: "sk-test-key",
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
     expect(adapterConfig.model).toBe("gpt-5.4");
-    expect(env.OPENAI_API_KEY).toBe("");
-    expect(env.CODEX_HOME).toContain(
-      "/companies/company-1/agents/11111111-1111-4111-8111-111111111111/codex-home",
-    );
-    expect(String(env.CODEX_HOME)).not.toContain("/companies/company-1/codex-home");
+    expect(env.OPENAI_API_KEY).toBe("sk-test-key");
+    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
     const authPath = path.join(String(env.CODEX_HOME), "auth.json");
     await expect(fs.lstat(authPath).then((stat) => stat.isSymbolicLink())).resolves.toBe(true);
     await expect(fs.readlink(authPath)).resolves.toBe(path.join(sharedCodexHome!, "auth.json"));
   });
 
-  it("rejects codex_local agents configured with the shared host Codex home", async () => {
+  it("allows codex_local agents to share the host Codex home", async () => {
     const app = await createApp();
+    const sharedHome = path.join(os.homedir(), ".codex");
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .post("/api/companies/company-1/agents")
@@ -376,36 +394,42 @@ describe("agent routes adapter validation", () => {
           adapterType: "codex_local",
           adapterConfig: {
             env: {
-              CODEX_HOME: path.join(os.homedir(), ".codex"),
+              CODEX_HOME: sharedHome,
             },
           },
         }),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(String(res.body.error)).toContain("codex_local agents must use an isolated adapterConfig.env.CODEX_HOME");
-    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.CODEX_HOME).toBe(sharedHome);
   });
 
-  it("rejects codex_local agents configured with the ~/.codex alias", async () => {
+  it("isolates CODEX_HOME when a codex_local agent sets its own OPENAI_API_KEY", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .post("/api/companies/company-1/agents")
         .send({
-          name: "Shared Codex Alias",
+          name: "Keyed Codex",
           adapterType: "codex_local",
           adapterConfig: {
             env: {
-              CODEX_HOME: "~/.codex",
+              OPENAI_API_KEY: "sk-test-key",
             },
           },
         }),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(String(res.body.error)).toContain("codex_local agents must use an isolated adapterConfig.env.CODEX_HOME");
-    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const agentId = String(createInput.id);
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.OPENAI_API_KEY).toBe("sk-test-key");
+    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {

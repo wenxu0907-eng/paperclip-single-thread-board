@@ -1285,7 +1285,7 @@ describe.sequential("agent permission routes", () => {
     }));
   });
 
-  it("rejects creating an agent with an environment from another company", async () => {
+  it("allows creating an agent with an instance-scoped environment referenced from another company", async () => {
     const environmentId = "33333333-3333-4333-8333-333333333333";
     mockEnvironmentService.getById.mockResolvedValue({
       id: environmentId,
@@ -1312,9 +1312,13 @@ describe.sequential("agent permission routes", () => {
         defaultEnvironmentId: environmentId,
       }));
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("Environment not found");
-    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        defaultEnvironmentId: environmentId,
+      }),
+    );
   });
 
   it("rejects creating an agent with an unsupported default environment driver", async () => {
@@ -1588,6 +1592,25 @@ describe.sequential("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("rejects CEO permission updates outside the caller company scope", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "ceo-agent",
+      companyId: "33333333-3333-4333-8333-333333333333",
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: true, canAssignTasks: true }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("another company");
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {
