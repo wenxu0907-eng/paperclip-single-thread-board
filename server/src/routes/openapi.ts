@@ -8,6 +8,7 @@ import {
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
+  updateAgentMemoryFileSchema,
   upsertAgentInstructionsFileSchema,
   createAgentKeySchema,
   wakeAgentSchema,
@@ -1123,6 +1124,36 @@ registry.registerPath({
   summary: "Delete agent instructions file",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/memories",
+  tags: ["agents"],
+  summary: "Get agent memory overview",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/memories/file",
+  tags: ["agents"],
+  summary: "Get an agent memory file",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/agents/{id}/memories/file",
+  tags: ["agents"],
+  summary: "Update an agent memory file",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(updateAgentMemoryFileSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
