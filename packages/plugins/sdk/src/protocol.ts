@@ -335,6 +335,8 @@ export interface InitializeResult {
 export interface ConfigChangedParams {
   /** The newly resolved configuration. */
   config: Record<string, unknown>;
+  /** Company whose scoped configuration changed. */
+  companyId?: string;
 }
 
 /**
@@ -345,6 +347,8 @@ export interface ConfigChangedParams {
 export interface ValidateConfigParams {
   /** The configuration to validate. */
   config: Record<string, unknown>;
+  /** Company scope for company-scoped plugin configuration. */
+  companyId?: string;
 }
 
 /**
@@ -808,7 +812,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  */
 export interface WorkerToHostMethods {
   // Config
-  "config.get": [params: Record<string, never>, result: Record<string, unknown>];
+  "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
 
   // Trusted local folders
   "localFolders.declarations": [
@@ -945,7 +949,7 @@ export interface WorkerToHostMethods {
 
   // Secrets
   "secrets.resolve": [
-    params: { secretRef: string },
+    params: { secretRef: string; companyId?: string; configPath?: string },
     result: string,
   ];
 

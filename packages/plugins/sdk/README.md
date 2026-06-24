@@ -97,10 +97,12 @@ runWorker(plugin, import.meta.url);
 | `onHealth?()` | Optional. Return `{ status, message?, details? }` for health dashboard. |
 | `onConfigChanged?(newConfig)` | Optional. Apply new config without restart; if omitted, host restarts worker. |
 | `onShutdown?()` | Optional. Clean up before process exit (limited time window). |
-| `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
+| `onValidateConfig?(config, context)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. Company-scoped settings pass `context.companyId`; use it when resolving `secret-ref` fields. |
 | `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
 
 **Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
+
+**Company-scoped config:** Plugin settings that contain `format: "secret-ref"` fields are saved per company. Read them with `ctx.config.get({ companyId })`, and resolve a saved secret with `ctx.secrets.resolve(secretRef, { companyId, configPath })`. Calls without a company context fail closed for secret resolution.
 
 **Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
 

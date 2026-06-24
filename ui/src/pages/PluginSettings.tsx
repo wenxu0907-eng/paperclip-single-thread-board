@@ -47,9 +47,9 @@ import {
  * - `GET /api/plugins/:pluginId/health` — health diagnostics (polling).
  *   Only fetched when `plugin.status === "ready"`.
  * - `GET /api/plugins/:pluginId/dashboard` — aggregated runtime dashboard data (polling).
- * - `GET /api/plugins/:pluginId/config` — current config values.
- * - `POST /api/plugins/:pluginId/config` — save config values.
- * - `POST /api/plugins/:pluginId/config/test` — test configuration.
+ * - `GET /api/plugins/:pluginId/companies/:companyId/config` — current config values.
+ * - `POST /api/plugins/:pluginId/companies/:companyId/config` — save config values.
+ * - `POST /api/plugins/:pluginId/companies/:companyId/config/test` — test configuration.
  *
  * URL params:
  * - `companyPrefix` — the company slug (for breadcrumb links).
@@ -97,9 +97,11 @@ export function PluginSettings() {
   const hasConfigSchema = configSchema && configSchema.properties && Object.keys(configSchema.properties).length > 0;
 
   const { data: configData, isLoading: configLoading } = useQuery({
-    queryKey: queryKeys.plugins.config(pluginId!),
-    queryFn: () => pluginsApi.getConfig(pluginId!),
-    enabled: !!pluginId && !!hasConfigSchema,
+    queryKey: selectedCompanyId
+      ? queryKeys.plugins.config(pluginId!, selectedCompanyId)
+      : ["plugins", pluginId, "companies", "__no-company__", "config"],
+    queryFn: () => pluginsApi.getConfig(pluginId!, selectedCompanyId!),
+    enabled: !!pluginId && !!selectedCompanyId && !!hasConfigSchema,
   });
 
   const { slots } = usePluginSlots({
@@ -229,7 +231,11 @@ export function PluginSettings() {
                   declarations={localFolderDeclarations}
                 />
               ) : null}
-              {hasCustomSettingsPage ? (
+              {!selectedCompanyId ? (
+                <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                  Select a company to configure this plugin.
+                </div>
+              ) : hasCustomSettingsPage ? (
                 <div className="space-y-3">
                   {pluginSlots.map((slot) => (
                     <PluginSlotMount
@@ -246,6 +252,7 @@ export function PluginSettings() {
               ) : hasConfigSchema ? (
                 <PluginConfigForm
                   pluginId={pluginId!}
+                  companyId={selectedCompanyId}
                   schema={configSchema!}
                   initialValues={configData?.configJson}
                   isLoading={configLoading}
@@ -920,6 +927,7 @@ function isLikelyAbsolutePath(pathValue: string) {
 
 interface PluginConfigFormProps {
   pluginId: string;
+  companyId: string;
   schema: JsonSchemaNode;
   initialValues?: Record<string, unknown>;
   isLoading?: boolean;
@@ -936,7 +944,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -972,11 +980,11 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
   // Save mutation
   const saveMutation = useMutation({
     mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.saveConfig(pluginId, configJson),
+      pluginsApi.saveConfig(pluginId, companyId, configJson),
     onSuccess: () => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId, companyId) });
       // Clear success message after 3s
       setTimeout(() => setSaveMessage(null), 3000);
     },
@@ -988,7 +996,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
   // Test configuration mutation
   const testMutation = useMutation({
     mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.testConfig(pluginId, configJson),
+      pluginsApi.testConfig(pluginId, companyId, configJson),
     onSuccess: (result) => {
       if (result.valid) {
         setTestResult({ type: "success", text: "Configuration test passed." });

@@ -4927,7 +4927,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
     }
 
     return updated;
@@ -4961,7 +4961,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -4974,7 +4974,72 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
-  function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
+  async function buildRunLifecyclePluginPayload(run: typeof heartbeatRuns.$inferSelect) {
+    const context = parseObject(run.contextSnapshot);
+    const result = parseObject(run.resultJson);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const [agent, issue] = await Promise.all([
+      db
+        .select({
+          id: agents.id,
+          name: agents.name,
+        })
+        .from(agents)
+        .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null),
+      issueId
+        ? db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            projectId: issues.projectId,
+            projectName: projects.name,
+          })
+          .from(issues)
+          .leftJoin(projects, eq(projects.id, issues.projectId))
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+
+    const resultSummary =
+      readNonEmptyString(result.summary) ??
+      readNonEmptyString(result.result) ??
+      readNonEmptyString(result.message) ??
+      readNonEmptyString(run.nextAction);
+    const durationMs = run.startedAt && run.finishedAt
+      ? Math.max(0, new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime())
+      : null;
+
+    return {
+      runId: run.id,
+      agentId: run.agentId,
+      agentName: agent?.name ?? null,
+      status: run.status,
+      invocationSource: run.invocationSource,
+      triggerDetail: run.triggerDetail,
+      error: run.error ?? null,
+      errorCode: run.errorCode ?? null,
+      issueId: issue?.id ?? issueId ?? null,
+      issueIdentifier: issue?.identifier ?? null,
+      issueTitle: issue?.title ?? null,
+      issueStatus: issue?.status ?? null,
+      projectId: issue?.projectId ?? readNonEmptyString(context.projectId),
+      projectName: issue?.projectName ?? null,
+      taskKey: readNonEmptyString(context.taskKey),
+      wakeReason: readNonEmptyString(context.wakeReason),
+      wakeSource: readNonEmptyString(context.wakeSource),
+      wakeTriggerDetail: readNonEmptyString(context.wakeTriggerDetail),
+      resultSummary,
+      durationMs,
+      startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+      finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+    };
+  }
+
+  async function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
     const eventType =
       run.status === "running"
         ? "agent.run.started"
@@ -4995,20 +5060,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       entityId: run.id,
       entityType: "heartbeat_run",
       companyId: run.companyId,
-      payload: {
-        runId: run.id,
-        agentId: run.agentId,
-        status: run.status,
-        invocationSource: run.invocationSource,
-        triggerDetail: run.triggerDetail,
-        error: run.error ?? null,
-        errorCode: run.errorCode ?? null,
-        issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
-          : null,
-        startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
-        finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
-      },
+      payload: await buildRunLifecyclePluginPayload(run),
     });
   }
 
@@ -7360,7 +7412,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
     });
-    publishRunLifecyclePluginEvent(claimed);
+    await publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 

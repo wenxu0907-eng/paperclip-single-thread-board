@@ -34,11 +34,14 @@
  */
 
 import type { Db } from "@paperclipai/db";
+import { companySecretBindings } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { secretService } from "./secrets.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
   "Plugin secret references are disabled until company-scoped plugin config lands";
@@ -125,6 +128,10 @@ export function extractSecretRefPathsFromConfig(
 export interface PluginSecretsResolveParams {
   /** The secret reference string (a secret UUID). */
   secretRef: string;
+  /** Company scope for the plugin config containing this secret reference. */
+  companyId?: string;
+  /** Optional config path for the referenced secret field. */
+  configPath?: string;
 }
 
 /**
@@ -199,7 +206,8 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
+  const { db, pluginId } = options;
+  const secrets = secretService(db);
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
@@ -230,9 +238,38 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      const companyId = typeof params.companyId === "string" ? params.companyId.trim() : "";
+      if (!companyId) {
+        throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      }
+
+      const requestedPath = typeof params.configPath === "string" && params.configPath.trim()
+        ? params.configPath.trim()
+        : null;
+      const binding = await db
+        .select()
+        .from(companySecretBindings)
+        .where(and(
+          eq(companySecretBindings.companyId, companyId),
+          eq(companySecretBindings.secretId, trimmedRef),
+          eq(companySecretBindings.targetType, "plugin"),
+          eq(companySecretBindings.targetId, pluginId),
+          ...(requestedPath ? [eq(companySecretBindings.configPath, requestedPath)] : []),
+        ))
+        .then((rows) => rows[0] ?? null);
+
+      if (!binding) {
+        throw new Error("Secret is not bound to this plugin configuration");
+      }
+
+      return secrets.resolveSecretValue(companyId, trimmedRef, "latest", {
+        consumerType: "plugin",
+        consumerId: pluginId,
+        configPath: binding.configPath,
+        actorType: "plugin",
+        actorId: pluginId,
+        pluginId,
+      });
     },
   };
 }

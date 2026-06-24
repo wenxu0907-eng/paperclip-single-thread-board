@@ -12,14 +12,25 @@ const mockPluginsApi = vi.hoisted(() => ({
   dashboard: vi.fn(),
   logs: vi.fn(),
   getConfig: vi.fn(),
+  saveConfig: vi.fn(),
+  testConfig: vi.fn(),
   listLocalFolders: vi.fn(),
   configureLocalFolder: vi.fn(),
+}));
+
+const mockSecretsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  create: vi.fn(),
 }));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
+}));
+
+vi.mock("@/api/secrets", () => ({
+  secretsApi: mockSecretsApi,
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -147,6 +158,10 @@ describe("PluginSettings", () => {
     mockPluginsApi.dashboard.mockResolvedValue(null);
     mockPluginsApi.health.mockResolvedValue({ pluginId: "plugin-1", status: "ready", healthy: true, checks: [] });
     mockPluginsApi.logs.mockResolvedValue([]);
+    mockPluginsApi.getConfig.mockResolvedValue(null);
+    mockPluginsApi.saveConfig.mockResolvedValue({ id: "config-1", pluginId: "plugin-1", companyId: "company-1", configJson: {} });
+    mockPluginsApi.testConfig.mockResolvedValue({ valid: true });
+    mockSecretsApi.list.mockResolvedValue([]);
     mockPluginsApi.listLocalFolders.mockResolvedValue({
       pluginId: "plugin-1",
       companyId: "company-1",
@@ -329,6 +344,97 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("WritableYes");
     expect(container.textContent).toContain("Present");
     expect(container.textContent).not.toContain("Validation problems");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("loads and saves generated config through the selected company scope", async () => {
+    mockPluginsApi.getConfig.mockResolvedValue({
+      id: "config-1",
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      configJson: {},
+    });
+    mockPluginsApi.get.mockImplementation(async () => ({
+      ...basePlugin({
+        status: "ready",
+        supportsConfigTest: true,
+        manifestJson: {
+          displayName: "Discord",
+          version: "0.1.0",
+          description: "Discord integration.",
+          author: "Paperclip",
+          capabilities: ["secrets.read-ref"],
+          instanceConfigSchema: {
+            type: "object",
+            properties: {
+              discordBotTokenRef: {
+                type: "string",
+                format: "secret-ref",
+                title: "Discord bot token",
+              },
+            },
+          },
+        },
+      }),
+    }));
+    mockPluginsApi.saveConfig.mockResolvedValue({
+      id: "config-1",
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      configJson: { discordBotTokenRef: "raw-token" },
+    });
+
+    const root = await renderSettings(container);
+    await flushReact();
+
+    expect(mockPluginsApi.getConfig).toHaveBeenCalledWith("plugin-1", "company-1");
+    expect(container.textContent).toContain("Select an existing secret");
+
+    const pasteRaw = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Or paste a raw value") as HTMLButtonElement | undefined;
+    expect(pasteRaw).toBeTruthy();
+    await act(async () => {
+      pasteRaw!.click();
+    });
+
+    const input = container.querySelector('input[type="password"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      valueSetter?.call(input!, "raw-token");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const save = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Save Configuration") as HTMLButtonElement | undefined;
+    expect(save).toBeTruthy();
+    await act(async () => {
+      save!.click();
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.saveConfig).toHaveBeenCalledWith(
+      "plugin-1",
+      "company-1",
+      { discordBotTokenRef: "raw-token" },
+    );
+
+    const test = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Test Configuration") as HTMLButtonElement | undefined;
+    expect(test).toBeTruthy();
+    await act(async () => {
+      test!.click();
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.testConfig).toHaveBeenCalledWith(
+      "plugin-1",
+      "company-1",
+      { discordBotTokenRef: "raw-token" },
+    );
 
     await act(async () => {
       root.unmount();

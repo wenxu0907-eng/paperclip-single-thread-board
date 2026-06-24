@@ -417,8 +417,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       config: {
-        async get() {
-          return callHost("config.get", {} as Record<string, never>);
+        async get(params?: { companyId?: string }) {
+          return callHost("config.get", params ?? {});
         },
       },
 
@@ -568,8 +568,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       secrets: {
-        async resolve(secretRef: string): Promise<string> {
-          return callHost("secrets.resolve", { secretRef });
+        async resolve(secretRef: string, options?: { companyId?: string; configPath?: string }): Promise<string> {
+          return callHost("secrets.resolve", { secretRef, ...options });
         },
       },
 
@@ -1467,7 +1467,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED },
       );
     }
-    return plugin.definition.onValidateConfig(params.config);
+    return plugin.definition.onValidateConfig(params.config, {
+      companyId: params.companyId,
+    });
   }
 
   async function handleConfigChanged(params: ConfigChangedParams): Promise<void> {

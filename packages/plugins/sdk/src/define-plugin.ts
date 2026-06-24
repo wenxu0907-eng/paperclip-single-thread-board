@@ -224,9 +224,13 @@ export interface PluginDefinition {
    * - via the "Test Connection" button in the settings UI
    *
    * @param config - The configuration to validate
+   * @param context - Company scope for resolving company-scoped config secrets
    * @see PLUGIN_SPEC.md §13.3 — `validateConfig`
    */
-  onValidateConfig?(config: Record<string, unknown>): Promise<PluginConfigValidationResult>;
+  onValidateConfig?(
+    config: Record<string, unknown>,
+    context?: { companyId?: string },
+  ): Promise<PluginConfigValidationResult>;
 
   /**
    * Called to handle an inbound webhook delivery.
