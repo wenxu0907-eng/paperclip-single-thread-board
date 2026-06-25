@@ -1983,16 +1983,30 @@ function canonicalizeDesiredPaperclipSkillReference(
   return normalizedReference;
 }
 
+/**
+ * Skills every agent must always have available, regardless of its curated
+ * `desiredSkills`. These are force-included so an explicit skill list can never
+ * drop them. Referenced by runtimeName; resolved to keys against the available
+ * entries at call time.
+ */
+export const REQUIRED_PAPERCLIP_SKILL_REFERENCES = ["para-memory-files"] as const;
+
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
 ): string[] {
+  const required = REQUIRED_PAPERCLIP_SKILL_REFERENCES
+    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+    .filter(Boolean);
   const preference = readPaperclipSkillSyncPreference(config);
+  // No explicit list -> the adapter's default injection path applies; required
+  // skills are part of that default, so don't narrow it here.
   if (!preference.explicit) return [];
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
-  return Array.from(new Set(desiredSkills));
+  // Force-include required skills so a curated list never loses them.
+  return Array.from(new Set([...desiredSkills, ...required]));
 }
 
 export function writePaperclipSkillSyncPreference(

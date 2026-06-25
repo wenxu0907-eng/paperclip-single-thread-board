@@ -9,11 +9,13 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 ## 2. Local Planning Check
 
+All memory paths are absolute under `$AGENT_HOME` -- confirm with `echo "$AGENT_HOME"` before writing; never write memory relative to your working directory.
+
 1. Read today's plan from `$AGENT_HOME/memory/YYYY-MM-DD.md` under "## Today's Plan".
 2. Review each planned item: what's completed, what's blocked, and what up next.
 3. For any blockers, resolve them yourself or escalate to the board.
 4. If you're ahead, start on the next highest priority.
-5. Record progress updates in the daily notes.
+5. Record progress updates in the daily notes. Recall past context with `qmd` (or the ripgrep fallback) per the `para-memory-files` skill.
 
 ## 3. Approval Follow-Up
 
@@ -54,12 +56,14 @@ Status quick guide:
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
-## 7. Fact Extraction
+## 7. Fact Extraction (do not skip before exit)
 
-1. Check for new conversations since last extraction.
-2. Extract durable facts to the relevant entity in `$AGENT_HOME/life/` (PARA).
-3. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
-4. Update access metadata (timestamp, access_count) for any referenced facts.
+Per the `para-memory-files` skill -- daily notes that never get distilled are not memory:
+
+1. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
+2. **Extract** durable facts from those notes to the relevant entity's `$AGENT_HOME/life/<entity>/items.yaml` (PARA) and refresh its `summary.md`. Update access metadata (timestamp, access_count) for referenced facts.
+3. Update `$AGENT_HOME/MEMORY.md` when you learn a new operating pattern.
+4. On the first run of a new ISO week, run weekly synthesis (rewrite each active `summary.md` from `items.yaml` by recency tier).
 
 ## 8. Exit
 
