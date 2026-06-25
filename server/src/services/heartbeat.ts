@@ -75,6 +75,7 @@ import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
+  buildEventResultSummary,
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
@@ -3380,9 +3381,16 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /**
+   * Public/external base URL (e.g. `https://app.example.com`) used to build
+   * absolute deep links in run-lifecycle plugin event payloads. When unset or
+   * pointing at localhost, links are omitted.
+   */
+  publicBaseUrl?: string;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const publicBaseUrl = options.publicBaseUrl;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -5004,11 +5012,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : Promise.resolve(null),
     ]);
 
-    const resultSummary =
+    const resultSummaryFull =
       readNonEmptyString(result.summary) ??
       readNonEmptyString(result.result) ??
       readNonEmptyString(result.message) ??
       readNonEmptyString(run.nextAction);
+    const resultSummary = buildEventResultSummary(
+      resultSummaryFull,
+      issue?.identifier ?? null,
+      publicBaseUrl,
+    );
     const durationMs = run.startedAt && run.finishedAt
       ? Math.max(0, new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime())
       : null;
@@ -5033,6 +5046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeSource: readNonEmptyString(context.wakeSource),
       wakeTriggerDetail: readNonEmptyString(context.wakeTriggerDetail),
       resultSummary,
+      resultSummaryFull,
       durationMs,
       startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
       finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
