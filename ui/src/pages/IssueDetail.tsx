@@ -137,7 +137,6 @@ import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import {
   Activity as ActivityIcon,
   AlertTriangle,
-  Archive,
   ArrowLeft,
   Check,
   ChevronRight,
@@ -630,9 +629,10 @@ function InboxMobileToolbar({
             size="icon-sm"
             onClick={onArchive}
             disabled={archivePending}
-            aria-label="Archive from inbox"
+            title="Mark reviewed"
+            aria-label="Mark reviewed"
           >
-            <Archive className="h-5 w-5" />
+            <Check className="h-5 w-5" />
           </Button>
         )}
 
@@ -2821,12 +2821,39 @@ export function IssueDetail() {
     },
   });
 
-  const archiveFromInbox = useMutation({
-    mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
+  const unarchiveFromInbox = useMutation({
+    mutationFn: (id: string) => issuesApi.unarchiveFromInbox(id),
     onSuccess: () => {
       invalidateIssueCollections();
+      pushToast({ title: "Reopened in inbox", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Reopen failed",
+        body: err instanceof Error ? err.message : "Unable to reopen this task in the inbox",
+        tone: "error",
+      });
+    },
+  });
+
+  const archiveFromInbox = useMutation({
+    mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
+    onSuccess: (_data, id) => {
+      invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Task archived from inbox", tone: "success" });
+      // Reviewing is reversible (COM-6): offer a transient Undo that restores
+      // the item to the inbox needs-attention list.
+      pushToast({
+        title: "Marked reviewed",
+        body: "Removed from your inbox.",
+        tone: "success",
+        ttlMs: 8000,
+        dedupeKey: `inbox-reviewed-undo:${id}`,
+        action: {
+          label: "Undo",
+          onClick: () => unarchiveFromInbox.mutate(id),
+        },
+      });
     },
     onError: (err) => {
       pushToast({
@@ -2884,6 +2911,10 @@ export function IssueDetail() {
     }
   }, [issue, issueId, navigate, location.state, location.search, resolvedIssueDetailState]);
 
+  // Opening an issue marks it "opened" (read): it loses the unread dot and is
+  // subtly de-emphasised, but it STAYS in the inbox needs-attention list (the
+  // archive-based "mine" view). Only the explicit "Mark reviewed" control
+  // archives it, so a single click never clears an item on its own (COM-6).
   useEffect(() => {
     if (!issue?.id) return;
     if (lastMarkedReadIssueIdRef.current === issue.id) return;
@@ -3819,15 +3850,17 @@ export function IssueDetail() {
             {canArchiveFromInbox && (
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs"
                 onClick={() => {
                   if (!archivePending && issue?.id) archiveFromInbox.mutate(issue.id);
                 }}
                 disabled={archivePending}
-                title="Archive from inbox"
-                aria-label="Archive from inbox"
+                title="Mark reviewed — clears this from your inbox (reversible)"
+                aria-label="Mark reviewed"
               >
-                <Archive className="h-4 w-4" />
+                <Check className="h-4 w-4" />
+                <span className="hidden lg:inline">Mark reviewed</span>
               </Button>
             )}
             {fileViewerEnabled ? (

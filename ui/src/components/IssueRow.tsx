@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Eye, Flag, X } from "lucide-react";
+import { Check, Eye, Flag } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -75,6 +75,16 @@ export function IssueRow({
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
+  // Three-state inbox legibility (COM-6): `unopened` reads strong, `opened`
+  // (clicked/viewed but still actionable) reads subtly de-emphasised but stays
+  // in the list. Only applies in inbox contexts where the unread slot renders.
+  const isUnopened = unreadState === "visible";
+  const isOpened = showUnreadSlot && unreadState === "hidden";
+  const inboxStateTitleClass = isUnopened
+    ? "font-medium"
+    : isOpened
+    ? "text-muted-foreground"
+    : undefined;
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
   const productivityReview = issue.productivityReview ?? null;
@@ -133,7 +143,7 @@ export function IssueRow({
         {recoveryIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-        <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
+        <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", inboxStateTitleClass, titleClassName)}>
           {issue.title}{titleSuffix}
         </span>
         {checklistDependencyChips ? (
@@ -228,10 +238,11 @@ export function IssueRow({
                 onArchive();
               }}
               disabled={archiveDisabled}
-              className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-              aria-label="Dismiss from inbox"
+              className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+              aria-label="Mark reviewed"
+              title="Mark reviewed"
             >
-              <X className="h-3.5 w-3.5" />
+              <Check className="h-3.5 w-3.5" />
             </button>
           ) : (
             <span className="inline-flex h-4 w-4" aria-hidden="true" />

@@ -288,6 +288,65 @@ describe("IssueRow", () => {
     });
   });
 
+  it("emphasises an unopened (unread) inbox row title and shows the unread dot", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ isUnreadForMe: true })} unreadState="visible" />);
+    });
+
+    const titleEl = container.querySelector(".line-clamp-2") as HTMLElement | null;
+    expect(titleEl?.className).toContain("font-medium");
+    expect(titleEl?.className).not.toContain("text-muted-foreground");
+    expect(container.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+    // No explicit "Mark reviewed" control while the unread dot is showing.
+    expect(container.querySelector('button[aria-label="Mark reviewed"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("de-emphasises an opened (read, still present) inbox row and offers Mark reviewed", () => {
+    const root = createRoot(container);
+    const onArchive = vi.fn();
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} unreadState="hidden" onArchive={onArchive} />);
+    });
+
+    const titleEl = container.querySelector(".line-clamp-2") as HTMLElement | null;
+    expect(titleEl?.className).toContain("text-muted-foreground");
+    expect(titleEl?.className).not.toContain("font-medium");
+
+    const reviewedButton = container.querySelector('button[aria-label="Mark reviewed"]') as HTMLButtonElement | null;
+    expect(reviewedButton).not.toBeNull();
+    act(() => {
+      reviewedButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onArchive).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not apply inbox state styling outside inbox contexts (no unread slot)", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const titleEl = container.querySelector(".line-clamp-2") as HTMLElement | null;
+    expect(titleEl?.className).not.toContain("text-muted-foreground");
+    expect(titleEl?.className).not.toContain("font-medium");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("does not show the parked-work badge when assigned blocker is not in backlog", () => {
     const root = createRoot(container);
     const issue = createIssue({
