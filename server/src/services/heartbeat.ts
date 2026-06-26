@@ -46,6 +46,8 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  pluginConfig,
+  plugins,
   projects,
   projectWorkspaces,
   routineRevisions,
@@ -1726,20 +1728,28 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 /**
- * Resolve the public base URL for run-lifecycle deep links when a caller does
- * not pass one explicitly. heartbeatService is constructed in ~10 places (API
- * routes, routines, the plugin host) and run-finished events can be published
- * from any of them, so the base URL must be resolvable here rather than relying
- * on a single call site. Mirrors config.ts precedence and falls back to the
- * server's own origin so links work out of the box in local setups.
+ * Plugin key of the bundled Discord notification plugin. Run-lifecycle deep
+ * links fall back to this plugin's configured `paperclipBaseUrl` when the
+ * platform has no public URL configured, so operators only manage a single base
+ * URL (the one in the Discord plugin settings) for notification links.
  */
-function resolvePublicBaseUrlFromEnv(): string {
+const DISCORD_NOTIFICATION_PLUGIN_KEY = "paperclip-plugin-discord";
+
+/**
+ * Public base URL explicitly configured for the platform (env / config), if any.
+ * Returns undefined when nothing is set so callers can apply their own fallback.
+ */
+function readConfiguredPublicBaseUrl(): string | undefined {
   const fromEnv =
     readNonEmptyString(process.env.PAPERCLIP_PUBLIC_URL) ??
     readNonEmptyString(process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL) ??
     readNonEmptyString(process.env.BETTER_AUTH_URL) ??
     readNonEmptyString(process.env.BETTER_AUTH_BASE_URL);
-  if (fromEnv) return fromEnv.trim();
+  return fromEnv?.trim() || undefined;
+}
+
+/** Last-resort base URL: the server's own localhost origin. */
+function localPublicBaseUrl(): string {
   const port = readNonEmptyString(process.env.PORT)?.trim() || "3100";
   return `http://localhost:${port}`;
 }
@@ -3409,7 +3419,40 @@ export interface HeartbeatServiceOptions {
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
-  const publicBaseUrl = options.publicBaseUrl ?? resolvePublicBaseUrlFromEnv();
+  const configuredPublicBaseUrl = options.publicBaseUrl ?? readConfiguredPublicBaseUrl();
+
+  /**
+   * Resolve the base URL for a company's run-lifecycle notification deep links.
+   * Precedence: explicitly configured platform URL → the Discord plugin's
+   * `paperclipBaseUrl` for that company → the server's localhost origin. This
+   * lets operators manage a single base URL in the Discord plugin settings.
+   */
+  async function resolveNotificationBaseUrl(companyId: string): Promise<string> {
+    if (configuredPublicBaseUrl) return configuredPublicBaseUrl;
+    try {
+      const plugin = await db
+        .select({ id: plugins.id })
+        .from(plugins)
+        .where(eq(plugins.pluginKey, DISCORD_NOTIFICATION_PLUGIN_KEY))
+        .then((rows) => rows[0] ?? null);
+      if (plugin) {
+        const cfg = await db
+          .select({ configJson: pluginConfig.configJson })
+          .from(pluginConfig)
+          .where(and(eq(pluginConfig.pluginId, plugin.id), eq(pluginConfig.companyId, companyId)))
+          .then((rows) => rows[0] ?? null);
+        const fromPlugin = readNonEmptyString(cfg?.configJson?.paperclipBaseUrl);
+        if (fromPlugin) return fromPlugin.trim();
+      }
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "failed to resolve notification base URL from Discord plugin config",
+      );
+    }
+    return localPublicBaseUrl();
+  }
+
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -5039,7 +5082,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resultSummary = buildEventResultSummary(
       resultSummaryFull,
       issue?.identifier ?? null,
-      publicBaseUrl,
+      await resolveNotificationBaseUrl(run.companyId),
     );
     const durationMs = run.startedAt && run.finishedAt
       ? Math.max(0, new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime())
