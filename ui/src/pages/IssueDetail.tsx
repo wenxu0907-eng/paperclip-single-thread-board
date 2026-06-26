@@ -69,6 +69,8 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { IssueChatThreadClassic } from "../components/IssueChatThreadClassic";
+import { InboxThreadSummaryHeader } from "../components/InboxThreadSummaryHeader";
+import { buildInboxThreadSummary } from "../lib/inbox-thread-summary";
 import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
@@ -707,6 +709,7 @@ type IssueDetailChatTabProps = {
   currentUserId: string | null;
   userLabelMap: ReadonlyMap<string, string> | null;
   userProfileMap: ReadonlyMap<string, import("../lib/company-members").CompanyUserProfile> | null;
+  myLastTouchAt?: Date | null;
   draftKey: string;
   reassignOptions: Array<{ id: string; label: string; searchText?: string }>;
   currentAssigneeValue: string;
@@ -780,6 +783,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   currentUserId,
   userLabelMap,
   userProfileMap,
+  myLastTouchAt,
   draftKey,
   reassignOptions,
   currentAssigneeValue,
@@ -948,9 +952,37 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
   );
+  const inboxThreadSummary = useMemo(
+    () =>
+      buildInboxThreadSummary({
+        comments,
+        activity: resolvedActivity,
+        interactions,
+        myLastTouchAt,
+        currentUserId,
+        agentMap,
+        userProfileMap,
+        issueStatus,
+        blockedBy,
+        recoveryAction,
+      }),
+    [
+      comments,
+      resolvedActivity,
+      interactions,
+      myLastTouchAt,
+      currentUserId,
+      agentMap,
+      userProfileMap,
+      issueStatus,
+      blockedBy,
+      recoveryAction,
+    ],
+  );
 
   return (
     <div className="space-y-3">
+      <InboxThreadSummaryHeader summary={inboxThreadSummary} />
       {hasOlderComments ? (
         <div className="flex justify-center">
           <Button
@@ -4227,6 +4259,7 @@ export function IssueDetail() {
               currentUserId={currentUserId}
               userLabelMap={userLabelMap}
               userProfileMap={userProfileMap}
+              myLastTouchAt={issue.myLastTouchAt ?? null}
               draftKey={`paperclip:issue-comment-draft:${issue.id}`}
               reassignOptions={commentReassignOptions}
               currentAssigneeValue={actualAssigneeValue}
