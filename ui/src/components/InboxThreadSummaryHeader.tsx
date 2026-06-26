@@ -19,6 +19,9 @@ export function InboxThreadSummaryHeader({ summary }: InboxThreadSummaryHeaderPr
       <Sparkles className="mt-0.5 size-4 shrink-0 text-muted-foreground/70" aria-hidden />
       <p className="leading-snug">
         <span className="text-foreground">{summary.whatChanged}</span>
+        {summary.preview ? (
+          <span className="text-muted-foreground">{`: “${summary.preview}”`}</span>
+        ) : null}
         {summary.nextAction ? (
           <>
             {" — "}

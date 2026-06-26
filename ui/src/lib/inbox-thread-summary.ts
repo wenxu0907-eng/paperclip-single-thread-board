@@ -20,6 +20,12 @@ import type { CompanyUserProfile } from "./company-members";
 export interface InboxThreadSummary {
   /** One short clause: who acted + what's new. e.g. "CTO replied (3 new messages)". */
   whatChanged: string;
+  /**
+   * Brief plain-text gist of the latest new reply, so the reader knows *what*
+   * was said without opening the thread. Null when there's no comment to
+   * preview (e.g. the change was a status update only).
+   */
+  preview: string | null;
   /** Single highest-priority suggested next action, or null. */
   nextAction: string | null;
   /** Count of new, non-self, non-deleted items since last visit. */
@@ -113,6 +119,9 @@ export function buildInboxThreadSummary(
   let newCommentCount = 0;
   let sawStatusChange = false;
   let newStatusLabel: string | null = null;
+  // Body + timestamp of the most recent new comment, for the content preview.
+  let latestNewBody: string | null = null;
+  let latestNewTime = -Infinity;
 
   for (const comment of comments) {
     if (comment.deletedAt) continue;
@@ -137,6 +146,10 @@ export function buildInboxThreadSummary(
     if (!actorSeen.has(label)) {
       actorSeen.add(label);
       actorOrder.push(label);
+    }
+    if (created >= latestNewTime) {
+      latestNewTime = created;
+      latestNewBody = comment.body;
     }
   }
 
@@ -180,7 +193,62 @@ export function buildInboxThreadSummary(
     hasNewReply: newCommentCount > 0,
   });
 
-  return { whatChanged, nextAction, newCount: newCommentCount };
+  const preview = newCommentCount > 0 ? summarizeCommentBody(latestNewBody) : null;
+
+  return { whatChanged, preview, nextAction, newCount: newCommentCount };
+}
+
+const PREVIEW_MAX_LEN = 140;
+
+/**
+ * Collapse a markdown comment body into a short, single-line plain-text gist
+ * for the orientation header. Extractive (no LLM): strips markup, keeps the
+ * leading prose, prefers a sentence boundary, and truncates with an ellipsis.
+ * Returns null when nothing meaningful remains (e.g. body was only a heading
+ * banner or code block).
+ */
+export function summarizeCommentBody(body: string | null | undefined): string | null {
+  if (!body) return null;
+
+  let text = body;
+  // Drop fenced code blocks entirely — they're noise in a one-line gist.
+  text = text.replace(/```[\s\S]*?```/g, " ");
+  // Images: remove (alt text is rarely useful prose).
+  text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, " ");
+  // Links: keep the link text, drop the URL.
+  text = text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  // Inline code: keep the inner text.
+  text = text.replace(/`([^`]+)`/g, "$1");
+  // Strip leading block markers per line (headings, quotes, list bullets).
+  text = text
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^\s{0,3}#{1,6}\s+/, "")
+        .replace(/^\s{0,3}>\s?/, "")
+        .replace(/^\s{0,3}(?:[-*+]|\d+[.)])\s+/, ""),
+    )
+    .join("\n");
+  // Remaining emphasis / strikethrough markers.
+  text = text.replace(/[*_~]{1,3}/g, "");
+  // Collapse all whitespace (including newlines) to single spaces.
+  text = text.replace(/\s+/g, " ").trim();
+
+  if (!text) return null;
+
+  if (text.length <= PREVIEW_MAX_LEN) return text;
+
+  // Prefer cutting at the first sentence end that lands within the budget.
+  const sentenceEnd = text.slice(0, PREVIEW_MAX_LEN).search(/[.!?](?:\s|$)/);
+  if (sentenceEnd >= 40) {
+    return text.slice(0, sentenceEnd + 1);
+  }
+
+  // Otherwise cut at the last word boundary before the budget.
+  const slice = text.slice(0, PREVIEW_MAX_LEN);
+  const lastSpace = slice.lastIndexOf(" ");
+  const cut = lastSpace > 40 ? slice.slice(0, lastSpace) : slice;
+  return `${cut.replace(/[\s,;:–—-]+$/, "")}…`;
 }
 
 function pickNextAction(args: {
