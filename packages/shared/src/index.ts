@@ -492,6 +492,7 @@ export type {
   ResolvedWorkspaceResource,
   AgentMemoryFileKind,
   AgentMemoryParaCategory,
+  AgentMemorySource,
   AgentMemoryFileSummary,
   AgentMemoryDailyNote,
   AgentMemoryItemsFile,

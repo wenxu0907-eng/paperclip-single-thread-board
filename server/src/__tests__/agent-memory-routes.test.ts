@@ -114,11 +114,13 @@ describe("agent memory routes", () => {
     mockMemoryService.getOverview.mockResolvedValue({
       agentId: AGENT_ID,
       companyId: "company-1",
+      memorySource: "para",
       hasMemories: true,
       tacit: null,
       index: null,
       dailyNotes: [],
       paraEntities: [],
+      harnessFacts: [],
       truncated: false,
     });
     mockMemoryService.readMemoryFile.mockResolvedValue({

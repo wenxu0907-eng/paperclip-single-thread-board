@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { load as parseYaml } from "js-yaml";
 import type {
@@ -11,6 +12,7 @@ import type {
   AgentMemoryOverview,
   AgentMemoryParaCategory,
   AgentMemoryParaEntity,
+  AgentMemorySource,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
@@ -24,13 +26,42 @@ import {
   throwIfDenied,
 } from "./workspace-file-resources.js";
 
-type AgentLike = { id: string; companyId: string };
+type AgentLike = { id: string; companyId: string; adapterType?: string | null };
 
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_PARSED_FACTS = 2000;
 const DAILY_NOTE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
+/** Root-level markdown file (no nested segments) — the harness fact-file shape. */
+const HARNESS_FILE_RE = /^[^/]+\.md$/;
 const PARA_CATEGORIES: AgentMemoryParaCategory[] = ["projects", "areas", "resources", "archives"];
 const AREA_SUBCATEGORIES = ["people", "companies"];
+
+/**
+ * Resolve the Claude Code config dir (`~/.claude` by default), mirroring
+ * resolveSharedClaudeConfigDir in the claude-local adapter. Respecting
+ * CLAUDE_CONFIG_DIR keeps this in lockstep with where the harness actually
+ * writes auto-memory, and lets tests redirect it to a temp dir.
+ */
+function resolveClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env.CLAUDE_CONFIG_DIR?.trim();
+  return fromEnv ? path.resolve(fromEnv) : path.join(os.homedir(), ".claude");
+}
+
+/**
+ * Claude Code encodes a project's working dir into a single path segment by
+ * replacing every "/" and "." with "-". Verified against a live path:
+ *   /Users/cryswen/.paperclip/instances/default/workspaces/<id>
+ *   -> -Users-cryswen--paperclip-instances-default-workspaces-<id>
+ * (the leading "/" becomes "-"; "/." becomes "--").
+ */
+function encodeClaudeProjectDir(absoluteDir: string): string {
+  return absoluteDir.replace(/[/.]/g, "-");
+}
+
+function resolveMemorySource(agent: AgentLike): AgentMemorySource {
+  const adapter = (agent.adapterType ?? "").trim().toLowerCase();
+  return adapter.startsWith("claude") ? "harness" : "para";
+}
 
 function memoryFileKind(relativePath: string): AgentMemoryFileKind {
   return relativePath.toLowerCase().endsWith(".yaml") || relativePath.toLowerCase().endsWith(".yml")
@@ -138,22 +169,30 @@ function parseFacts(raw: string): AgentMemoryFact[] {
 
 export function agentMemoryFileService() {
   function resolveRoot(agent: AgentLike): string {
+    let workspaceDir: string;
     try {
-      return resolveDefaultAgentWorkspaceDir(agent.id);
+      workspaceDir = resolveDefaultAgentWorkspaceDir(agent.id);
     } catch {
       throw unprocessable("Invalid agent id for memory path", { code: "invalid_agent_id" });
     }
+    if (resolveMemorySource(agent) === "harness") {
+      // Claude adapters read harness auto-memory, not the para layout.
+      return path.join(resolveClaudeConfigDir(), "projects", encodeClaudeProjectDir(workspaceDir), "memory");
+    }
+    return workspaceDir;
   }
 
   function emptyOverview(agent: AgentLike): AgentMemoryOverview {
     return {
       agentId: agent.id,
       companyId: agent.companyId,
+      memorySource: resolveMemorySource(agent),
       hasMemories: false,
       tacit: null,
       index: null,
       dailyNotes: [],
       paraEntities: [],
+      harnessFacts: [],
       truncated: false,
     };
   }
@@ -208,10 +247,44 @@ export function agentMemoryFileService() {
     }
   }
 
+  /**
+   * Harness auto-memory is a flat directory: a MEMORY.md index plus one
+   * <slug>.md file per fact. The root IS the memory dir, so we enumerate its
+   * top-level *.md files (MEMORY.md surfaced as the index/tacit summary, the
+   * rest as individual facts).
+   */
+  async function getHarnessOverview(agent: AgentLike, rootReal: string): Promise<AgentMemoryOverview> {
+    const scan = { count: 0 };
+    const tacit = await fileSummaryWithinRoot(rootReal, "MEMORY.md");
+    const harnessFacts: AgentMemoryFileSummary[] = [];
+    const entries = await fs.readdir(rootReal, { withFileTypes: true }).catch(() => []);
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (scan.count >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES) break;
+      scan.count += 1;
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md") || entry.name === "MEMORY.md") continue;
+      const summary = await fileSummaryWithinRoot(rootReal, entry.name);
+      if (summary) harnessFacts.push(summary);
+    }
+    return {
+      agentId: agent.id,
+      companyId: agent.companyId,
+      memorySource: "harness",
+      hasMemories: Boolean(tacit) || harnessFacts.length > 0,
+      tacit,
+      index: null,
+      dailyNotes: [],
+      paraEntities: [],
+      harnessFacts,
+      truncated: scan.count >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES,
+    };
+  }
+
   async function getOverview(agent: AgentLike): Promise<AgentMemoryOverview> {
     const root = resolveRoot(agent);
     const rootReal = await realpathOrNull(root);
     if (!rootReal) return emptyOverview(agent);
+    if (resolveMemorySource(agent) === "harness") return getHarnessOverview(agent, rootReal);
 
     const scan = { count: 0 };
     const tacit = await fileSummaryWithinRoot(rootReal, "MEMORY.md");
@@ -233,22 +306,27 @@ export function agentMemoryFileService() {
     return {
       agentId: agent.id,
       companyId: agent.companyId,
+      memorySource: "para",
       hasMemories,
       tacit,
       index,
       dailyNotes,
       paraEntities,
+      harnessFacts: [],
       truncated: scan.count >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES,
     };
   }
 
-  /** Allow only paths that belong to the para-memory-files layout. */
-  function assertMemoryPath(relativePath: string): void {
+  /** Allow only paths that belong to the resolved memory layout for this agent. */
+  function assertMemoryPath(relativePath: string, source: AgentMemorySource): void {
     const isAllowed =
-      relativePath === "MEMORY.md" ||
-      relativePath === "life/index.md" ||
-      /^memory\/[^/]+\.md$/.test(relativePath) ||
-      /^life\/(projects|areas|resources|archives)\/.+\/(summary\.md|items\.yaml)$/.test(relativePath);
+      source === "harness"
+        ? // Flat harness layout: MEMORY.md + root-level <slug>.md fact files.
+          HARNESS_FILE_RE.test(relativePath)
+        : relativePath === "MEMORY.md" ||
+          relativePath === "life/index.md" ||
+          /^memory\/[^/]+\.md$/.test(relativePath) ||
+          /^life\/(projects|areas|resources|archives)\/.+\/(summary\.md|items\.yaml)$/.test(relativePath);
     if (!isAllowed) {
       throw new HttpError(403, "Path is not an agent memory file", { code: "not_a_memory_file" });
     }
@@ -257,7 +335,7 @@ export function agentMemoryFileService() {
   async function readMemoryFile(agent: AgentLike, relativePathInput: string): Promise<AgentMemoryFileContent> {
     const normalized = normalizeWorkspaceRelativePath(relativePathInput);
     throwIfDenied(normalized.segments);
-    assertMemoryPath(normalized.relativePath);
+    assertMemoryPath(normalized.relativePath, resolveMemorySource(agent));
 
     const root = resolveRoot(agent);
     const rootReal = await realpathOrNull(root);
@@ -309,7 +387,7 @@ export function agentMemoryFileService() {
   ): Promise<AgentMemoryFileContent> {
     const normalized = normalizeWorkspaceRelativePath(relativePathInput);
     throwIfDenied(normalized.segments);
-    assertMemoryPath(normalized.relativePath);
+    assertMemoryPath(normalized.relativePath, resolveMemorySource(agent));
 
     if (Buffer.byteLength(content, "utf8") > WORKSPACE_FILE_TEXT_MAX_BYTES) {
       throw unprocessable("Memory file content is too large", { code: "too_large" });

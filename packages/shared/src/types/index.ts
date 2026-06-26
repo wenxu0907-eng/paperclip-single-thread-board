@@ -249,6 +249,7 @@ export type {
 export type {
   AgentMemoryFileKind,
   AgentMemoryParaCategory,
+  AgentMemorySource,
   AgentMemoryFileSummary,
   AgentMemoryDailyNote,
   AgentMemoryItemsFile,

@@ -2706,8 +2706,26 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
       <div className="space-y-4">
         {overview.tacit && (
           <div>
-            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tacit</h3>
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {overview.memorySource === "harness" ? "Index" : "Tacit"}
+            </h3>
             <MemoryFileButton file={overview.tacit} selected={selected === overview.tacit.relativePath} onSelect={setSelected} />
+          </div>
+        )}
+
+        {overview.harnessFacts.length > 0 && (
+          <div>
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Facts</h3>
+            <div className="space-y-0.5">
+              {overview.harnessFacts.map((fact) => (
+                <MemoryFileButton
+                  key={fact.relativePath}
+                  file={fact}
+                  selected={selected === fact.relativePath}
+                  onSelect={setSelected}
+                />
+              ))}
+            </div>
           </div>
         )}
 

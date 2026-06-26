@@ -5,6 +5,13 @@ export type AgentMemoryFileKind = "markdown" | "yaml";
 
 export type AgentMemoryParaCategory = "projects" | "areas" | "resources" | "archives";
 
+/**
+ * Which backing store an overview was read from:
+ * - "harness": Claude adapter harness auto-memory (flat MEMORY.md + per-fact <slug>.md).
+ * - "para": portable para-memory-files layout (MEMORY.md + life/ + daily notes).
+ */
+export type AgentMemorySource = "harness" | "para";
+
 export interface AgentMemoryFileSummary {
   /** Path relative to the agent home dir, e.g. "memory/2026-06-23.md". */
   relativePath: string;
@@ -41,16 +48,20 @@ export interface AgentMemoryParaEntity {
 export interface AgentMemoryOverview {
   agentId: string;
   companyId: string;
+  /** Which backing store this overview was read from. */
+  memorySource: AgentMemorySource;
   /** False when the agent has never written any memory files. */
   hasMemories: boolean;
-  /** MEMORY.md (tacit knowledge layer). */
+  /** MEMORY.md (tacit layer for para; index for harness). */
   tacit: AgentMemoryFileSummary | null;
-  /** life/index.md. */
+  /** life/index.md (para only; null for harness). */
   index: AgentMemoryFileSummary | null;
-  /** Daily notes, newest first. */
+  /** Daily notes, newest first (para only; empty for harness). */
   dailyNotes: AgentMemoryDailyNote[];
-  /** Knowledge-graph (PARA) entities. */
+  /** Knowledge-graph (PARA) entities (para only; empty for harness). */
   paraEntities: AgentMemoryParaEntity[];
+  /** Individual harness auto-memory fact files (harness only; empty for para). */
+  harnessFacts: AgentMemoryFileSummary[];
   /** True when scanning hit the entry cap and the listing is incomplete. */
   truncated: boolean;
 }

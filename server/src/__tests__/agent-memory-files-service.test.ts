@@ -6,6 +6,21 @@ import { agentMemoryFileService } from "../services/agent-memory-files.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 const AGENT = { id: "agent-1", companyId: "company-1" };
+const CODEX_AGENT = { id: "agent-1", companyId: "company-1", adapterType: "codex_local" };
+const CLAUDE_AGENT = { id: "agent-1", companyId: "company-1", adapterType: "claude_local" };
+
+function harnessMemoryDir(claudeConfigDir: string, agentId: string): string {
+  const workspaceDir = resolveDefaultAgentWorkspaceDir(agentId);
+  const encoded = workspaceDir.replace(/[/.]/g, "-");
+  return path.join(claudeConfigDir, "projects", encoded, "memory");
+}
+
+async function seedHarness(memoryDir: string) {
+  await fs.mkdir(memoryDir, { recursive: true });
+  await fs.writeFile(path.join(memoryDir, "MEMORY.md"), "# Index\n- [Company](company.md) — hook\n", "utf8");
+  await fs.writeFile(path.join(memoryDir, "company.md"), "Company structure fact.\n", "utf8");
+  await fs.writeFile(path.join(memoryDir, "api-routes.md"), "Use PUT not POST.\n", "utf8");
+}
 
 async function seed(homeDir: string) {
   await fs.mkdir(path.join(homeDir, "memory"), { recursive: true });
@@ -46,15 +61,20 @@ async function seed(homeDir: string) {
 describe("agent memory file service", () => {
   const originalPaperclipHome = process.env.PAPERCLIP_HOME;
   const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+  const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   const cleanupDirs = new Set<string>();
   const svc = agentMemoryFileService();
   let homeDir: string;
+  let claudeConfigDir: string;
 
   beforeEach(async () => {
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-memory-home-"));
     cleanupDirs.add(paperclipHome);
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+    claudeConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-memory-claude-"));
+    cleanupDirs.add(claudeConfigDir);
+    process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
     homeDir = resolveDefaultAgentWorkspaceDir(AGENT.id);
   });
 
@@ -63,6 +83,8 @@ describe("agent memory file service", () => {
     else process.env.PAPERCLIP_HOME = originalPaperclipHome;
     if (originalPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
     else process.env.PAPERCLIP_INSTANCE_ID = originalPaperclipInstanceId;
+    if (originalClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
     await Promise.all([...cleanupDirs].map(async (dir) => {
       await fs.rm(dir, { recursive: true, force: true });
       cleanupDirs.delete(dir);
@@ -187,5 +209,75 @@ describe("agent memory file service", () => {
 
   it("rejects writing to a non-memory path", async () => {
     await expect(svc.writeMemoryFile(AGENT, "AGENTS.md", "x")).rejects.toMatchObject({ status: 403 });
+  });
+
+  describe("adapter-aware source resolution", () => {
+    it("para overview reports memorySource 'para' with no harness facts", async () => {
+      await seed(homeDir);
+      const overview = await svc.getOverview(CODEX_AGENT);
+      expect(overview.memorySource).toBe("para");
+      expect(overview.harnessFacts).toEqual([]);
+      expect(overview.tacit?.relativePath).toBe("MEMORY.md");
+      expect(overview.paraEntities.length).toBeGreaterThan(0);
+    });
+
+    it("Codex/other agent does NOT read the harness root (no regression, no leakage)", async () => {
+      // Harness dir has files, but the para workspace dir is empty.
+      await seedHarness(harnessMemoryDir(claudeConfigDir, CODEX_AGENT.id));
+      const overview = await svc.getOverview(CODEX_AGENT);
+      expect(overview.hasMemories).toBe(false);
+      expect(overview.harnessFacts).toEqual([]);
+    });
+
+    it("Claude agent reads harness MEMORY.md + per-fact files from the encoded harness root", async () => {
+      await seedHarness(harnessMemoryDir(claudeConfigDir, CLAUDE_AGENT.id));
+      const overview = await svc.getOverview(CLAUDE_AGENT);
+      expect(overview.memorySource).toBe("harness");
+      expect(overview.hasMemories).toBe(true);
+      expect(overview.tacit?.relativePath).toBe("MEMORY.md");
+      expect(overview.index).toBeNull();
+      expect(overview.dailyNotes).toEqual([]);
+      expect(overview.paraEntities).toEqual([]);
+      expect(overview.harnessFacts.map((f) => f.relativePath).sort()).toEqual([
+        "api-routes.md",
+        "company.md",
+      ]);
+    });
+
+    it("Claude agent overview is empty when the harness root does not exist", async () => {
+      const overview = await svc.getOverview(CLAUDE_AGENT);
+      expect(overview.memorySource).toBe("harness");
+      expect(overview.hasMemories).toBe(false);
+      expect(overview.harnessFacts).toEqual([]);
+    });
+
+    it("Claude agent reads an individual harness fact file", async () => {
+      await seedHarness(harnessMemoryDir(claudeConfigDir, CLAUDE_AGENT.id));
+      const result = await svc.readMemoryFile(CLAUDE_AGENT, "company.md");
+      expect(result.resource.kind).toBe("markdown");
+      expect(result.content.data).toContain("Company structure fact");
+    });
+
+    it("Claude agent writes a harness fact file and re-reads it", async () => {
+      await seedHarness(harnessMemoryDir(claudeConfigDir, CLAUDE_AGENT.id));
+      await svc.writeMemoryFile(CLAUDE_AGENT, "company.md", "Updated fact.\n");
+      const reread = await svc.readMemoryFile(CLAUDE_AGENT, "company.md");
+      expect(reread.content.data).toContain("Updated fact");
+    });
+
+    it("Claude agent rejects nested (non-harness) paths", async () => {
+      await seedHarness(harnessMemoryDir(claudeConfigDir, CLAUDE_AGENT.id));
+      await expect(svc.readMemoryFile(CLAUDE_AGENT, "life/index.md")).rejects.toMatchObject({
+        status: 403,
+        details: { code: "not_a_memory_file" },
+      });
+    });
+
+    it("Claude agent rejects path traversal out of the harness root", async () => {
+      await seedHarness(harnessMemoryDir(claudeConfigDir, CLAUDE_AGENT.id));
+      await expect(svc.readMemoryFile(CLAUDE_AGENT, "../../etc/passwd")).rejects.toMatchObject({
+        status: 403,
+      });
+    });
   });
 });
