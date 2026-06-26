@@ -1725,6 +1725,25 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Resolve the public base URL for run-lifecycle deep links when a caller does
+ * not pass one explicitly. heartbeatService is constructed in ~10 places (API
+ * routes, routines, the plugin host) and run-finished events can be published
+ * from any of them, so the base URL must be resolvable here rather than relying
+ * on a single call site. Mirrors config.ts precedence and falls back to the
+ * server's own origin so links work out of the box in local setups.
+ */
+function resolvePublicBaseUrlFromEnv(): string {
+  const fromEnv =
+    readNonEmptyString(process.env.PAPERCLIP_PUBLIC_URL) ??
+    readNonEmptyString(process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL) ??
+    readNonEmptyString(process.env.BETTER_AUTH_URL) ??
+    readNonEmptyString(process.env.BETTER_AUTH_BASE_URL);
+  if (fromEnv) return fromEnv.trim();
+  const port = readNonEmptyString(process.env.PORT)?.trim() || "3100";
+  return `http://localhost:${port}`;
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -3390,7 +3409,7 @@ export interface HeartbeatServiceOptions {
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
-  const publicBaseUrl = options.publicBaseUrl;
+  const publicBaseUrl = options.publicBaseUrl ?? resolvePublicBaseUrlFromEnv();
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,

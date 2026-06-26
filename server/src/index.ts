@@ -774,15 +774,13 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   if (config.heartbeatSchedulerEnabled) {
-    // Fall back to the server's own origin when no public base URL is configured
-    // so run-finished "view full summary" links work out of the box in local
-    // setups. Deployments that set auth.publicBaseUrl keep using that.
-    const serverOrigin = `http://${
-      config.host === "0.0.0.0" || config.host === "127.0.0.1" ? "localhost" : config.host
-    }:${config.port}`;
+    // Pass the configured public base URL through for run-lifecycle deep links.
+    // When unset, heartbeatService resolves a fallback itself (env → localhost),
+    // so all of its construction sites — including API routes and the plugin
+    // host that finalize on-demand/retry runs — produce working links.
     const heartbeat = heartbeatService(db as any, {
       pluginWorkerManager,
-      publicBaseUrl: config.authPublicBaseUrl ?? serverOrigin,
+      publicBaseUrl: config.authPublicBaseUrl,
     });
     const routines = routineService(db as any, { pluginWorkerManager });
 
