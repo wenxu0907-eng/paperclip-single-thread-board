@@ -2807,6 +2807,15 @@ interface VirtualizedIssueChatThreadListProps {
   stoppingRunId?: string | null;
   interruptingQueuedRunId?: string | null;
   variant: "full" | "embedded";
+  // COM-12: divider/collapse parity for the virtualized (150+ row) path. The
+  // virtualizer indexes a synthetic-row model (messages + divider + toggle),
+  // and the imperative handle translates the message indices the parent passes
+  // into row indices, so every existing scroll caller keeps working unchanged.
+  firstUnreadAnchorId: string | null;
+  firstUnreadIndex: number;
+  canCollapseEarlier: boolean;
+  earlierExpanded: boolean;
+  onToggleEarlier: () => void;
 }
 
 interface VirtualizedIssueChatThreadListHandle {
@@ -2878,6 +2887,68 @@ function IssueChatEarlierToggle({
 
 function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
+}
+
+// COM-12: synthetic-row model shared by the virtualized path so it renders the
+// same "New" divider + collapsible earlier history as the plain path. The
+// virtualizer indexes these rows (not raw messages); a message that is part of
+// the collapsed earlier block is dropped from the model entirely, exactly as
+// the plain path returns `null` for it.
+type VirtualChatRow =
+  | { kind: "message"; message: ThreadMessage; messageIndex: number }
+  | { kind: "new-divider" }
+  | { kind: "earlier-toggle" };
+
+interface IssueChatRowDecorations {
+  firstUnreadAnchorId: string | null;
+  firstUnreadIndex: number;
+  canCollapseEarlier: boolean;
+  earlierExpanded: boolean;
+}
+
+export function buildIssueChatVirtualRows(
+  messages: readonly ThreadMessage[],
+  decorations: IssueChatRowDecorations,
+): VirtualChatRow[] {
+  const { firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded } =
+    decorations;
+  const rows: VirtualChatRow[] = [];
+  messages.forEach((message, index) => {
+    const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+    if (isEarlier && !earlierExpanded) {
+      // Collapse the whole earlier block behind a single toggle row.
+      if (index === 0) rows.push({ kind: "earlier-toggle" });
+      return;
+    }
+    if (canCollapseEarlier && earlierExpanded && index === 0) {
+      rows.push({ kind: "earlier-toggle" });
+    }
+    if (issueChatMessageAnchorId(message) === firstUnreadAnchorId) {
+      rows.push({ kind: "new-divider" });
+    }
+    rows.push({ kind: "message", message, messageIndex: index });
+  });
+  return rows;
+}
+
+function virtualChatRowKey(row: VirtualChatRow): React.Key {
+  switch (row.kind) {
+    case "message":
+      return row.message.id;
+    case "new-divider":
+      return "issue-chat-row-new-divider";
+    case "earlier-toggle":
+      return "issue-chat-row-earlier-toggle";
+  }
+}
+
+function findVirtualRowIndexByAnchorId(
+  rows: readonly VirtualChatRow[],
+  anchorId: string,
+): number {
+  return rows.findIndex(
+    (row) => row.kind === "message" && issueChatMessageAnchorId(row.message) === anchorId,
+  );
 }
 
 export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
@@ -3099,6 +3170,11 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
   stoppingRunId,
   interruptingQueuedRunId,
   variant,
+  firstUnreadAnchorId,
+  firstUnreadIndex,
+  canCollapseEarlier,
+  earlierExpanded,
+  onToggleEarlier,
   mode,
   probeRef,
 }, ref) {
@@ -3133,27 +3209,55 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
     : VIRTUALIZED_THREAD_GAP_FULL_PX;
 
+  // COM-12: synthetic-row model (messages + divider + collapse toggle). The
+  // virtualizer below indexes `rowModel`, not `messages`.
+  const rowModel = useMemo(
+    () =>
+      buildIssueChatVirtualRows(messages, {
+        firstUnreadAnchorId,
+        firstUnreadIndex,
+        canCollapseEarlier,
+        earlierExpanded,
+      }),
+    [messages, firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded],
+  );
+  // Map a message index (the unit the parent's scroll callers speak) to its
+  // row index. Collapsed-earlier messages are absent — scrolling to one is a
+  // no-op, matching the plain path where its DOM node does not exist.
+  const rowIndexByMessageIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    rowModel.forEach((row, rowIndex) => {
+      if (row.kind === "message") map.set(row.messageIndex, rowIndex);
+    });
+    return map;
+  }, [rowModel]);
+
   const virtualizer = useIssueThreadVirtualizer({
-    count: messages.length,
+    count: rowModel.length,
     estimateSize: () => VIRTUALIZED_THREAD_ROW_ESTIMATE_PX,
     overscan: VIRTUALIZED_THREAD_OVERSCAN,
     scrollMargin,
     gap,
-    getItemKey: (index) => messages[index]?.id ?? index,
+    getItemKey: (index) => {
+      const row = rowModel[index];
+      return row ? virtualChatRowKey(row) : index;
+    },
     mode,
   });
 
   useImperativeHandle(ref, () => ({
     scrollToIndex: (index, options) => {
       if (index < 0 || index >= messages.length) return;
-      virtualizer.scrollToIndex(index, {
+      const rowIndex = rowIndexByMessageIndex.get(index);
+      if (rowIndex === undefined) return;
+      virtualizer.scrollToIndex(rowIndex, {
         align: options?.align ?? "center",
         behavior: options?.behavior ?? "smooth",
       });
     },
     scrollToLatest: (options) => {
-      if (messages.length === 0) return;
-      virtualizer.scrollToIndex(messages.length - 1, {
+      if (rowModel.length === 0) return;
+      virtualizer.scrollToIndex(rowModel.length - 1, {
         align: "end",
         behavior: options?.behavior ?? "smooth",
       });
@@ -3161,7 +3265,7 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     measure: () => {
       virtualizer.measure();
     },
-  }), [messages.length, virtualizer]);
+  }), [messages.length, rowModel.length, rowIndexByMessageIndex, virtualizer]);
 
   useLayoutEffect(() => {
     return () => {
@@ -3188,8 +3292,10 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     pendingPrependAnchorRef.current = null;
     virtualizer.measure();
     if (!pendingAnchor || typeof window === "undefined") return;
-    const nextIndex = findMessageAnchorIndex(messages, pendingAnchor.anchorId);
-    if (nextIndex <= pendingAnchor.index) return;
+    // pendingAnchor.index is the captured row index (data-index), so resolve
+    // the anchor to its new row index — not its message index.
+    const nextIndex = findVirtualRowIndexByAnchorId(rowModel, pendingAnchor.anchorId);
+    if (nextIndex < 0 || nextIndex <= pendingAnchor.index) return;
 
     virtualizer.scrollToIndex(nextIndex, { align: "start", behavior: "auto" });
     requestAnimationFrame(() => {
@@ -3218,9 +3324,9 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
       style={{ position: "relative", width: "100%", height: totalSize }}
     >
       {virtualItems.map((virtualItem) => {
-        const message = messages[virtualItem.index];
-        if (!message) return null;
-        const anchorId = issueChatMessageAnchorId(message);
+        const row = rowModel[virtualItem.index];
+        if (!row) return null;
+        const anchorId = row.kind === "message" ? issueChatMessageAnchorId(row.message) : null;
         return (
           <div
             key={virtualItem.key}
@@ -3234,9 +3340,9 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
               virtualizer.measureElement(event.currentTarget);
             }}
             onClickCapture={(event) => {
-              const row = event.currentTarget;
+              const rowEl = event.currentTarget;
               requestAnimationFrame(() => {
-                virtualizer.measureElement(row);
+                virtualizer.measureElement(rowEl);
               });
             }}
             onTransitionEndCapture={(event) => {
@@ -3250,13 +3356,23 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
               transform: `translateY(${virtualItem.start - scrollMargin}px)`,
             }}
           >
-            <IssueChatMessageRow
-              message={message}
-              feedbackVoteByTargetId={feedbackVoteByTargetId}
-              activeRunIds={activeRunIds}
-              stoppingRunId={stoppingRunId}
-              interruptingQueuedRunId={interruptingQueuedRunId}
-            />
+            {row.kind === "message" ? (
+              <IssueChatMessageRow
+                message={row.message}
+                feedbackVoteByTargetId={feedbackVoteByTargetId}
+                activeRunIds={activeRunIds}
+                stoppingRunId={stoppingRunId}
+                interruptingQueuedRunId={interruptingQueuedRunId}
+              />
+            ) : row.kind === "new-divider" ? (
+              <IssueChatNewDivider />
+            ) : (
+              <IssueChatEarlierToggle
+                count={firstUnreadIndex}
+                expanded={earlierExpanded}
+                onToggle={onToggleEarlier}
+              />
+            )}
           </div>
         );
       })}
@@ -4591,6 +4707,11 @@ export function IssueChatThreadClassic({
                   stoppingRunId={stoppingRunId}
                   interruptingQueuedRunId={interruptingQueuedRunId}
                   variant={variant}
+                  firstUnreadAnchorId={firstUnreadAnchorId}
+                  firstUnreadIndex={firstUnreadIndex}
+                  canCollapseEarlier={canCollapseEarlier}
+                  earlierExpanded={earlierExpanded}
+                  onToggleEarlier={() => setEarlierExpanded((prev) => !prev)}
                 />
               ) : (
                 // Keep transcript rendering independent from assistant-ui's

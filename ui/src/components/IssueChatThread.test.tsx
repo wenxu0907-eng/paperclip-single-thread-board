@@ -579,6 +579,96 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders the New divider + collapse toggle as synthetic rows on the virtualized path (COM-12)", () => {
+    const root = createRoot(container);
+    const mkComment = (id: string, iso: string, authorUserId: string) => ({
+      id,
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId,
+      authorType: "user" as const,
+      body: `body ${id}`,
+      presentation: null,
+      metadata: null,
+      createdAt: new Date(iso),
+      updatedAt: new Date(iso),
+    });
+    // 156 old (read) comments, then 4 new ones — past the 150-row virtualization
+    // threshold. The new boundary sits deep in the thread, so the collapsed
+    // earlier block becomes a single toggle row pinned to the top of the model.
+    const oldCount = 156;
+    const newCount = 4;
+    const comments = [
+      ...Array.from({ length: oldCount }, (_, index) =>
+        mkComment(
+          `old-${index + 1}`,
+          new Date(Date.UTC(2026, 3, 6, 9, 0, index)).toISOString(),
+          "user-2",
+        ),
+      ),
+      ...Array.from({ length: newCount }, (_, index) =>
+        mkComment(
+          `new-${index + 1}`,
+          new Date(Date.UTC(2026, 3, 6, 13, 0, index)).toISOString(),
+          "user-2",
+        ),
+      ),
+    ];
+    expect(comments.length).toBeGreaterThanOrEqual(VIRTUALIZED_THREAD_ROW_THRESHOLD);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={comments}
+            currentUserId="user-1"
+            myLastTouchAt={new Date("2026-04-06T12:00:00.000Z")}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // We are on the virtualized path (not the plain map).
+    const virtualizer = container.querySelector(
+      '[data-testid="issue-chat-thread-virtualizer"]',
+    ) as HTMLDivElement | null;
+    expect(virtualizer).not.toBeNull();
+    expect(virtualizer?.dataset.virtualCount).toBe(String(comments.length));
+
+    // The divider and the collapse toggle render as synthetic virtual rows.
+    expect(
+      container.querySelector('[data-testid="issue-chat-new-divider"]'),
+    ).not.toBeNull();
+    const toggle = container.querySelector(
+      '[data-testid="issue-chat-earlier-toggle"] button',
+    ) as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle?.textContent).toContain(`Show ${oldCount} earlier messages`);
+    // Earlier history is collapsed, so the oldest body is not mounted; the live
+    // (new) content above the threshold is.
+    expect(container.textContent).not.toContain("body old-1");
+    expect(container.textContent).toContain("body new-1");
+
+    // Expanding flips the shared collapse state and reveals earlier history.
+    act(() => {
+      toggle?.click();
+    });
+    expect(container.textContent).toContain("Hide earlier messages");
+    expect(container.textContent).toContain("body old-1");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the composer in planning mode when the issue is in planning mode", () => {
     const root = createRoot(container);
 
