@@ -14,8 +14,9 @@ import type { CompanyUserProfile } from "./company-members";
  * Glanceable, synthesized orientation header for an inbox/issue thread.
  *
  * Computed entirely client-side from data already in scope on the chat tab.
- * `null` means "nothing meaningful changed since the user's last visit" — the
- * caller should render nothing in that case.
+ * On a return visit, `null` means "nothing meaningful changed since the user's
+ * last visit" — the caller renders nothing. On a first visit (no last-seen
+ * marker) the header instead summarizes the thread's current status.
  */
 export interface InboxThreadSummary {
   /** One short clause: who acted + what's new. e.g. "CTO replied (3 new messages)". */
@@ -109,9 +110,12 @@ export function buildInboxThreadSummary(
     recoveryAction,
   } = args;
 
-  const lastTouch = toTime(myLastTouchAt);
-  // Null marker => first-time / never-touched: treat everything as already seen.
-  if (lastTouch === null) return null;
+  const lastTouchRaw = toTime(myLastTouchAt);
+  // Null marker => first-time / never-touched. Rather than suppress the header,
+  // orient the reader on the *current status*: treat all activity as new-to-you
+  // so the same machinery produces a "here's where this stands" summary.
+  const isFirstVisit = lastTouchRaw === null;
+  const lastTouch = lastTouchRaw ?? -Infinity;
 
   // --- "Who acted + what's new" from new comments. ---
   const actorOrder: string[] = [];
@@ -169,7 +173,14 @@ export function buildInboxThreadSummary(
   let whatChanged: string | null = null;
   if (newCommentCount > 0) {
     const actors = joinActors(actorOrder);
-    if (newCommentCount === 1) {
+    if (isFirstVisit) {
+      // First visit: "new since last visit" wording is wrong (no last visit).
+      // Frame it as the thread's standing activity instead.
+      whatChanged =
+        newCommentCount === 1
+          ? `${actors} commented`
+          : `${actors} active (${newCommentCount} messages)`;
+    } else if (newCommentCount === 1) {
       whatChanged = `${actors} replied`;
     } else {
       whatChanged = `${actors} replied (${newCommentCount} new messages)`;
@@ -180,7 +191,13 @@ export function buildInboxThreadSummary(
       : "Status changed";
   }
 
-  // Nothing meaningful to say.
+  // First visit with no comments/status activity to summarize: still orient the
+  // reader with the issue's current status instead of rendering nothing.
+  if (!whatChanged && isFirstVisit) {
+    whatChanged = `Status: ${humanizeStatus(issueStatus)}`;
+  }
+
+  // Nothing meaningful to say (returning visitor, nothing new).
   if (!whatChanged) return null;
 
   // --- Suggested next action (single, highest priority). ---
