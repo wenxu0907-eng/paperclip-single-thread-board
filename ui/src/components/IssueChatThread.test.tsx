@@ -515,6 +515,70 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders a New divider and collapsible earlier history for unread content (COM-7)", () => {
+    const root = createRoot(container);
+    const mkComment = (id: string, iso: string, authorUserId: string) => ({
+      id,
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId,
+      authorType: "user" as const,
+      body: `body ${id}`,
+      presentation: null,
+      metadata: null,
+      createdAt: new Date(iso),
+      updatedAt: new Date(iso),
+    });
+    // Five old comments (read), then one new comment from another user.
+    const comments = [
+      mkComment("old-1", "2026-04-06T11:00:00.000Z", "user-2"),
+      mkComment("old-2", "2026-04-06T11:01:00.000Z", "user-2"),
+      mkComment("old-3", "2026-04-06T11:02:00.000Z", "user-2"),
+      mkComment("old-4", "2026-04-06T11:03:00.000Z", "user-2"),
+      mkComment("new-1", "2026-04-06T13:00:00.000Z", "user-2"),
+    ];
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={comments}
+            currentUserId="user-1"
+            myLastTouchAt={new Date("2026-04-06T12:00:00.000Z")}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // New divider is present and anchored at the first unread comment.
+    expect(container.querySelector('[data-testid="issue-chat-new-divider"]')).not.toBeNull();
+    // Earlier (read) history is collapsed behind a toggle by default.
+    const toggle = container.querySelector('[data-testid="issue-chat-earlier-toggle"] button') as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle?.textContent).toContain("Show 4 earlier messages");
+    expect(container.textContent).not.toContain("body old-1");
+    // The live (new) content is visible without expanding.
+    expect(container.textContent).toContain("body new-1");
+
+    // Expanding reveals the earlier history.
+    act(() => {
+      toggle?.click();
+    });
+    expect(container.textContent).toContain("body old-1");
+    expect(container.textContent).toContain("Hide earlier messages");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the composer in planning mode when the issue is in planning mode", () => {
     const root = createRoot(container);
 

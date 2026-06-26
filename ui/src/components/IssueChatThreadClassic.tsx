@@ -2842,6 +2842,40 @@ function IssueChatNewDivider() {
   );
 }
 
+// COM-7 / 2b: collapses the resolved/old history above the "New" divider.
+const ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD = 3;
+
+function IssueChatEarlierToggle({
+  count,
+  expanded,
+  onToggle,
+}: {
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="my-1 flex justify-center" data-testid="issue-chat-earlier-toggle">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 gap-1.5 rounded-full px-3 text-xs text-muted-foreground"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        <ChevronDown
+          className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")}
+          aria-hidden
+        />
+        {expanded
+          ? "Hide earlier messages"
+          : `Show ${count} earlier ${count === 1 ? "message" : "messages"}`}
+      </Button>
+    </div>
+  );
+}
+
 function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
@@ -3942,6 +3976,9 @@ export function IssueChatThreadClassic({
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
+  // COM-7 / 2b: whether the collapsed "earlier" history above the New divider
+  // is expanded. Default collapsed; reset when the unread anchor changes.
+  const [earlierExpanded, setEarlierExpanded] = useState(false);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -4087,6 +4124,13 @@ export function IssueChatThreadClassic({
     return anchorId;
   }, [messages, myLastTouchAt, currentUserId, messageAnchorIndex]);
   firstUnreadAnchorIdRef.current = firstUnreadAnchorId;
+  useEffect(() => {
+    setEarlierExpanded(false);
+  }, [firstUnreadAnchorId]);
+  const firstUnreadIndex = firstUnreadAnchorId
+    ? messageAnchorIndex.get(firstUnreadAnchorId) ?? -1
+    : -1;
+  const canCollapseEarlier = firstUnreadIndex >= ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD;
 
   function scrollToThreadAnchor(
     anchorId: string,
@@ -4552,20 +4596,40 @@ export function IssueChatThreadClassic({
                 // Keep transcript rendering independent from assistant-ui's
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
-                messages.map((message) => (
-                  <Fragment key={message.id}>
-                    {issueChatMessageAnchorId(message) === firstUnreadAnchorId ? (
-                      <IssueChatNewDivider />
-                    ) : null}
-                    <IssueChatMessageRow
-                      message={message}
-                      feedbackVoteByTargetId={feedbackVoteByTargetId}
-                      activeRunIds={activeRunIds}
-                      stoppingRunId={stoppingRunId}
-                      interruptingQueuedRunId={interruptingQueuedRunId}
-                    />
-                  </Fragment>
-              ))
+                messages.map((message, index) => {
+                  const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+                  if (isEarlier && !earlierExpanded) {
+                    return index === 0 ? (
+                      <IssueChatEarlierToggle
+                        key="issue-chat-earlier-toggle"
+                        count={firstUnreadIndex}
+                        expanded={false}
+                        onToggle={() => setEarlierExpanded(true)}
+                      />
+                    ) : null;
+                  }
+                  return (
+                    <Fragment key={message.id}>
+                      {canCollapseEarlier && earlierExpanded && index === 0 ? (
+                        <IssueChatEarlierToggle
+                          count={firstUnreadIndex}
+                          expanded
+                          onToggle={() => setEarlierExpanded(false)}
+                        />
+                      ) : null}
+                      {issueChatMessageAnchorId(message) === firstUnreadAnchorId ? (
+                        <IssueChatNewDivider />
+                      ) : null}
+                      <IssueChatMessageRow
+                        message={message}
+                        feedbackVoteByTargetId={feedbackVoteByTargetId}
+                        activeRunIds={activeRunIds}
+                        stoppingRunId={stoppingRunId}
+                        interruptingQueuedRunId={interruptingQueuedRunId}
+                      />
+                    </Fragment>
+                  );
+              })
             )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
