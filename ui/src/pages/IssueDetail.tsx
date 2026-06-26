@@ -998,6 +998,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       ) : null}
       <ThreadComponent
         composerRef={composerRef}
+        myLastTouchAt={myLastTouchAt}
         comments={commentsWithRunMeta}
         interactions={interactions}
         feedbackVotes={feedbackVotes}

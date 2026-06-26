@@ -113,6 +113,52 @@ function fingerprintThreadMessage(message: ThreadMessage) {
   return JSON.stringify(message);
 }
 
+/**
+ * Anchor id of the first comment that is "new since the viewer's last visit"
+ * (COM-7 / 2b). Used to render a Slack-style "New" divider and to land the
+ * thread on the first unread content instead of the top of an old thread.
+ *
+ * "First unread" mirrors `buildInboxThreadSummary`'s notion of a new reply:
+ * the earliest message (in thread order) that is a real comment/system notice,
+ * not deleted, created strictly after `myLastTouchAt`, and not authored by the
+ * current user. A null/undefined marker means a first/never-touched visit, in
+ * which case nothing is "old to you" and we return null (no divider).
+ */
+export function findFirstUnreadCommentAnchorId(
+  messages: readonly ThreadMessage[],
+  myLastTouchAt: Date | string | null | undefined,
+  currentUserId: string | null | undefined,
+): string | null {
+  if (myLastTouchAt === null || myLastTouchAt === undefined) return null;
+  const lastTouch = toTimestamp(myLastTouchAt);
+  for (const message of messages) {
+    const custom = message.metadata?.custom as
+      | {
+          kind?: unknown;
+          anchorId?: unknown;
+          authorType?: unknown;
+          authorUserId?: unknown;
+          deletedAt?: unknown;
+        }
+      | undefined;
+    if (!custom) continue;
+    if (custom.kind !== "comment" && custom.kind !== "system_notice") continue;
+    if (custom.deletedAt) continue;
+    const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : null;
+    if (!anchorId) continue;
+    if (toTimestamp(message.createdAt) <= lastTouch) continue;
+    if (
+      custom.authorType === "user"
+      && currentUserId
+      && custom.authorUserId === currentUserId
+    ) {
+      continue;
+    }
+    return anchorId;
+  }
+  return null;
+}
+
 export function stabilizeThreadMessages(
   messages: readonly ThreadMessage[],
   previousMessages: readonly ThreadMessage[],

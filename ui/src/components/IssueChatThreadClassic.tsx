@@ -23,6 +23,7 @@ import {
   createContext,
   Component,
   forwardRef,
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -60,6 +61,7 @@ import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
+  findFirstUnreadCommentAnchorId,
   formatDurationWords,
   isCoTSegmentActive,
   stabilizeThreadMessages,
@@ -327,6 +329,12 @@ interface IssueChatComposerProps {
 
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
+  /**
+   * Per-user "last seen" marker for this thread (COM-7 / 2b). When set, the
+   * thread renders a "New" divider before the first unread comment and lands
+   * the initial scroll there.
+   */
+  myLastTouchAt?: Date | null;
   interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
@@ -2815,6 +2823,25 @@ function issueChatMessageAnchorId(message: ThreadMessage): string | null {
   return typeof custom?.anchorId === "string" ? custom.anchorId : null;
 }
 
+// COM-7 / 2b: Slack-style divider rendered immediately before the first comment
+// that is new since the viewer's last visit. Purely additive markup.
+function IssueChatNewDivider() {
+  return (
+    <div
+      className="my-1 flex items-center gap-3 select-none"
+      role="separator"
+      aria-label="New messages"
+      data-testid="issue-chat-new-divider"
+    >
+      <div className="h-px flex-1 bg-primary/40" />
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-primary">
+        New
+      </span>
+      <div className="h-px flex-1 bg-primary/40" />
+    </div>
+  );
+}
+
 function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
@@ -3899,6 +3926,7 @@ export function IssueChatThreadClassic({
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
+  myLastTouchAt = null,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -4019,6 +4047,8 @@ export function IssueChatThreadClassic({
   }, [rawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
+  const firstUnreadAnchorIdRef = useRef<string | null>(null);
+  const didInitialUnreadScrollRef = useRef(false);
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -4047,6 +4077,16 @@ export function IssueChatThreadClassic({
     });
     return map;
   }, [messages]);
+
+  // COM-7 / 2b: anchor of the first comment new since the viewer's last visit;
+  // suppressed when it is already the very first row (nothing "old" above it).
+  const firstUnreadAnchorId = useMemo(() => {
+    const anchorId = findFirstUnreadCommentAnchorId(messages, myLastTouchAt, currentUserId);
+    if (!anchorId) return null;
+    if (messageAnchorIndex.get(anchorId) === 0) return null;
+    return anchorId;
+  }, [messages, myLastTouchAt, currentUserId, messageAnchorIndex]);
+  firstUnreadAnchorIdRef.current = firstUnreadAnchorId;
 
   function scrollToThreadAnchor(
     anchorId: string,
@@ -4187,6 +4227,37 @@ export function IssueChatThreadClassic({
       window.clearTimeout(timeout);
     };
   }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+
+  // COM-7 / 2b: on first load, land on the first unread comment (the "New"
+  // divider) so the live ask is visible instead of the top of an old thread.
+  // Runs once per mount, only when there is unread content, and yields to a
+  // deep-link hash (the hash-scroll effect above owns that case).
+  useEffect(() => {
+    if (didInitialUnreadScrollRef.current) return;
+    if (variant !== "full") return;
+    if (messages.length === 0) return;
+    const unreadAnchorId = firstUnreadAnchorIdRef.current;
+    if (!unreadAnchorId) return;
+    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
+    if (
+      hash.startsWith("#comment-")
+      || hash.startsWith("#activity-")
+      || hash.startsWith("#run-")
+      || hash.startsWith("#interaction-")
+    ) {
+      didInitialUnreadScrollRef.current = true;
+      return;
+    }
+    didInitialUnreadScrollRef.current = true;
+    const frame = requestAnimationFrame(() => {
+      scrollToThreadAnchor(
+        unreadAnchorId,
+        { align: "start", behavior: "auto" },
+        latestMessagesRef.current,
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messages, variant, location.hash]);
 
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {
@@ -4482,14 +4553,18 @@ export function IssueChatThreadClassic({
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
                 messages.map((message) => (
-                  <IssueChatMessageRow
-                    key={message.id}
-                    message={message}
-                    feedbackVoteByTargetId={feedbackVoteByTargetId}
-                    activeRunIds={activeRunIds}
-                    stoppingRunId={stoppingRunId}
-                    interruptingQueuedRunId={interruptingQueuedRunId}
-                  />
+                  <Fragment key={message.id}>
+                    {issueChatMessageAnchorId(message) === firstUnreadAnchorId ? (
+                      <IssueChatNewDivider />
+                    ) : null}
+                    <IssueChatMessageRow
+                      message={message}
+                      feedbackVoteByTargetId={feedbackVoteByTargetId}
+                      activeRunIds={activeRunIds}
+                      stoppingRunId={stoppingRunId}
+                      interruptingQueuedRunId={interruptingQueuedRunId}
+                    />
+                  </Fragment>
               ))
             )}
               {showComposer ? (

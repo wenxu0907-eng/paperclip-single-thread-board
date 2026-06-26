@@ -12,6 +12,7 @@ import {
   createContext,
   Component,
   forwardRef,
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -50,6 +51,7 @@ import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
+  findFirstUnreadCommentAnchorId,
   formatDurationWords,
   isCoTSegmentActive,
   stabilizeThreadMessages,
@@ -353,6 +355,12 @@ interface IssueChatComposerProps {
 
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
+  /**
+   * Per-user "last seen" marker for this thread (COM-7 / 2b). When set, the
+   * thread renders a "New" divider before the first unread comment and lands
+   * the initial scroll there instead of the latest comment.
+   */
+  myLastTouchAt?: Date | null;
   interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
@@ -2916,6 +2924,26 @@ function issueChatMessageAnchorId(message: ThreadMessage): string | null {
   return typeof custom?.anchorId === "string" ? custom.anchorId : null;
 }
 
+// COM-7 / 2b: Slack-style divider rendered immediately before the first comment
+// that is new since the viewer's last visit. Purely additive markup — it does
+// not participate in scroll/anchor math.
+function IssueChatNewDivider() {
+  return (
+    <div
+      className="my-1 flex items-center gap-3 select-none"
+      role="separator"
+      aria-label="New messages"
+      data-testid="issue-chat-new-divider"
+    >
+      <div className="h-px flex-1 bg-primary/40" />
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-primary">
+        New
+      </span>
+      <div className="h-px flex-1 bg-primary/40" />
+    </div>
+  );
+}
+
 function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
@@ -4143,6 +4171,7 @@ export function IssueChatThread({
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
   externalReferences,
+  myLastTouchAt = null,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -4268,6 +4297,7 @@ export function IssueChatThread({
   }, [rawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
+  const firstUnreadAnchorIdRef = useRef<string | null>(null);
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -4296,6 +4326,18 @@ export function IssueChatThread({
     });
     return map;
   }, [messages]);
+
+  // COM-7 / 2b: anchor of the first comment that is new since the viewer's
+  // last visit. Drives the "New" divider and the initial scroll target. We
+  // suppress it when the first-unread row is already the very first message —
+  // there is nothing "old" above it to divide off.
+  const firstUnreadAnchorId = useMemo(() => {
+    const anchorId = findFirstUnreadCommentAnchorId(messages, myLastTouchAt, currentUserId);
+    if (!anchorId) return null;
+    if (messageAnchorIndex.get(anchorId) === 0) return null;
+    return anchorId;
+  }, [messages, myLastTouchAt, currentUserId, messageAnchorIndex]);
+  firstUnreadAnchorIdRef.current = firstUnreadAnchorId;
 
   function scrollToThreadAnchor(
     anchorId: string,
@@ -4456,9 +4498,22 @@ export function IssueChatThread({
       return;
     }
     didInitialLatestScrollRef.current = true;
-    // Defer a frame so the virtualizer/DOM has mounted its initial rows before
-    // we resolve and scroll to the latest comment's anchor.
-    const frame = requestAnimationFrame(() => scrollToLatestCommentWithSettle(latestMessagesRef.current));
+    // COM-7 / 2b: when there is unread content, land on the first unread comment
+    // (the "New" divider) instead of the latest comment, so the viewer sees the
+    // live ask first rather than the bottom of an old thread. Falls back to the
+    // latest-comment behavior (PAP-95) when nothing is unread.
+    const unreadAnchorId = firstUnreadAnchorIdRef.current;
+    const frame = requestAnimationFrame(() => {
+      if (unreadAnchorId) {
+        const landed = scrollToThreadAnchor(
+          unreadAnchorId,
+          { align: "start", behavior: "auto" },
+          latestMessagesRef.current,
+        );
+        if (landed) return;
+      }
+      scrollToLatestCommentWithSettle(latestMessagesRef.current);
+    });
     return () => cancelAnimationFrame(frame);
   }, [messages, variant, location.hash]);
 
@@ -4762,14 +4817,18 @@ export function IssueChatThread({
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
                 messages.map((message) => (
-                  <IssueChatMessageRow
-                    key={message.id}
-                    message={message}
-                    feedbackVoteByTargetId={feedbackVoteByTargetId}
-                    activeRunIds={activeRunIds}
-                    stoppingRunId={stoppingRunId}
-                    interruptingQueuedRunId={interruptingQueuedRunId}
-                  />
+                  <Fragment key={message.id}>
+                    {issueChatMessageAnchorId(message) === firstUnreadAnchorId ? (
+                      <IssueChatNewDivider />
+                    ) : null}
+                    <IssueChatMessageRow
+                      message={message}
+                      feedbackVoteByTargetId={feedbackVoteByTargetId}
+                      activeRunIds={activeRunIds}
+                      stoppingRunId={stoppingRunId}
+                      interruptingQueuedRunId={interruptingQueuedRunId}
+                    />
+                  </Fragment>
               ))
             )}
               {showComposer ? (
