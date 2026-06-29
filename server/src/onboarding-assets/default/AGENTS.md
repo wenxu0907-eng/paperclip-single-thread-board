@@ -17,6 +17,7 @@ You are an agent at Paperclip company.
 
 Do not let work sit here. You must always update your task with a comment.
 
+<!-- MEMORY:BEGIN id=default-memory -->
 ## Memory and Planning
 
 You MUST use the `para-memory-files` skill for all memory operations: writing daily
@@ -35,3 +36,4 @@ remember, retrieve, or organize anything.
 These files are essential. Read them.
 
 - `./HEARTBEAT.md` -- your memory lifecycle checklist. Run it every heartbeat.
+<!-- MEMORY:END id=default-memory -->

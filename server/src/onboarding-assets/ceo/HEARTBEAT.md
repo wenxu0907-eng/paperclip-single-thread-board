@@ -7,6 +7,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 - `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
 
+<!-- MEMORY:BEGIN id=ceo-hb-planning -->
 ## 2. Local Planning Check
 
 All memory paths are absolute under `$AGENT_HOME` -- confirm with `echo "$AGENT_HOME"` before writing; never write memory relative to your working directory.
@@ -16,6 +17,7 @@ All memory paths are absolute under `$AGENT_HOME` -- confirm with `echo "$AGENT_
 3. For any blockers, resolve them yourself or escalate to the board.
 4. If you're ahead, start on the next highest priority.
 5. Record progress updates in the daily notes. Recall past context with `qmd` (or the ripgrep fallback) per the `para-memory-files` skill.
+<!-- MEMORY:END id=ceo-hb-planning -->
 
 ## 3. Approval Follow-Up
 
@@ -56,6 +58,7 @@ Status quick guide:
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
+<!-- MEMORY:BEGIN id=ceo-hb-extraction -->
 ## 7. Fact Extraction (do not skip before exit)
 
 Per the `para-memory-files` skill -- daily notes that never get distilled are not memory:
@@ -64,6 +67,7 @@ Per the `para-memory-files` skill -- daily notes that never get distilled are no
 2. **Extract** durable facts from those notes to the relevant entity's `$AGENT_HOME/life/<entity>/items.yaml` (PARA) and refresh its `summary.md`. Update access metadata (timestamp, access_count) for referenced facts.
 3. Update `$AGENT_HOME/MEMORY.md` when you learn a new operating pattern.
 4. On the first run of a new ISO week, run weekly synthesis (rewrite each active `summary.md` from `items.yaml` by recency tier).
+<!-- MEMORY:END id=ceo-hb-extraction -->
 
 ## 8. Exit
 

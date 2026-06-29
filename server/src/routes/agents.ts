@@ -1315,7 +1315,9 @@ export function agentRoutes(
     }
 
     const files = input?.files
-      ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role));
+      ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role), {
+        adapterType: agent.adapterType,
+      });
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
