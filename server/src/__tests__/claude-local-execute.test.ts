@@ -620,6 +620,51 @@ describe("claude execute", () => {
     }
   });
 
+  it("treats a clean structured success as succeeded even when the CLI exits non-zero (COM-27)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-bg-task-"));
+    // Mirrors COM-27: Claude finished the turn cleanly (subtype=success,
+    // is_error=false) but a `run_in_background` CI-polling task was killed during
+    // teardown, so the CLI exited non-zero. The result text also trips the
+    // transient-upstream regex ("try again later"), which must NOT fire because
+    // the run is a success.
+    const resultEvent = {
+      type: "result",
+      subtype: "success",
+      session_id: "11111111-1111-4111-8111-111111111111",
+      is_error: false,
+      result: "Polling CI in background — will report on completion. Try again later.",
+      usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+    };
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) => writeFailingClaudeCommand(commandPath, { resultEvent, exitCode: 1 }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-bg-task-success",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.errorCode).toBeNull();
+      expect(result.errorFamily).toBeNull();
+      expect(result.retryNotBefore).toBeNull();
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not normalize fallback stdout/stderr max-turn text into scheduler stop metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turn-fallback-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root, {

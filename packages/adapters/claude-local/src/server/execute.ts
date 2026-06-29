@@ -52,6 +52,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeReportedSuccessResult,
   isClaudeRefusalResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
@@ -904,7 +905,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // successful run to Paperclip and the heartbeat stalls silently. See RY-604.
     const claudeRefusal = isClaudeRefusalResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // A clean structured success (subtype=success, is_error=false) is
+    // authoritative over the process exit code. The CLI can exit non-zero when a
+    // background task it spawned (e.g. a `run_in_background` CI-polling loop) is
+    // killed during turn teardown, even though Claude completed the turn
+    // successfully. Don't misclassify those runs as adapter/transient failures.
+    // See COM-27.
+    const claudeReportedSuccess = isClaudeReportedSuccessResult(parsed);
+    const effectiveExitCode = claudeReportedSuccess ? 0 : proc.exitCode;
+    const failed = !claudeReportedSuccess && ((effectiveExitCode ?? 0) !== 0 || parsedIsError);
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -973,7 +982,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     return {
-      exitCode: proc.exitCode,
+      exitCode: effectiveExitCode,
       signal: proc.signal,
       timedOut: false,
       errorMessage,
