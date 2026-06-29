@@ -168,25 +168,62 @@ function parseFacts(raw: string): AgentMemoryFact[] {
 }
 
 export function agentMemoryFileService() {
-  function resolveRoot(agent: AgentLike): string {
-    let workspaceDir: string;
+  function paraRootDir(agent: AgentLike): string {
     try {
-      workspaceDir = resolveDefaultAgentWorkspaceDir(agent.id);
+      return resolveDefaultAgentWorkspaceDir(agent.id);
     } catch {
       throw unprocessable("Invalid agent id for memory path", { code: "invalid_agent_id" });
     }
-    if (resolveMemorySource(agent) === "harness") {
-      // Claude adapters read harness auto-memory, not the para layout.
-      return path.join(resolveClaudeConfigDir(), "projects", encodeClaudeProjectDir(workspaceDir), "memory");
-    }
-    return workspaceDir;
   }
 
-  function emptyOverview(agent: AgentLike): AgentMemoryOverview {
+  function harnessRootDir(agent: AgentLike): string {
+    // Claude harness auto-memory lives under ~/.claude/projects/<encoded-ws>/memory.
+    return path.join(resolveClaudeConfigDir(), "projects", encodeClaudeProjectDir(paraRootDir(agent)), "memory");
+  }
+
+  function resolveRoot(agent: AgentLike, source: AgentMemorySource): string {
+    return source === "harness" ? harnessRootDir(agent) : paraRootDir(agent);
+  }
+
+  /** True when a directory holds at least one top-level *.md file. */
+  async function dirHasMarkdown(rootReal: string | null): Promise<boolean> {
+    if (!rootReal) return false;
+    const entries = await fs.readdir(rootReal, { withFileTypes: true }).catch(() => []);
+    return entries.some((e) => e.isFile() && e.name.toLowerCase().endsWith(".md"));
+  }
+
+  /** True when the para workspace holds any recognizable memory (MEMORY.md, life/, or memory/). */
+  async function paraHasMemory(paraRootReal: string | null): Promise<boolean> {
+    if (!paraRootReal) return false;
+    if (await fileSummaryWithinRoot(paraRootReal, "MEMORY.md")) return true;
+    for (const sub of ["life", "memory"]) {
+      const subReal = await resolveWithinRoot(paraRootReal, sub);
+      const st = subReal ? await statIfExists(subReal) : null;
+      if (st?.isDirectory()) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Decide which store actually backs this agent's memory. Claude adapters use
+   * harness auto-memory, but agents created before the migration (or still
+   * running para) keep their memory in the workspace para layout. Prefer harness
+   * when it has content; otherwise fall back to existing para memory so the
+   * viewer never hides real memories. When both are empty, use the nominal
+   * (adapter-derived) source so a fresh Claude agent still reads as harness.
+   */
+  async function resolveEffectiveSource(agent: AgentLike): Promise<AgentMemorySource> {
+    if (resolveMemorySource(agent) !== "harness") return "para";
+    if (await dirHasMarkdown(await realpathOrNull(harnessRootDir(agent)))) return "harness";
+    if (await paraHasMemory(await realpathOrNull(paraRootDir(agent)))) return "para";
+    return "harness";
+  }
+
+  function emptyOverview(agent: AgentLike, source: AgentMemorySource): AgentMemoryOverview {
     return {
       agentId: agent.id,
       companyId: agent.companyId,
-      memorySource: resolveMemorySource(agent),
+      memorySource: source,
       hasMemories: false,
       tacit: null,
       index: null,
@@ -281,10 +318,11 @@ export function agentMemoryFileService() {
   }
 
   async function getOverview(agent: AgentLike): Promise<AgentMemoryOverview> {
-    const root = resolveRoot(agent);
+    const source = await resolveEffectiveSource(agent);
+    const root = resolveRoot(agent, source);
     const rootReal = await realpathOrNull(root);
-    if (!rootReal) return emptyOverview(agent);
-    if (resolveMemorySource(agent) === "harness") return getHarnessOverview(agent, rootReal);
+    if (!rootReal) return emptyOverview(agent, source);
+    if (source === "harness") return getHarnessOverview(agent, rootReal);
 
     const scan = { count: 0 };
     const tacit = await fileSummaryWithinRoot(rootReal, "MEMORY.md");
@@ -335,9 +373,10 @@ export function agentMemoryFileService() {
   async function readMemoryFile(agent: AgentLike, relativePathInput: string): Promise<AgentMemoryFileContent> {
     const normalized = normalizeWorkspaceRelativePath(relativePathInput);
     throwIfDenied(normalized.segments);
-    assertMemoryPath(normalized.relativePath, resolveMemorySource(agent));
+    const source = await resolveEffectiveSource(agent);
+    assertMemoryPath(normalized.relativePath, source);
 
-    const root = resolveRoot(agent);
+    const root = resolveRoot(agent, source);
     const rootReal = await realpathOrNull(root);
     if (!rootReal) throw notFound("Memory file not found");
     const targetReal = await resolveWithinRoot(rootReal, normalized.relativePath);
@@ -387,7 +426,8 @@ export function agentMemoryFileService() {
   ): Promise<AgentMemoryFileContent> {
     const normalized = normalizeWorkspaceRelativePath(relativePathInput);
     throwIfDenied(normalized.segments);
-    assertMemoryPath(normalized.relativePath, resolveMemorySource(agent));
+    const source = await resolveEffectiveSource(agent);
+    assertMemoryPath(normalized.relativePath, source);
 
     if (Buffer.byteLength(content, "utf8") > WORKSPACE_FILE_TEXT_MAX_BYTES) {
       throw unprocessable("Memory file content is too large", { code: "too_large" });
@@ -406,7 +446,7 @@ export function agentMemoryFileService() {
       }
     }
 
-    const root = resolveRoot(agent);
+    const root = resolveRoot(agent, source);
     await fs.mkdir(root, { recursive: true });
     const rootReal = await fs.realpath(root);
 

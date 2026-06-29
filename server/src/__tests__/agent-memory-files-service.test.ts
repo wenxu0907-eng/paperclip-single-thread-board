@@ -251,6 +251,28 @@ describe("agent memory file service", () => {
       expect(overview.harnessFacts).toEqual([]);
     });
 
+    it("Claude agent falls back to para memory when harness is empty (legacy/para data)", async () => {
+      // Regression: a claude_local agent that still keeps memory in the workspace
+      // para layout (e.g. migrated from codex) must not have it hidden by an
+      // empty harness dir.
+      await seed(homeDir);
+      const overview = await svc.getOverview(CLAUDE_AGENT);
+      expect(overview.memorySource).toBe("para");
+      expect(overview.hasMemories).toBe(true);
+      expect(overview.paraEntities.some((e) => e.name === "launch")).toBe(true);
+      // The same fallback governs reads, so a para path resolves rather than 403s.
+      const result = await svc.readMemoryFile(CLAUDE_AGENT, "life/projects/launch/items.yaml");
+      expect(result.facts?.[0]?.id).toBe("launch-001");
+    });
+
+    it("Claude agent prefers harness over para when both exist", async () => {
+      await seed(homeDir);
+      await seedHarness(harnessMemoryDir(claudeConfigDir, CLAUDE_AGENT.id));
+      const overview = await svc.getOverview(CLAUDE_AGENT);
+      expect(overview.memorySource).toBe("harness");
+      expect(overview.harnessFacts.length).toBeGreaterThan(0);
+    });
+
     it("Claude agent reads an individual harness fact file", async () => {
       await seedHarness(harnessMemoryDir(claudeConfigDir, CLAUDE_AGENT.id));
       const result = await svc.readMemoryFile(CLAUDE_AGENT, "company.md");
