@@ -208,6 +208,10 @@ export {
   upsertAgentInstructionsFileSchema,
   updateAgentMemoryFileSchema,
   updateAgentInstructionsPathSchema,
+  agentApiKeyScopeSchema,
+  normalizeAgentApiKeyScope,
+  standardAgentKeyScopeSchema,
+  taskBridgeAgentKeyScopeSchema,
   createAgentKeySchema,
   agentMineInboxQuerySchema,
   wakeAgentSchema,
@@ -222,6 +226,8 @@ export {
   type UpsertAgentInstructionsFile,
   type UpdateAgentMemoryFile,
   type UpdateAgentInstructionsPath,
+  type AgentApiKeyScope,
+  type TaskBridgeAgentKeyScope,
   type CreateAgentKey,
   type AgentMineInboxQuery,
   type WakeAgent,
@@ -391,6 +397,7 @@ export {
 export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,
@@ -399,6 +406,7 @@ export {
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
   type UpdateExecutionWorkspace,
+  type WorkspaceOverviewQuery,
 } from "./execution-workspace.js";
 
 export {
@@ -505,6 +513,27 @@ export {
   createAssetImageMetadataSchema,
   type CreateAssetImageMetadata,
 } from "./asset.js";
+
+export {
+  pipelineAutomationRetryCleanupOptionsSchema,
+  pipelineAutomationRetryRequestSchema,
+  pipelineAutomationRetryScopeSchema,
+  pipelineStageAutomationSchema,
+  pipelineStageApproverSchema,
+  pipelineStageConfigSchema,
+  pipelineStageKindSchema,
+  pipelineStageOnEnterSchema,
+  pipelineStageVariableSchema,
+  type PipelineAutomationRetryCleanupOptions,
+  type PipelineAutomationRetryRequest,
+  type PipelineAutomationRetryScope,
+  type PipelineStageAutomationConfig,
+  type PipelineStageApprover,
+  type PipelineStageConfig,
+  type PipelineStageKind,
+  type PipelineStageOnEnter,
+  type PipelineStageVariable,
+} from "./pipeline.js";
 
 export {
   createCompanyInviteSchema,
