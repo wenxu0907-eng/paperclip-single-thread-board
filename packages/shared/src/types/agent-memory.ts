@@ -45,6 +45,23 @@ export interface AgentMemoryParaEntity {
   items: AgentMemoryItemsFile | null;
 }
 
+/**
+ * Project-scoped Claude harness auto-memory. Harness auto-memory is keyed by the
+ * agent's runtime working dir (the project workspace), so it is shared across all
+ * agents that work in that project — distinct from the per-agent memory surfaced
+ * by the top-level fields of {@link AgentMemoryOverview}.
+ */
+export interface AgentProjectMemory {
+  projectId: string;
+  projectName: string;
+  /** MEMORY.md index for this project's harness dir, if present. */
+  tacit: AgentMemoryFileSummary | null;
+  /** Individual harness auto-memory fact files for this project's harness dir. */
+  harnessFacts: AgentMemoryFileSummary[];
+  /** True when scanning hit the entry cap and this listing is incomplete. */
+  truncated: boolean;
+}
+
 export interface AgentMemoryOverview {
   agentId: string;
   companyId: string;
@@ -62,6 +79,11 @@ export interface AgentMemoryOverview {
   paraEntities: AgentMemoryParaEntity[];
   /** Individual harness auto-memory fact files (harness only; empty for para). */
   harnessFacts: AgentMemoryFileSummary[];
+  /**
+   * Project-scoped harness memory for the projects this agent works in. Empty
+   * when no project has harness memory on disk. Always present (defaults to []).
+   */
+  projectMemories: AgentProjectMemory[];
   /** True when scanning hit the entry cap and the listing is incomplete. */
   truncated: boolean;
 }

@@ -49,6 +49,7 @@ import {
   issueRecoveryActionService,
   issueService,
   logActivity,
+  projectService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -197,6 +198,7 @@ export function agentRoutes(
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
   const memories = agentMemoryFileService();
+  const projects = projectService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -2825,6 +2827,26 @@ export function agentRoutes(
     res.json(result.bundle);
   });
 
+  // Resolve the runtime working dir for each of a company's projects. Harness
+  // auto-memory is keyed by this dir (the project workspace), so it locates the
+  // project-scoped, shared memory. Best-effort: failures degrade to no projects.
+  async function resolveCompanyProjectDirs(
+    companyId: string,
+  ): Promise<{ projectId: string; projectName: string; dir: string }[]> {
+    try {
+      const list = await projects.list(companyId);
+      return list
+        .map((project) => ({
+          projectId: project.id,
+          projectName: project.name,
+          dir: project.codebase?.effectiveLocalFolder ?? "",
+        }))
+        .filter((entry) => entry.dir.trim().length > 0);
+    } catch {
+      return [];
+    }
+  }
+
   router.get("/agents/:id/memories", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
@@ -2833,7 +2855,11 @@ export function agentRoutes(
       return;
     }
     await assertCanReadAgent(req, agent);
-    res.json(await memories.getOverview(agent));
+    const overview = await memories.getOverview(agent);
+    overview.projectMemories = await memories.getProjectHarnessOverviews(
+      await resolveCompanyProjectDirs(agent.companyId),
+    );
+    res.json(overview);
   });
 
   router.get("/agents/:id/memories/file", async (req, res) => {
@@ -2847,6 +2873,17 @@ export function agentRoutes(
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
       res.status(422).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    if (projectId) {
+      const projectDirs = await resolveCompanyProjectDirs(agent.companyId);
+      const match = projectDirs.find((entry) => entry.projectId === projectId);
+      if (!match) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      res.json(await memories.readProjectMemoryFile(match.dir, relativePath));
       return;
     }
     res.json(await memories.readMemoryFile(agent, relativePath));

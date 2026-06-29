@@ -302,4 +302,54 @@ describe("agent memory file service", () => {
       });
     });
   });
+
+  describe("project-scoped harness memory", () => {
+    function projectHarnessDir(claudeConfig: string, projectDir: string): string {
+      const encoded = projectDir.replace(/[/.]/g, "-");
+      return path.join(claudeConfig, "projects", encoded, "memory");
+    }
+
+    it("reads the shared harness memory for each project dir, skipping empties and dupes", async () => {
+      const projA = path.join(os.tmpdir(), "paperclip-proj-a");
+      const projB = path.join(os.tmpdir(), "paperclip-proj-b");
+      await seedHarness(projectHarnessDir(claudeConfigDir, projA));
+      // projB has no harness dir on disk -> skipped.
+
+      const overviews = await svc.getProjectHarnessOverviews([
+        { projectId: "a", projectName: "Project A", dir: projA },
+        { projectId: "b", projectName: "Project B", dir: projB },
+        { projectId: "a-dup", projectName: "Project A dup", dir: projA },
+      ]);
+
+      expect(overviews).toHaveLength(1);
+      expect(overviews[0].projectId).toBe("a");
+      expect(overviews[0].tacit?.relativePath).toBe("MEMORY.md");
+      expect(overviews[0].harnessFacts.map((f) => f.relativePath).sort()).toEqual([
+        "api-routes.md",
+        "company.md",
+      ]);
+    });
+
+    it("reads an individual project harness fact file", async () => {
+      const projA = path.join(os.tmpdir(), "paperclip-proj-read");
+      await seedHarness(projectHarnessDir(claudeConfigDir, projA));
+      const result = await svc.readProjectMemoryFile(projA, "company.md");
+      expect(result.content.data).toContain("Company structure fact");
+    });
+
+    it("rejects non-harness paths for project memory reads", async () => {
+      const projA = path.join(os.tmpdir(), "paperclip-proj-reject");
+      await seedHarness(projectHarnessDir(claudeConfigDir, projA));
+      await expect(svc.readProjectMemoryFile(projA, "life/index.md")).rejects.toMatchObject({
+        status: 403,
+        details: { code: "not_a_memory_file" },
+      });
+    });
+
+    it("404s when the project harness dir does not exist", async () => {
+      await expect(
+        svc.readProjectMemoryFile(path.join(os.tmpdir(), "paperclip-proj-none"), "company.md"),
+      ).rejects.toMatchObject({ status: 404 });
+    });
+  });
 });

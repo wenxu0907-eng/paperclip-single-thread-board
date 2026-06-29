@@ -13,6 +13,7 @@ import type {
   AgentMemoryParaCategory,
   AgentMemoryParaEntity,
   AgentMemorySource,
+  AgentProjectMemory,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
@@ -56,6 +57,16 @@ function resolveClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
  */
 function encodeClaudeProjectDir(absoluteDir: string): string {
   return absoluteDir.replace(/[/.]/g, "-");
+}
+
+/**
+ * The harness auto-memory dir for a given runtime working dir (cwd). Claude
+ * keeps auto-memory under ~/.claude/projects/<encode(cwd)>/memory. For a
+ * project-working agent the cwd is the project workspace dir, so this is how the
+ * (shared) project-scoped memory is located.
+ */
+function harnessMemoryDirForCwd(absoluteCwd: string): string {
+  return path.join(resolveClaudeConfigDir(), "projects", encodeClaudeProjectDir(absoluteCwd), "memory");
 }
 
 function resolveMemorySource(agent: AgentLike): AgentMemorySource {
@@ -178,7 +189,7 @@ export function agentMemoryFileService() {
 
   function harnessRootDir(agent: AgentLike): string {
     // Claude harness auto-memory lives under ~/.claude/projects/<encoded-ws>/memory.
-    return path.join(resolveClaudeConfigDir(), "projects", encodeClaudeProjectDir(paraRootDir(agent)), "memory");
+    return harnessMemoryDirForCwd(paraRootDir(agent));
   }
 
   function resolveRoot(agent: AgentLike, source: AgentMemorySource): string {
@@ -230,6 +241,7 @@ export function agentMemoryFileService() {
       dailyNotes: [],
       paraEntities: [],
       harnessFacts: [],
+      projectMemories: [],
       truncated: false,
     };
   }
@@ -290,7 +302,9 @@ export function agentMemoryFileService() {
    * top-level *.md files (MEMORY.md surfaced as the index/tacit summary, the
    * rest as individual facts).
    */
-  async function getHarnessOverview(agent: AgentLike, rootReal: string): Promise<AgentMemoryOverview> {
+  async function readHarnessDir(
+    rootReal: string,
+  ): Promise<{ tacit: AgentMemoryFileSummary | null; harnessFacts: AgentMemoryFileSummary[]; truncated: boolean }> {
     const scan = { count: 0 };
     const tacit = await fileSummaryWithinRoot(rootReal, "MEMORY.md");
     const harnessFacts: AgentMemoryFileSummary[] = [];
@@ -303,6 +317,11 @@ export function agentMemoryFileService() {
       const summary = await fileSummaryWithinRoot(rootReal, entry.name);
       if (summary) harnessFacts.push(summary);
     }
+    return { tacit, harnessFacts, truncated: scan.count >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES };
+  }
+
+  async function getHarnessOverview(agent: AgentLike, rootReal: string): Promise<AgentMemoryOverview> {
+    const { tacit, harnessFacts, truncated } = await readHarnessDir(rootReal);
     return {
       agentId: agent.id,
       companyId: agent.companyId,
@@ -313,8 +332,42 @@ export function agentMemoryFileService() {
       dailyNotes: [],
       paraEntities: [],
       harnessFacts,
-      truncated: scan.count >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES,
+      projectMemories: [],
+      truncated,
     };
+  }
+
+  /**
+   * Read the (shared) harness auto-memory for each project the agent works in.
+   * Each project's memory is keyed by its runtime working dir (`dir`). Projects
+   * with no harness memory on disk are skipped, and duplicate dirs (e.g. two
+   * projects sharing a checkout) are read once. DB-free: the caller resolves the
+   * project dirs and passes them in.
+   */
+  async function getProjectHarnessOverviews(
+    projects: { projectId: string; projectName: string; dir: string }[],
+  ): Promise<AgentProjectMemory[]> {
+    const out: AgentProjectMemory[] = [];
+    const seenDirs = new Set<string>();
+    for (const project of projects) {
+      const dir = project.dir?.trim();
+      if (!dir) continue;
+      const harnessDir = harnessMemoryDirForCwd(dir);
+      if (seenDirs.has(harnessDir)) continue;
+      seenDirs.add(harnessDir);
+      const rootReal = await realpathOrNull(harnessDir);
+      if (!rootReal) continue;
+      const { tacit, harnessFacts, truncated } = await readHarnessDir(rootReal);
+      if (!tacit && harnessFacts.length === 0) continue;
+      out.push({
+        projectId: project.projectId,
+        projectName: project.projectName,
+        tacit,
+        harnessFacts,
+        truncated,
+      });
+    }
+    return out;
   }
 
   async function getOverview(agent: AgentLike): Promise<AgentMemoryOverview> {
@@ -351,6 +404,7 @@ export function agentMemoryFileService() {
       dailyNotes,
       paraEntities,
       harnessFacts: [],
+      projectMemories: [],
       truncated: scan.count >= WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES,
     };
   }
@@ -370,16 +424,12 @@ export function agentMemoryFileService() {
     }
   }
 
-  async function readMemoryFile(agent: AgentLike, relativePathInput: string): Promise<AgentMemoryFileContent> {
-    const normalized = normalizeWorkspaceRelativePath(relativePathInput);
-    throwIfDenied(normalized.segments);
-    const source = await resolveEffectiveSource(agent);
-    assertMemoryPath(normalized.relativePath, source);
-
-    const root = resolveRoot(agent, source);
-    const rootReal = await realpathOrNull(root);
-    if (!rootReal) throw notFound("Memory file not found");
-    const targetReal = await resolveWithinRoot(rootReal, normalized.relativePath);
+  /** Read + validate a single memory file given an already-resolved root real path. */
+  async function readFileFromRoot(
+    rootReal: string,
+    relativePath: string,
+  ): Promise<AgentMemoryFileContent> {
+    const targetReal = await resolveWithinRoot(rootReal, relativePath);
     if (!targetReal) throw notFound("Memory file not found");
 
     const stat = await statIfExists(targetReal);
@@ -393,7 +443,7 @@ export function agentMemoryFileService() {
       throw unprocessable("Memory file is not a text file", { code: "binary_content" });
     }
     const data = buffer.toString("utf8");
-    const kind = memoryFileKind(normalized.relativePath);
+    const kind = memoryFileKind(relativePath);
 
     let facts: AgentMemoryFact[] | null = null;
     let parseError: string | null = null;
@@ -407,8 +457,8 @@ export function agentMemoryFileService() {
 
     return {
       resource: {
-        relativePath: normalized.relativePath,
-        title: path.posix.basename(normalized.relativePath),
+        relativePath,
+        title: path.posix.basename(relativePath),
         kind,
         byteSize: stat.size,
         modifiedAt: stat.mtime.toISOString(),
@@ -417,6 +467,38 @@ export function agentMemoryFileService() {
       facts,
       parseError,
     };
+  }
+
+  async function readMemoryFile(agent: AgentLike, relativePathInput: string): Promise<AgentMemoryFileContent> {
+    const normalized = normalizeWorkspaceRelativePath(relativePathInput);
+    throwIfDenied(normalized.segments);
+    const source = await resolveEffectiveSource(agent);
+    assertMemoryPath(normalized.relativePath, source);
+
+    const root = resolveRoot(agent, source);
+    const rootReal = await realpathOrNull(root);
+    if (!rootReal) throw notFound("Memory file not found");
+    return readFileFromRoot(rootReal, normalized.relativePath);
+  }
+
+  /**
+   * Read a single file from a project's (shared) harness auto-memory dir. Only
+   * the flat harness layout is valid here (MEMORY.md + root-level <slug>.md). The
+   * caller resolves the project's runtime working dir and passes it in (DB-free).
+   */
+  async function readProjectMemoryFile(
+    projectDir: string,
+    relativePathInput: string,
+  ): Promise<AgentMemoryFileContent> {
+    const normalized = normalizeWorkspaceRelativePath(relativePathInput);
+    throwIfDenied(normalized.segments);
+    assertMemoryPath(normalized.relativePath, "harness");
+
+    const trimmed = projectDir?.trim();
+    if (!trimmed) throw notFound("Memory file not found");
+    const rootReal = await realpathOrNull(harnessMemoryDirForCwd(trimmed));
+    if (!rootReal) throw notFound("Memory file not found");
+    return readFileFromRoot(rootReal, normalized.relativePath);
   }
 
   async function writeMemoryFile(
@@ -467,5 +549,5 @@ export function agentMemoryFileService() {
     return readMemoryFile(agent, normalized.relativePath);
   }
 
-  return { getOverview, readMemoryFile, writeMemoryFile };
+  return { getOverview, getProjectHarnessOverviews, readMemoryFile, readProjectMemoryFile, writeMemoryFile };
 }

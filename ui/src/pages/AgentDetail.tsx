@@ -2645,10 +2645,16 @@ function MemoryFileButton({
 
 function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string }) {
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<string | null>(null);
+  // `projectId` is set when the selection is a (shared, read-only) project memory
+  // file rather than this agent's own memory.
+  const [selected, setSelected] = useState<{ path: string; projectId?: string } | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const isProjectSelection = Boolean(selected?.projectId);
+  const isSelected = (path: string, projectId?: string) =>
+    selected?.path === path && (selected?.projectId ?? undefined) === (projectId ?? undefined);
 
   const { data: overview, isLoading } = useQuery({
     queryKey: queryKeys.agents.memories(agent.id),
@@ -2657,16 +2663,19 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
   });
 
   const { data: fileContent, isLoading: fileLoading } = useQuery({
-    queryKey: queryKeys.agents.memoryFile(agent.id, selected ?? ""),
-    queryFn: () => agentsApi.memoryFile(agent.id, selected!, companyId),
+    queryKey: queryKeys.agents.memoryFile(agent.id, selected?.path ?? "", selected?.projectId),
+    queryFn: () => agentsApi.memoryFile(agent.id, selected!.path, companyId, selected!.projectId),
     enabled: Boolean(companyId && selected),
   });
 
   const saveMutation = useMutation({
     mutationFn: (content: string) =>
-      agentsApi.saveMemoryFile(agent.id, { path: selected!, content }, companyId),
+      agentsApi.saveMemoryFile(agent.id, { path: selected!.path, content }, companyId),
     onSuccess: async (result) => {
-      queryClient.setQueryData(queryKeys.agents.memoryFile(agent.id, selected!), result);
+      queryClient.setQueryData(
+        queryKeys.agents.memoryFile(agent.id, selected!.path, selected!.projectId),
+        result,
+      );
       setEditing(false);
       setSaveError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.agents.memories(agent.id) });
@@ -2733,7 +2742,7 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
             <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {overview.memorySource === "harness" ? "Index" : "Tacit"}
             </h3>
-            <MemoryFileButton file={overview.tacit} selected={selected === overview.tacit.relativePath} onSelect={setSelected} />
+            <MemoryFileButton file={overview.tacit} selected={isSelected(overview.tacit.relativePath)} onSelect={(p) => setSelected({ path: p })} />
           </div>
         )}
 
@@ -2745,9 +2754,46 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
                 <MemoryFileButton
                   key={fact.relativePath}
                   file={fact}
-                  selected={selected === fact.relativePath}
-                  onSelect={setSelected}
+                  selected={isSelected(fact.relativePath)}
+                  onSelect={(p) => setSelected({ path: p })}
                 />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {overview.projectMemories.length > 0 && (
+          <div>
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Project memory
+            </h3>
+            <p className="mb-1.5 px-2 text-[11px] text-muted-foreground">
+              Shared across agents working in this project. Read-only here.
+            </p>
+            <div className="space-y-2">
+              {overview.projectMemories.map((pm) => (
+                <div key={pm.projectId}>
+                  <div className="flex items-center gap-1 px-2 text-[11px] font-medium text-muted-foreground">
+                    <FolderOpen className="h-3 w-3" />
+                    {pm.projectName}
+                  </div>
+                  {pm.tacit && (
+                    <MemoryFileButton
+                      file={pm.tacit}
+                      label="Index"
+                      selected={isSelected(pm.tacit.relativePath, pm.projectId)}
+                      onSelect={(p) => setSelected({ path: p, projectId: pm.projectId })}
+                    />
+                  )}
+                  {pm.harnessFacts.map((fact) => (
+                    <MemoryFileButton
+                      key={fact.relativePath}
+                      file={fact}
+                      selected={isSelected(fact.relativePath, pm.projectId)}
+                      onSelect={(p) => setSelected({ path: p, projectId: pm.projectId })}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
           </div>
@@ -2762,8 +2808,8 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
                   key={note.relativePath}
                   file={note}
                   label={note.date}
-                  selected={selected === note.relativePath}
-                  onSelect={setSelected}
+                  selected={isSelected(note.relativePath)}
+                  onSelect={(p) => setSelected({ path: p })}
                 />
               ))}
             </div>
@@ -2774,7 +2820,7 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
           <div>
             <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Knowledge graph</h3>
             {overview.index && (
-              <MemoryFileButton file={overview.index} label="index.md" selected={selected === overview.index.relativePath} onSelect={setSelected} />
+              <MemoryFileButton file={overview.index} label="index.md" selected={isSelected(overview.index.relativePath)} onSelect={(p) => setSelected({ path: p })} />
             )}
             {entitiesByGroup.map(([groupKey, entities]) => (
               <div key={groupKey} className="mt-1.5">
@@ -2786,14 +2832,14 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
                   <div key={entity.relativeDir} className="ml-3 mt-0.5">
                     <div className="px-2 text-xs font-medium">{entity.name}</div>
                     {entity.summary && (
-                      <MemoryFileButton file={entity.summary} label="summary.md" selected={selected === entity.summary.relativePath} onSelect={setSelected} />
+                      <MemoryFileButton file={entity.summary} label="summary.md" selected={isSelected(entity.summary.relativePath)} onSelect={(p) => setSelected({ path: p })} />
                     )}
                     {entity.items && (
                       <MemoryFileButton
                         file={entity.items}
                         label={`items.yaml${entity.items.factCount != null ? ` (${entity.items.factCount})` : ""}`}
-                        selected={selected === entity.items.relativePath}
-                        onSelect={setSelected}
+                        selected={isSelected(entity.items.relativePath)}
+                        onSelect={(p) => setSelected({ path: p })}
                       />
                     )}
                   </div>
@@ -2817,7 +2863,9 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate font-mono text-xs text-muted-foreground">{fileContent.resource.relativePath}</span>
-              {!editing ? (
+              {isProjectSelection ? (
+                <span className="shrink-0 text-[11px] text-muted-foreground">Shared · read-only</span>
+              ) : !editing ? (
                 <Button variant="outline" size="sm" onClick={startEditing}>
                   <Pencil className="h-3.5 w-3.5 sm:mr-1" />
                   <span className="hidden sm:inline">Edit</span>

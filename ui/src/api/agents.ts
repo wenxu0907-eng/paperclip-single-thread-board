@@ -172,9 +172,15 @@ export const agentsApi = {
     ),
   memories: (id: string, companyId?: string) =>
     api.get<AgentMemoryOverview>(agentPath(id, companyId, "/memories")),
-  memoryFile: (id: string, relativePath: string, companyId?: string) =>
+  memoryFile: (id: string, relativePath: string, companyId?: string, projectId?: string) =>
     api.get<AgentMemoryFileContent>(
-      agentPath(id, companyId, `/memories/file?path=${encodeURIComponent(relativePath)}`),
+      agentPath(
+        id,
+        companyId,
+        `/memories/file?path=${encodeURIComponent(relativePath)}${
+          projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""
+        }`,
+      ),
     ),
   saveMemoryFile: (id: string, data: { path: string; content: string }, companyId?: string) =>
     api.put<AgentMemoryFileContent>(agentPath(id, companyId, "/memories/file"), data),

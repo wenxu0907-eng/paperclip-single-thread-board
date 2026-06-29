@@ -258,6 +258,7 @@ export type {
   AgentMemoryDailyNote,
   AgentMemoryItemsFile,
   AgentMemoryParaEntity,
+  AgentProjectMemory,
   AgentMemoryOverview,
   AgentMemoryFact,
   AgentMemoryFileResource,

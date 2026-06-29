@@ -37,8 +37,8 @@ export const queryKeys = {
     instructionsFile: (id: string, relativePath: string) =>
       ["agents", "instructions-bundle", id, "file", relativePath] as const,
     memories: (id: string) => ["agents", "memories", id] as const,
-    memoryFile: (id: string, relativePath: string) =>
-      ["agents", "memories", id, "file", relativePath] as const,
+    memoryFile: (id: string, relativePath: string, projectId?: string) =>
+      ["agents", "memories", id, "file", relativePath, projectId ?? null] as const,
     keys: (agentId: string) => ["agents", "keys", agentId] as const,
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (companyId: string, adapterType: string, environmentId?: string | null) =>

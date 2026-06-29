@@ -15,8 +15,14 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockMemoryService = vi.hoisted(() => ({
   getOverview: vi.fn(),
+  getProjectHarnessOverviews: vi.fn(),
   readMemoryFile: vi.fn(),
+  readProjectMemoryFile: vi.fn(),
   writeMemoryFile: vi.fn(),
+}));
+
+const mockProjectService = vi.hoisted(() => ({
+  list: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -33,6 +39,7 @@ function servicesIndexMock() {
     issueApprovalService: () => ({}),
     issueService: () => ({}),
     logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn(),
     workspaceOperationService: () => ({}),
@@ -121,7 +128,16 @@ describe("agent memory routes", () => {
       dailyNotes: [],
       paraEntities: [],
       harnessFacts: [],
+      projectMemories: [],
       truncated: false,
+    });
+    mockMemoryService.getProjectHarnessOverviews.mockResolvedValue([]);
+    mockProjectService.list.mockResolvedValue([]);
+    mockMemoryService.readProjectMemoryFile.mockResolvedValue({
+      resource: { relativePath: "company.md", title: "company.md", kind: "markdown", byteSize: 4, modifiedAt: "x" },
+      content: { encoding: "utf8", data: "proj\n" },
+      facts: null,
+      parseError: null,
     });
     mockMemoryService.readMemoryFile.mockResolvedValue({
       resource: { relativePath: "MEMORY.md", title: "MEMORY.md", kind: "markdown", byteSize: 4, modifiedAt: "x" },
@@ -148,6 +164,44 @@ describe("agent memory routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.hasMemories).toBe(true);
     expect(mockMemoryService.getOverview).toHaveBeenCalled();
+  });
+
+  it("attaches project-scoped harness memory to the overview", async () => {
+    mockProjectService.list.mockResolvedValue([
+      { id: "proj-1", name: "Paperclip", codebase: { effectiveLocalFolder: "/work/proj-1" } },
+    ]);
+    mockMemoryService.getProjectHarnessOverviews.mockResolvedValue([
+      { projectId: "proj-1", projectName: "Paperclip", tacit: null, harnessFacts: [], truncated: false },
+    ]);
+    const res = await request(await createApp(boardActor)).get(`/api/agents/${AGENT_ID}/memories?companyId=company-1`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.projectMemories).toHaveLength(1);
+    expect(res.body.projectMemories[0].projectId).toBe("proj-1");
+    expect(mockMemoryService.getProjectHarnessOverviews).toHaveBeenCalledWith([
+      { projectId: "proj-1", projectName: "Paperclip", dir: "/work/proj-1" },
+    ]);
+  });
+
+  it("reads a project memory file when projectId is supplied", async () => {
+    mockProjectService.list.mockResolvedValue([
+      { id: "proj-1", name: "Paperclip", codebase: { effectiveLocalFolder: "/work/proj-1" } },
+    ]);
+    const res = await request(await createApp(boardActor)).get(
+      `/api/agents/${AGENT_ID}/memories/file?companyId=company-1&path=company.md&projectId=proj-1`,
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.content.data).toBe("proj\n");
+    expect(mockMemoryService.readProjectMemoryFile).toHaveBeenCalledWith("/work/proj-1", "company.md");
+    expect(mockMemoryService.readMemoryFile).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a project memory read with an unknown projectId", async () => {
+    mockProjectService.list.mockResolvedValue([]);
+    const res = await request(await createApp(boardActor)).get(
+      `/api/agents/${AGENT_ID}/memories/file?companyId=company-1&path=company.md&projectId=missing`,
+    );
+    expect(res.status).toBe(404);
+    expect(mockMemoryService.readProjectMemoryFile).not.toHaveBeenCalled();
   });
 
   it("requires a path query for the file endpoint", async () => {
