@@ -5222,6 +5222,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             identifier: issues.identifier,
             title: issues.title,
             status: issues.status,
+            parentId: issues.parentId,
             projectId: issues.projectId,
             projectName: projects.name,
           })
@@ -5259,6 +5260,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueIdentifier: issue?.identifier ?? null,
       issueTitle: issue?.title ?? null,
       issueStatus: issue?.status ?? null,
+      issueParentId: issue?.parentId ?? null,
+      // True when this run is for a subtask (an issue with a parent). Lets
+      // notification consumers (e.g. the Discord plugin) filter to main tasks only.
+      isSubtask: Boolean(issue?.parentId),
       projectId: issue?.projectId ?? readNonEmptyString(context.projectId),
       projectName: issue?.projectName ?? null,
       taskKey: readNonEmptyString(context.taskKey),
