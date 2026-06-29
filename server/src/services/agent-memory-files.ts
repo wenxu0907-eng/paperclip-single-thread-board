@@ -50,13 +50,17 @@ function resolveClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
 
 /**
  * Claude Code encodes a project's working dir into a single path segment by
- * replacing every "/" and "." with "-". Verified against a live path:
+ * replacing every non-alphanumeric character (/, ., _, etc.) with "-", without
+ * collapsing runs. Verified against live paths:
  *   /Users/cryswen/.paperclip/instances/default/workspaces/<id>
- *   -> -Users-cryswen--paperclip-instances-default-workspaces-<id>
- * (the leading "/" becomes "-"; "/." becomes "--").
+ *     -> -Users-cryswen--paperclip-instances-default-workspaces-<id>
+ *   …/projects/<cid>/<pid>/_default
+ *     -> …-projects-<cid>-<pid>--default   (the "/_" becomes "--", NOT "-_")
+ * Only replacing [/.] was wrong for any path segment containing "_" (e.g. the
+ * managed "_default" project workspace), which silently missed the real dir.
  */
 function encodeClaudeProjectDir(absoluteDir: string): string {
-  return absoluteDir.replace(/[/.]/g, "-");
+  return absoluteDir.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
 /**

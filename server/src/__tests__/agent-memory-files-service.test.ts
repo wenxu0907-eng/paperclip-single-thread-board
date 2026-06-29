@@ -11,7 +11,7 @@ const CLAUDE_AGENT = { id: "agent-1", companyId: "company-1", adapterType: "clau
 
 function harnessMemoryDir(claudeConfigDir: string, agentId: string): string {
   const workspaceDir = resolveDefaultAgentWorkspaceDir(agentId);
-  const encoded = workspaceDir.replace(/[/.]/g, "-");
+  const encoded = workspaceDir.replace(/[^a-zA-Z0-9]/g, "-");
   return path.join(claudeConfigDir, "projects", encoded, "memory");
 }
 
@@ -305,9 +305,24 @@ describe("agent memory file service", () => {
 
   describe("project-scoped harness memory", () => {
     function projectHarnessDir(claudeConfig: string, projectDir: string): string {
-      const encoded = projectDir.replace(/[/.]/g, "-");
+      const encoded = projectDir.replace(/[^a-zA-Z0-9]/g, "-");
       return path.join(claudeConfig, "projects", encoded, "memory");
     }
+
+    it("locates the harness dir for a managed '_default' project workspace (underscore encoding)", async () => {
+      // Regression: Claude encodes every non-alphanumeric char (incl. '_') to '-',
+      // so '/_default' becomes '--default'. Encoding only [/.] missed the real dir.
+      const projDir = "/tmp/paperclip/projects/cid/pid/_default";
+      await seedHarness(projectHarnessDir(claudeConfigDir, projDir));
+      const overviews = await svc.getProjectHarnessOverviews([
+        { projectId: "p", projectName: "Onboarding", dir: projDir },
+      ]);
+      expect(overviews).toHaveLength(1);
+      expect(overviews[0].tacit?.relativePath).toBe("MEMORY.md");
+      // And reads resolve through the same encoding.
+      const file = await svc.readProjectMemoryFile(projDir, "company.md");
+      expect(file.content.data).toContain("Company structure fact");
+    });
 
     it("reads the shared harness memory for each project dir, skipping empties and dupes", async () => {
       const projA = path.join(os.tmpdir(), "paperclip-proj-a");
