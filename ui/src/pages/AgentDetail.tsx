@@ -2688,8 +2688,9 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
         <BrainCircuit className="h-8 w-8 text-muted-foreground" />
         <p className="text-sm font-medium">No memories yet</p>
         <p className="max-w-md text-xs text-muted-foreground">
-          This agent hasn&apos;t written any memory files. Files created by the para-memory-files skill
-          (MEMORY.md, daily notes, and the PARA knowledge graph) will appear here.
+          {overview?.memorySource === "harness"
+            ? "This agent hasn't written any memory yet. Claude harness auto-memory (the MEMORY.md index and individual fact files) will appear here."
+            : "This agent hasn't written any memory files. Files created by the para-memory-files skill (MEMORY.md, daily notes, and the PARA knowledge graph) will appear here."}
         </p>
       </div>
     );
