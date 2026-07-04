@@ -205,14 +205,19 @@ export function deriveIssueCommentRunLogAttribution(
       ) {
         continue;
       }
-      // Match case-insensitively: the normal comment-post flow logs
-      // "comment id: <id>", but some agent tools (e.g. a curl relay that echoes
-      // the API's "Comment ID: <id>" response) use a different case. A
-      // case-sensitive check missed those, leaving the relayed comment with no
-      // derived agent id so it rendered as a right-aligned "Board" bubble. The
-      // comment id is a UUID, so requiring the "comment id:" phrase + the exact
-      // id keeps this from matching genuine board comments. (COM-57)
-      if (!run.logContent.toLowerCase().includes(`comment id: ${comment.id}`.toLowerCase())) continue;
+      // Match on the bare comment UUID appearing anywhere in the run log.
+      // Agents post issue comments under user auth (local-CLI), so the row lands
+      // as author_type=user/local-board with no agent id — the ONLY durable link
+      // back to the authoring run is that the run's tool output captured the id
+      // of the comment it just created. Different agents/tools print that id
+      // differently ("comment id: <id>", the API's "Comment ID: <id>", a bare
+      // JSON `"id":"<id>"`, a custom "comment: <id>" line…), so an exact-phrase
+      // match silently missed most of them and the comment rendered as a
+      // right-aligned "Board" bubble. A comment id is a globally-unique UUID and
+      // this only runs for comments created *within this run's active window* on
+      // *this same issue*, so a genuine board comment — created before its own
+      // triggered run and never echoed by an unrelated run — cannot match. (COM-57)
+      if (!run.logContent.includes(comment.id)) continue;
 
       const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
       if (!bestMatch || distanceMs < bestMatch.distanceMs) {

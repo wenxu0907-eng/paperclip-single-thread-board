@@ -94,10 +94,16 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     });
   });
 
-  it("recovers agent attribution when the run log used title-case 'Comment ID:' (COM-57)", () => {
-    // Real-world regression (LUC-62): a relayed agent answer was posted through a
-    // tool that echoed the API response "Comment ID: <id>" (title case). The
-    // case-sensitive matcher missed it, so the row rendered as a "Board" bubble.
+  it.each([
+    ["title-case API echo", (id: string) => `tool_result stdout: Comment ID: ${id}\n`],
+    ["custom print line", (id: string) => `{"text":"comment: ${id}"}\n`],
+    ["bare JSON id field", (id: string) => `{"id":"${id}","body":"..."}\n`],
+  ])("recovers agent attribution when the run log echoes the comment id as %s (COM-57)", (_label, render) => {
+    // Real-world regression (LUC-62 + COM-57): agents post issue comments under
+    // user auth, so the row lands as user/local-board. The only link back to the
+    // authoring run is that the run's tool output captured the new comment's id —
+    // but different tools print it differently. Matching the bare UUID recovers
+    // all of them; the run window + issue scope keep board comments safe.
     const commentId = randomUUID();
     const runId = randomUUID();
     const agentId = randomUUID();
@@ -119,7 +125,7 @@ describe("deriveIssueCommentRunLogAttribution", () => {
           createdAt: new Date("2026-05-11T18:51:56.246Z"),
           startedAt: new Date("2026-05-11T18:51:56.257Z"),
           finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: `tool_result stdout: Comment ID: ${commentId}\n`,
+          logContent: render(commentId),
         },
       ],
     );
