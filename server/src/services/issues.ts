@@ -205,7 +205,14 @@ export function deriveIssueCommentRunLogAttribution(
       ) {
         continue;
       }
-      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
+      // Match case-insensitively: the normal comment-post flow logs
+      // "comment id: <id>", but some agent tools (e.g. a curl relay that echoes
+      // the API's "Comment ID: <id>" response) use a different case. A
+      // case-sensitive check missed those, leaving the relayed comment with no
+      // derived agent id so it rendered as a right-aligned "Board" bubble. The
+      // comment id is a UUID, so requiring the "comment id:" phrase + the exact
+      // id keeps this from matching genuine board comments. (COM-57)
+      if (!run.logContent.toLowerCase().includes(`comment id: ${comment.id}`.toLowerCase())) continue;
 
       const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
       if (!bestMatch || distanceMs < bestMatch.distanceMs) {

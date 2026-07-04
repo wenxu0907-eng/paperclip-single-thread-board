@@ -94,6 +94,43 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     });
   });
 
+  it("recovers agent attribution when the run log used title-case 'Comment ID:' (COM-57)", () => {
+    // Real-world regression (LUC-62): a relayed agent answer was posted through a
+    // tool that echoed the API response "Comment ID: <id>" (title case). The
+    // case-sensitive matcher missed it, so the row rendered as a "Board" bubble.
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId,
+          agentId,
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: `tool_result stdout: Comment ID: ${commentId}\n`,
+        },
+      ],
+    );
+
+    expect(derived.get(commentId)).toEqual({
+      derivedAuthorAgentId: agentId,
+      derivedCreatedByRunId: runId,
+      derivedAuthorSource: "run_log_comment_post",
+    });
+  });
+
   it("does not rewrite comments without exact run-log proof", () => {
     const commentId = randomUUID();
     const derived = deriveIssueCommentRunLogAttribution(
