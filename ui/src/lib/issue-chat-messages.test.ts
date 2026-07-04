@@ -516,6 +516,36 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("renders a user-stamped comment carrying createdByRunId as an assistant bubble (COM-57)", () => {
+    // Real-world regression (LUC-62): an agent answer was persisted with
+    // authorType "user"/local-board and NO runId/derived ids, but it still
+    // recorded the originating run in `createdByRunId`. Only agents own runs, so
+    // that field alone must route the row to an agent bubble, not "Board".
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "local-board",
+          runId: null,
+          runAgentId: null,
+          derivedAuthorAgentId: null,
+          derivedCreatedByRunId: null,
+          createdByRunId: "run-luc62",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map(),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: { custom: { authorType: "agent" } },
+    });
+  });
+
   it("renders a comment as agent-authored when runAgentId is set from activity log", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
     const messages = buildIssueChatMessages({

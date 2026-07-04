@@ -420,6 +420,13 @@ function isAgentAuthoredComment(comment: IssueChatComment) {
   if (effectiveCommentAuthorAgentId(comment)) return true;
   if (comment.authorType === "agent") return true;
   if (effectiveCommentRunId(comment)) return true;
+  // A row persisted with `createdByRunId` was created inside a heartbeat run —
+  // and only agents own runs (a board/user POST never carries a run context).
+  // Historical rows exist where an agent's answer was stamped `authorType:"user"`
+  // (e.g. posted through a user-scoped key) while still recording the run id in
+  // `createdByRunId`; without reading it here they fall through to the blue
+  // "Board" bubble even though the run id proves agent authorship. (COM-57)
+  if (comment.createdByRunId) return true;
   return false;
 }
 
