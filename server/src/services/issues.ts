@@ -6589,5 +6589,51 @@ export function issueService(db: Db) {
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
     },
+
+    /**
+     * Batch-resolve the ancestor id chain for a set of issues in a single
+     * recursive query. Returns a map from each issue id to its ancestor ids
+     * ordered nearest-parent-first up to the root. Issues with no parent are
+     * omitted from the map.
+     */
+    getAncestorIdsForIssues: async (
+      companyId: string,
+      issueIds: string[],
+    ): Promise<Map<string, string[]>> => {
+      const result = new Map<string, string[]>();
+      const ids = [...new Set(issueIds)].filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+      if (ids.length === 0) return result;
+      const rows = await db.execute(sql`
+        WITH RECURSIVE chain(origin_id, id, parent_id, depth) AS (
+          SELECT id, id, parent_id, 0
+          FROM issues
+          WHERE company_id = ${companyId}
+            AND id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+          UNION ALL
+          SELECT chain.origin_id, parent.id, parent.parent_id, chain.depth + 1
+          FROM issues parent
+          JOIN chain ON parent.id = chain.parent_id
+          WHERE parent.company_id = ${companyId}
+            AND chain.depth < 50
+        )
+        SELECT origin_id, id AS ancestor_id, depth
+        FROM chain
+        WHERE depth > 0
+        ORDER BY origin_id, depth
+      `);
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (typeof row !== "object" || row === null) continue;
+        const rec = row as Record<string, unknown>;
+        const originId = typeof rec.origin_id === "string" ? rec.origin_id : null;
+        const ancestorId = typeof rec.ancestor_id === "string" ? rec.ancestor_id : null;
+        if (!originId || !ancestorId || originId === ancestorId) continue;
+        const arr = result.get(originId) ?? [];
+        arr.push(ancestorId);
+        result.set(originId, arr);
+      }
+      return result;
+    },
   };
 }
