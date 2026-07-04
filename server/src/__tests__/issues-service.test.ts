@@ -5537,3 +5537,89 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
   });
 
 });
+
+describeEmbeddedPostgres("issueService.update parent done guard", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-parent-done-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedParentWithChildren(childStatuses: string[]) {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const childIds = childStatuses.map(() => randomUUID());
+    const identifierPrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: identifierPrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent",
+        identifier: `${identifierPrefix}-1`,
+        status: "in_progress",
+        priority: "medium",
+      },
+      ...childStatuses.map((status, index) => ({
+        id: childIds[index],
+        companyId,
+        parentId,
+        title: `Child ${index + 1}`,
+        identifier: `${identifierPrefix}-${index + 2}`,
+        status,
+        priority: "medium" as const,
+      })),
+    ]);
+
+    return { companyId, parentId, childIds };
+  }
+
+  it("rejects marking a parent done while a subtask is unfinished", async () => {
+    const { parentId, childIds } = await seedParentWithChildren(["in_progress", "done"]);
+
+    await expect(svc.update(parentId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        unfinishedChildIssueIds: [childIds[0]],
+      }),
+    });
+
+    const [parent] = await db.select().from(issues).where(eq(issues.id, parentId));
+    expect(parent.status).toBe("in_progress");
+    expect(parent.completedAt).toBeNull();
+  });
+
+  it("allows marking a parent done once every subtask is terminal", async () => {
+    const { parentId } = await seedParentWithChildren(["done", "cancelled"]);
+
+    const updated = await svc.update(parentId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(updated?.completedAt).not.toBeNull();
+  });
+
+  it("allows marking a childless issue done", async () => {
+    const { parentId } = await seedParentWithChildren([]);
+
+    const updated = await svc.update(parentId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+});

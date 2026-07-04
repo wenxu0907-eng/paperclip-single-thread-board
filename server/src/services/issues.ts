@@ -5292,6 +5292,26 @@ export function issueService(db: Db) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
         }
       }
+      if (patch.status === "done" && existing.status !== "done") {
+        const unfinishedChildren = await dbOrTx
+          .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, existing.companyId),
+              eq(issues.parentId, id),
+              notInArray(issues.status, ["done", "cancelled"]),
+            ),
+          );
+        if (unfinishedChildren.length > 0) {
+          throw unprocessable("Cannot mark issue done while subtasks are unfinished", {
+            unfinishedChildIssueIds: unfinishedChildren.map((child: { id: string }) => child.id),
+            unfinishedChildIssueIdentifiers: unfinishedChildren.map(
+              (child: { identifier: string }) => child.identifier,
+            ),
+          });
+        }
+      }
       const shouldValidateNextAssignee =
         Boolean(nextAssigneeAgentId) &&
         (issueData.assigneeAgentId !== undefined || patch.status === "in_progress");
