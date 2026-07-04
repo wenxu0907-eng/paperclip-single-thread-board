@@ -463,6 +463,59 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("renders an author-less agent comment as an assistant bubble (COM-57)", () => {
+    // Regression: an agent's answer comment persisted with authorType "agent" but
+    // NONE of authorAgentId/runAgentId/derivedAuthorAgentId set must not fall
+    // through to the right-aligned blue "Board" (user) bubble.
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorType: "agent",
+          authorAgentId: null,
+          authorUserId: null,
+          runId: null,
+          runAgentId: null,
+          derivedAuthorAgentId: null,
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map(),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: { custom: { authorType: "agent" } },
+    });
+  });
+
+  it("renders a comment with only a run context as an assistant bubble (COM-57)", () => {
+    // Comments are only created inside a run by agents; a lingering run context
+    // (createdByRunId) with no agent id must still render as an agent bubble.
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: null,
+          runAgentId: null,
+          derivedAuthorAgentId: null,
+          runId: "run-9",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map(),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: { custom: { authorType: "agent" } },
+    });
+  });
+
   it("renders a comment as agent-authored when runAgentId is set from activity log", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
     const messages = buildIssueChatMessages({

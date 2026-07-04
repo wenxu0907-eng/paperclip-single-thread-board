@@ -5623,3 +5623,99 @@ describeEmbeddedPostgres("issueService.update parent done guard", () => {
     expect(updated?.status).toBe("done");
   });
 });
+
+describeEmbeddedPostgres("issueService.addComment agent attribution (COM-57)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-addcomment-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Answering Agent",
+      role: "engineer",
+      status: "active",
+      reportsTo: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issue = await svc.create(companyId, {
+      title: "Question for the agent",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+    return { companyId, agentId, issueId: issue.id, runId };
+  }
+
+  it("stores authorAgentId derived from the run when the caller omits agentId", async () => {
+    const { agentId, issueId, runId } = await seed();
+
+    // An agent's answer posted with only a run context (no explicit agentId)
+    // must still be attributed to the agent at the source, not persisted as an
+    // author-less row that the UI renders as a "Board" bubble.
+    const comment = await svc.addComment(issueId, "Here is my answer.", { runId });
+
+    expect(comment.authorAgentId).toBe(agentId);
+    expect(comment.authorType).toBe("agent");
+
+    const [stored] = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id));
+    expect(stored.authorAgentId).toBe(agentId);
+    expect(stored.authorType).toBe("agent");
+  });
+
+  it("keeps an explicit agentId over the run-derived one", async () => {
+    const { agentId, issueId, runId } = await seed();
+
+    const comment = await svc.addComment(issueId, "Explicit author.", {
+      agentId,
+      runId,
+    });
+
+    expect(comment.authorAgentId).toBe(agentId);
+    expect(comment.authorType).toBe("agent");
+  });
+});

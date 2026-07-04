@@ -398,7 +398,29 @@ function effectiveCommentRunAgentId(comment: IssueChatComment) {
 }
 
 function effectiveCommentAuthorType(comment: IssueChatComment) {
-  return effectiveCommentAuthorAgentId(comment) ? "agent" : comment.authorType;
+  if (effectiveCommentAuthorAgentId(comment)) return "agent";
+  // A comment can be authored by an agent yet reach the UI with none of the
+  // agent ids populated (historically-written rows). Treat an explicit
+  // `authorType === "agent"` or the presence of a run context (only agents post
+  // comments inside a run) as agent authorship so it is not mis-attributed to
+  // the board. (COM-57)
+  if (isAgentAuthoredComment(comment)) return "agent";
+  return comment.authorType;
+}
+
+/**
+ * Whether a comment should be rendered as an agent (assistant) message even when
+ * `authorAgentId`/`runAgentId`/`derivedAuthorAgentId` are all null. This hardens
+ * the read path against author-less agent rows: an `authorType === "agent"`
+ * comment, or any comment carrying a run context (comments are only created
+ * inside a run by agents), is agent-authored. Without this such rows fall
+ * through to the right-aligned blue "Board" bubble. (COM-57)
+ */
+function isAgentAuthoredComment(comment: IssueChatComment) {
+  if (effectiveCommentAuthorAgentId(comment)) return true;
+  if (comment.authorType === "agent") return true;
+  if (effectiveCommentRunId(comment)) return true;
+  return false;
 }
 
 function authorNameForComment(
@@ -476,7 +498,7 @@ function createCommentMessage(args: {
     return message;
   }
 
-  if (authorAgentId) {
+  if (authorAgentId || isAgentAuthoredComment(comment)) {
     const message: ThreadAssistantMessage = {
       id: comment.id,
       role: "assistant",
