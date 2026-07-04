@@ -6217,10 +6217,27 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      // Resolve the authoring agent from the run context when the caller supplies
+      // a runId but omits an explicit agentId/authorType. Agent answers posted
+      // with only a run context would otherwise persist as author-less rows that
+      // the UI mis-attributes to the board ("Board" bubble). Store the agent id at
+      // the source so new rows attribute correctly. (COM-57)
+      let resolvedAuthorAgentId = actor.agentId ?? null;
+      if (!resolvedAuthorAgentId && !options?.authorType && actor.runId) {
+        const run = await dbOrTx
+          .select({ agentId: heartbeatRuns.agentId })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, actor.runId))
+          .then((rows: Array<{ agentId: string | null }>) => rows[0] ?? null);
+        if (run?.agentId) resolvedAuthorAgentId = run.agentId;
+      }
       const authorType = issueCommentAuthorTypeSchema.parse(
-        options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
+        options?.authorType ?? (resolvedAuthorAgentId ? "agent" : actor.userId ? "user" : "system"),
       );
-      assertIssueCommentAuthorTypeAllowed(actor, authorType);
+      assertIssueCommentAuthorTypeAllowed(
+        { agentId: resolvedAuthorAgentId, userId: actor.userId },
+        authorType,
+      );
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
@@ -6229,7 +6246,7 @@ export function issueService(db: Db) {
         .values({
           companyId: issue.companyId,
           issueId,
-          authorAgentId: actor.agentId ?? null,
+          authorAgentId: resolvedAuthorAgentId,
           authorUserId: actor.userId ?? null,
           authorType,
           createdByRunId: actor.runId ?? null,
