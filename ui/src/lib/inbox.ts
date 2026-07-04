@@ -1061,13 +1061,27 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
   const childrenByIssueId = new Map<string, Issue[]>();
   const childIds = new Set<string>();
 
+  // Resolve the nearest ancestor that is present in the loaded set. When an
+  // intermediate ancestor is filtered out of the inbox (e.g. a completed parent
+  // between two active issues), fall back to walking the ancestor id chain so
+  // the descendant still nests under the nearest visible ancestor instead of
+  // surfacing as its own root.
+  const nearestPresentAncestorId = (issue: Issue): string | null => {
+    if (issue.parentId && issueIdSet.has(issue.parentId)) return issue.parentId;
+    for (const ancestorId of issue.ancestorIds ?? []) {
+      if (ancestorId !== issue.id && issueIdSet.has(ancestorId)) return ancestorId;
+    }
+    return null;
+  };
+
   for (const item of issueItems) {
     const { issue } = item;
-    if (issue.parentId && issueIdSet.has(issue.parentId)) {
+    const parentId = nearestPresentAncestorId(issue);
+    if (parentId) {
       childIds.add(issue.id);
-      const arr = childrenByIssueId.get(issue.parentId) ?? [];
+      const arr = childrenByIssueId.get(parentId) ?? [];
       arr.push(issue);
-      childrenByIssueId.set(issue.parentId, arr);
+      childrenByIssueId.set(parentId, arr);
     }
   }
 

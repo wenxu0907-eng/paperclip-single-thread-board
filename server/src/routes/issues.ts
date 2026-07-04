@@ -3139,10 +3139,16 @@ export function issueRoutes(
       if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
       else recoveryActionByIssue.delete(issue.id);
     }));
+    const includeAncestorIds =
+      req.query.includeAncestorIds === "true" || req.query.includeAncestorIds === "1";
+    const ancestorIdsByIssue = includeAncestorIds
+      ? await svc.getAncestorIdsForIssues(companyId, issueIds)
+      : null;
     res.json(result.map((issue) => ({
       ...issue,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
       activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+      ...(ancestorIdsByIssue ? { ancestorIds: ancestorIdsByIssue.get(issue.id) ?? [] } : {}),
     })));
   });
 
