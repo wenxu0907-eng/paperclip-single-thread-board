@@ -7575,6 +7575,31 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    // Agent runtimes post issue comments under local board/user auth (there is no
+    // agent identity on the HTTP request), but they tag the request with their
+    // heartbeat run via the `x-paperclip-run-id` header. When that run belongs to
+    // an agent in this company, attribute the comment to that agent at write time
+    // so it is stored as author_type=agent and renders as an agent bubble instead
+    // of a right-aligned "Board" bubble. The board UI never sends the header, so
+    // genuine board comments are unaffected; an explicit body `authorType` wins.
+    // This is the durable write-path fix; run-log derivation only recovered rows
+    // whose posting run happened to echo the id in a flushed log. (COM-57)
+    let runScopedCommentAgentId: string | null = null;
+    if (!actor.agentId && actor.runId && !req.body.authorType) {
+      const runRow = await db
+        .select({ agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, actor.runId))
+        .then((rows) => rows[0] ?? null);
+      if (runRow?.agentId && runRow.companyId === issue.companyId) {
+        runScopedCommentAgentId = runRow.agentId;
+      }
+    }
+    const commentAuthorTypeDefault: "agent" | "user" =
+      actor.actorType === "agent" || runScopedCommentAgentId ? "agent" : "user";
+    const commentActorAgentId = actor.agentId ?? runScopedCommentAgentId ?? undefined;
+    const commentActorUserId =
+      actor.actorType === "user" && !runScopedCommentAgentId ? actor.actorId : undefined;
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -7784,7 +7809,7 @@ export function issueRoutes(
 
       const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
       const commentOptions = {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: req.body.authorType ?? commentAuthorTypeDefault,
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust,
@@ -7796,8 +7821,8 @@ export function issueRoutes(
             id,
             req.body.body,
             {
-              agentId: actor.agentId ?? undefined,
-              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              agentId: commentActorAgentId,
+              userId: commentActorUserId,
               runId: actor.runId,
             },
             commentOptions,
@@ -7864,11 +7889,11 @@ export function issueRoutes(
       });
     } else {
       comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        agentId: commentActorAgentId,
+        userId: commentActorUserId,
         runId: actor.runId,
       }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: req.body.authorType ?? commentAuthorTypeDefault,
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
