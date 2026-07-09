@@ -42,7 +42,29 @@ To remember something durable, write a one-fact file under your harness memory d
 the documented frontmatter, then add a one-line pointer in \`MEMORY.md\` (the index loaded into
 context each session). Before saving, check for an existing file that already covers the fact and
 update it instead of duplicating; delete memories that turn out to be wrong. Save only what is
-non-obvious and not already recorded in the repo or task threads.`,
+non-obvious and not already recorded in the repo or task threads.
+
+## References
+
+These files are essential. Read them.
+
+- \`./HEARTBEAT.md\` -- how your harness memory works and what (if anything) to do at heartbeat.`,
+  "default-hb-memory": `# HEARTBEAT.md -- Memory (harness auto-memory)
+
+Your durable memory is managed by the Claude Code harness as **auto-memory** -- there is no para
+memory lifecycle to run on a heartbeat. Relevant past facts are injected into your context
+automatically each session (push, not pull). You do NOT use the \`para-memory-files\` skill, and you
+do NOT maintain \`items.yaml\`/\`summary.md\` or run weekly synthesis.
+
+## Before you exit
+
+- If you learned a durable, non-obvious fact this run (a decision, a constraint, how this
+  company/user works), write a one-fact file under your harness memory directory using the
+  documented frontmatter, then add a one-line pointer in \`MEMORY.md\` (the index loaded into
+  context each session).
+- Check for an existing file that already covers the fact and update it instead of duplicating;
+  delete memories that turn out to be wrong.
+- Do not record what the repo, task threads, or git history already capture.`,
   "ceo-memory": `## Memory and Planning
 
 Your memory is managed by the Claude Code harness as **auto-memory**: durable facts are
@@ -102,10 +124,10 @@ export async function loadDefaultAgentInstructionsBundle(
   opts: { adapterType?: string | null } = {},
 ): Promise<Record<string, string>> {
   const mode = resolveAgentMemoryMode(opts.adapterType);
-  // The default-role HEARTBEAT.md is purely the para memory lifecycle, so harness agents omit it.
-  const fileNames = DEFAULT_AGENT_BUNDLE_FILES[role].filter(
-    (fileName) => !(mode === "harness" && role === "default" && fileName === "HEARTBEAT.md"),
-  );
+  // Both roles keep HEARTBEAT.md in every mode. In harness mode its memory-lifecycle body is
+  // swapped for the harness variant (see HARNESS_MEMORY_BLOCKS "default-hb-memory"), so the
+  // bundle stays complete and self-consistent instead of dropping the file.
+  const fileNames = DEFAULT_AGENT_BUNDLE_FILES[role];
   const entries = await Promise.all(
     fileNames.map(async (fileName) => {
       const raw = await fs.readFile(resolveDefaultAgentBundleUrl(role, fileName), "utf8");
