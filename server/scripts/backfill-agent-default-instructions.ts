@@ -33,12 +33,20 @@ async function main() {
   const instructions = agentInstructionsService();
 
   const bundleCache = new Map<string, Record<string, string>>();
-  async function bundleFor(role: string): Promise<Record<string, string>> {
-    const key = resolveDefaultAgentInstructionsBundleRole(role);
-    let files = bundleCache.get(key);
+  // Bundle content depends on both the role AND the agent's memory mode (harness vs
+  // para), which is derived from adapterType. Claude-family agents get the harness
+  // auto-memory variant; every other adapter keeps the para lifecycle. Cache by
+  // (role, adapterType) so identical bundles are not reloaded.
+  async function bundleFor(
+    role: string,
+    adapterType: string | null | undefined,
+  ): Promise<Record<string, string>> {
+    const roleKey = resolveDefaultAgentInstructionsBundleRole(role);
+    const cacheKey = `${roleKey}::${adapterType ?? ""}`;
+    let files = bundleCache.get(cacheKey);
     if (!files) {
-      files = await loadDefaultAgentInstructionsBundle(key);
-      bundleCache.set(key, files);
+      files = await loadDefaultAgentInstructionsBundle(roleKey, { adapterType });
+      bundleCache.set(cacheKey, files);
     }
     return files;
   }
@@ -51,7 +59,7 @@ async function main() {
   let unchanged = 0;
 
   for (const agent of allAgents) {
-    const bundleFiles = await bundleFor(agent.role);
+    const bundleFiles = await bundleFor(agent.role, agent.adapterType);
 
     let bundle;
     try {
@@ -76,13 +84,31 @@ async function main() {
     const filesForAgent: string[] = [];
     for (const fileName of FILES_TO_REFRESH) {
       const desired = bundleFiles[fileName];
-      if (desired == null) continue;
 
-      // Skip if already identical.
       const current = await instructions
         .readFile(agent, fileName)
         .then((f) => f.content ?? "")
         .catch(() => null);
+
+      if (desired == null) {
+        // The current bundle intentionally omits this file (e.g. harness-mode agents
+        // drop the para-only default HEARTBEAT.md). Delete any stale copy left over
+        // from a previous mode so the agent's on-disk memory story stays consistent.
+        if (current != null) {
+          if (apply) {
+            await instructions.deleteFile(agent, fileName).catch((error) => {
+              console.warn(
+                `! ${agent.name} (${agent.id}): could not delete stale ${fileName} — ${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
+          }
+          filesForAgent.push(`-${fileName}`);
+          writtenFiles += 1;
+        }
+        continue;
+      }
+
+      // Skip if already identical.
       if (current === desired) {
         unchanged += 1;
         continue;
@@ -104,7 +130,7 @@ async function main() {
   }
 
   console.log(
-    `\n${apply ? "Applied" : "Dry run"}: ${updatedAgents} agents, ${writtenFiles} files ` +
+    `\n${apply ? "Applied" : "Dry run"}: ${updatedAgents} agents, ${writtenFiles} file writes/deletes ` +
       `(${unchanged} already current, ${skippedExternal} external skipped, ${skippedUnconfigured} unconfigured skipped)`,
   );
   if (!apply) console.log("Re-run with --apply to persist changes.");
