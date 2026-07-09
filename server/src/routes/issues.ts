@@ -926,9 +926,19 @@ function queueResolvedInteractionContinuationWakeup(input: {
     input.interaction.continuationPolicy !== "wake_assignee"
     && input.interaction.continuationPolicy !== "wake_assignee_on_accept"
   ) return;
+  // A confirmation-like decline (report card / plan) is feedback the assignee
+  // must act on, so ownership — not the raw policy — decides who resumes: the
+  // assignee guard below wakes the agent when the issue is still agent-assigned
+  // (COM-83) and leaves board handoffs with the board. Other kinds keep the
+  // accept-only contract: `wake_assignee_on_accept` only resumes on accept
+  // (e.g. rejected suggested tasks must not wake the proposer).
+  const isConfirmationLike =
+    input.interaction.kind === "request_confirmation"
+    || input.interaction.kind === "request_checkbox_confirmation";
   if (
     input.interaction.continuationPolicy === "wake_assignee_on_accept"
     && input.interaction.status !== "accepted"
+    && !isConfirmationLike
   ) return;
   if (input.interaction.status === "expired") return;
   if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;

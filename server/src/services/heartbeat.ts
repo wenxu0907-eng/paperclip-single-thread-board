@@ -2391,11 +2391,17 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
-function allowsIssueInteractionWake(
+export function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
+  // Interaction-resolution continuation wakes (a board accept/decline of a
+  // request_confirmation) carry an interactionId but no comment id. They are an
+  // explicit board decision the assignee must act on, so allow them to run in
+  // bounded interaction mode even when the issue is dependency-blocked instead
+  // of being silently skipped (COM-83: accepted report card never continued).
+  if (readNonEmptyString(contextSnapshot?.interactionId)) return true;
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 

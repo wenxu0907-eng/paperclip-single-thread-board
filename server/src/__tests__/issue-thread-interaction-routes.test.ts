@@ -810,7 +810,13 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("does not emit a continuation wake when a wake_assignee_on_accept confirmation is rejected", async () => {
+  it("does not emit a continuation wake when a wake_assignee_on_accept confirmation is declined after handoff to the board", async () => {
+    // Plan handoff: the issue is owned by the board while the confirmation is
+    // pending, so a decline leaves it with the board and does not wake an agent.
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    }));
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
       interaction: {
         id: "interaction-3",
@@ -845,6 +851,60 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes the requesting agent when a wake_assignee_on_accept report card is declined while still agent-assigned", async () => {
+    // Report card: the issue stays assigned to the requesting agent while the
+    // confirmation is pending, so a decline must wake that agent to act on the
+    // decline reason and continue (COM-83).
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      assigneeAgentId: CREATED_AGENT_ID,
+      assigneeUserId: null,
+    }));
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-3b",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3b",
+        payload: {
+          version: 1,
+          prompt: "Approve this report card?",
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Please revise section 2",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      continuationIssue: null,
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3b/reject")
+      .send({ reason: "Please revise section 2" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      CREATED_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          interactionId: "interaction-3b",
+          interactionStatus: "rejected",
+        }),
+      }),
+    );
   });
 
   it("wakes the requesting agent when a wake_assignee confirmation is declined", async () => {
