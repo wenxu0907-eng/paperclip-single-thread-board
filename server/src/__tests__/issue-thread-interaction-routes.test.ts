@@ -233,26 +233,29 @@ describe.sequential("issue thread interaction routes", () => {
       ],
     });
     mockInteractionService.rejectInteraction.mockResolvedValue({
-      id: "interaction-1",
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "suggest_tasks",
-      status: "rejected",
-      continuationPolicy: "wake_assignee",
-      idempotencyKey: null,
-      sourceCommentId: "comment-1",
-      sourceRunId: "run-1",
-      payload: {
-        version: 1,
-        tasks: [{ clientKey: "task-1", title: "One" }],
+      interaction: {
+        id: "interaction-1",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "suggest_tasks",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: "comment-1",
+        sourceRunId: "run-1",
+        payload: {
+          version: 1,
+          tasks: [{ clientKey: "task-1", title: "One" }],
+        },
+        result: {
+          version: 1,
+          rejectionReason: "Not actionable enough",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
       },
-      result: {
-        version: 1,
-        rejectionReason: "Not actionable enough",
-      },
-      createdAt: "2026-04-20T12:00:00.000Z",
-      updatedAt: "2026-04-20T12:05:00.000Z",
-      resolvedAt: "2026-04-20T12:05:00.000Z",
+      continuationIssue: null,
     });
     mockInteractionService.answerQuestions.mockResolvedValue({
       id: "interaction-2",
@@ -807,29 +810,32 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("does not emit a continuation wake when request confirmations are rejected", async () => {
+  it("does not emit a continuation wake when a wake_assignee_on_accept confirmation is rejected", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
-      id: "interaction-3",
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "request_confirmation",
-      status: "rejected",
-      continuationPolicy: "wake_assignee_on_accept",
-      idempotencyKey: null,
-      sourceCommentId: null,
-      sourceRunId: "run-3",
-      payload: {
-        version: 1,
-        prompt: "Apply this plan?",
+      interaction: {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3",
+        payload: {
+          version: 1,
+          prompt: "Apply this plan?",
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Needs changes",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
       },
-      result: {
-        version: 1,
-        outcome: "rejected",
-        reason: "Needs changes",
-      },
-      createdAt: "2026-04-20T12:00:00.000Z",
-      updatedAt: "2026-04-20T12:05:00.000Z",
-      resolvedAt: "2026-04-20T12:05:00.000Z",
+      continuationIssue: null,
     });
     const app = await createApp();
 
@@ -841,28 +847,83 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("wakes the requesting agent when a wake_assignee confirmation is declined", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-4",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-4",
+        payload: {
+          version: 1,
+          prompt: "Approve this report card?",
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Please revise section 2",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      continuationIssue: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: CREATED_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+      },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-4/reject")
+      .send({ reason: "Please revise section 2" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      CREATED_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          interactionId: "interaction-4",
+          interactionStatus: "rejected",
+        }),
+      }),
+    );
+  });
+
   it("does not emit an accept-only continuation wake for rejected suggested tasks", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
-      id: "interaction-5",
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "suggest_tasks",
-      status: "rejected",
-      continuationPolicy: "wake_assignee_on_accept",
-      idempotencyKey: null,
-      sourceCommentId: null,
-      sourceRunId: "run-5",
-      payload: {
-        version: 1,
-        tasks: [{ clientKey: "task-1", title: "One" }],
+      interaction: {
+        id: "interaction-5",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "suggest_tasks",
+        status: "rejected",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-5",
+        payload: {
+          version: 1,
+          tasks: [{ clientKey: "task-1", title: "One" }],
+        },
+        result: {
+          version: 1,
+          rejectionReason: "Not now",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
       },
-      result: {
-        version: 1,
-        rejectionReason: "Not now",
-      },
-      createdAt: "2026-04-20T12:00:00.000Z",
-      updatedAt: "2026-04-20T12:05:00.000Z",
-      resolvedAt: "2026-04-20T12:05:00.000Z",
+      continuationIssue: null,
     });
     const app = await createApp();
 
