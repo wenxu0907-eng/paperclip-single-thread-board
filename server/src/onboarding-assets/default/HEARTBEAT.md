@@ -1,3 +1,4 @@
+<!-- MEMORY:BEGIN id=default-hb-memory -->
 # HEARTBEAT.md -- Memory Lifecycle (every agent, every heartbeat)
 
 Run this on every heartbeat, alongside your task work. It keeps your file-based
@@ -34,3 +35,4 @@ relative to your current working directory.
 
 Memory work is not optional busywork -- it is how you stop relearning the same
 things every session. See the `para-memory-files` skill for full details.
+<!-- MEMORY:END id=default-hb-memory -->

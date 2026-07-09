@@ -114,6 +114,17 @@ async function main() {
         continue;
       }
 
+      // Never clobber a hand-authored entry file. AGENTS.md is where custom agent
+      // personas live (e.g. a product-specific CTO brief); if the current file does not
+      // share the default template's first line, treat it as custom and preserve it.
+      // Other managed files (HEARTBEAT.md) are still refreshed so the bundle stays complete.
+      const firstLine = (text: string) => (text.split("\n", 1)[0] ?? "").trim();
+      if (fileName === "AGENTS.md" && current != null && firstLine(current) !== firstLine(desired)) {
+        console.log(`preserving custom AGENTS.md for ${agent.name} [${agent.role}] (${agent.id})`);
+        filesForAgent.push(`~${fileName} (custom, preserved)`);
+        continue;
+      }
+
       if (apply) {
         await instructions.writeFile(agent, fileName, desired);
       }

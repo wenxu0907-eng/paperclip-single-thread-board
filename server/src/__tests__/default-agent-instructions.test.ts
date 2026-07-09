@@ -59,16 +59,23 @@ describe("adapter-aware memory mode", () => {
     expect(bundle["HEARTBEAT.md"]).toMatch(/para-memory-files/);
   });
 
-  it("Claude agents get harness auto-memory and no para/HEARTBEAT lifecycle (default role)", async () => {
+  it("Claude agents get harness auto-memory and a harness-variant HEARTBEAT.md (default role)", async () => {
     const bundle = await loadDefaultAgentInstructionsBundle("default", { adapterType: "claude_local" });
     // No para mandate anywhere (the harness text may still name the skill to say "do NOT use it").
     expect(bundle["AGENTS.md"]).not.toMatch(/MUST use the [`']?para-memory-files/);
     // Harness auto-memory is described instead.
     expect(bundle["AGENTS.md"]).toMatch(/auto-memory/i);
     expect(bundle["AGENTS.md"]).toMatch(/MEMORY\.md/);
-    // The pure-memory HEARTBEAT.md is dropped, and its reference removed from AGENTS.md.
-    expect(Object.keys(bundle)).not.toContain("HEARTBEAT.md");
-    expect(bundle["AGENTS.md"]).not.toMatch(/HEARTBEAT\.md/);
+    // HEARTBEAT.md is kept for a complete, consistent bundle — but with harness content,
+    // and AGENTS.md still references it.
+    expect(Object.keys(bundle)).toContain("HEARTBEAT.md");
+    expect(bundle["AGENTS.md"]).toMatch(/HEARTBEAT\.md/);
+    expect(bundle["HEARTBEAT.md"]).toMatch(/auto-memory/i);
+    // The para lifecycle is gone: no $AGENT_HOME paths, no qmd recall, and it explicitly
+    // tells the agent NOT to run the para skill.
+    expect(bundle["HEARTBEAT.md"]).not.toMatch(/\$AGENT_HOME/);
+    expect(bundle["HEARTBEAT.md"]).not.toMatch(/qmd/);
+    expect(bundle["HEARTBEAT.md"]).toMatch(/do NOT use the [`']?para-memory-files/);
   });
 
   it("Claude CEO keeps coordination HEARTBEAT but drops the para memory lifecycle", async () => {
