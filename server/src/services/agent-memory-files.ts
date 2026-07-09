@@ -27,7 +27,29 @@ import {
   throwIfDenied,
 } from "./workspace-file-resources.js";
 
-type AgentLike = { id: string; companyId: string; adapterType?: string | null };
+type AgentLike = {
+  id: string;
+  companyId: string;
+  adapterType?: string | null;
+  adapterConfig?: unknown;
+};
+
+/**
+ * The agent's configured runtime working dir, if it sets an absolute `adapterConfig.cwd`.
+ * Claude harness auto-memory is keyed by the process cwd, so an agent that runs in a custom
+ * project dir writes its memory under that dir's encoded path — not the default per-agent
+ * workspace. Returns null when no usable cwd is configured (fall back to the default workspace).
+ */
+function agentConfiguredCwd(agent: AgentLike): string | null {
+  const config = agent.adapterConfig;
+  if (config && typeof config === "object" && !Array.isArray(config)) {
+    const cwd = (config as Record<string, unknown>).cwd;
+    if (typeof cwd === "string" && cwd.trim() && path.isAbsolute(cwd.trim())) {
+      return path.resolve(cwd.trim());
+    }
+  }
+  return null;
+}
 
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_PARSED_FACTS = 2000;
@@ -192,8 +214,11 @@ export function agentMemoryFileService() {
   }
 
   function harnessRootDir(agent: AgentLike): string {
-    // Claude harness auto-memory lives under ~/.claude/projects/<encoded-ws>/memory.
-    return harnessMemoryDirForCwd(paraRootDir(agent));
+    // Claude harness auto-memory lives under ~/.claude/projects/<encode(cwd)>/memory,
+    // keyed by the process working dir. Honor a configured adapterConfig.cwd (custom
+    // project dir) so the Memories tab reads the same place the harness wrote to; only
+    // fall back to the default per-agent workspace when no cwd is configured.
+    return harnessMemoryDirForCwd(agentConfiguredCwd(agent) ?? paraRootDir(agent));
   }
 
   function resolveRoot(agent: AgentLike, source: AgentMemorySource): string {

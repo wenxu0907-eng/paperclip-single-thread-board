@@ -244,6 +244,32 @@ describe("agent memory file service", () => {
       ]);
     });
 
+    it("Claude agent with a custom adapterConfig.cwd reads harness memory from THAT cwd", async () => {
+      // Regression (COM-84): the harness keys auto-memory by the process cwd. An agent
+      // configured to run in a custom project dir writes memory under that dir's encoded
+      // path, NOT the default per-agent workspace. The Memories tab must read the same dir.
+      const customCwd = path.join(claudeConfigDir, "custom-project-workspace");
+      const encoded = customCwd.replace(/[^a-zA-Z0-9]/g, "-");
+      const customMemoryDir = path.join(claudeConfigDir, "projects", encoded, "memory");
+      await seedHarness(customMemoryDir);
+      // The default workspace harness dir is intentionally left empty.
+
+      const agentWithCwd = {
+        id: "agent-1",
+        companyId: "company-1",
+        adapterType: "claude_local",
+        adapterConfig: { cwd: customCwd },
+      };
+      const overview = await svc.getOverview(agentWithCwd);
+      expect(overview.memorySource).toBe("harness");
+      expect(overview.hasMemories).toBe(true);
+      expect(overview.tacit?.relativePath).toBe("MEMORY.md");
+      expect(overview.harnessFacts.map((f) => f.relativePath).sort()).toEqual([
+        "api-routes.md",
+        "company.md",
+      ]);
+    });
+
     it("Claude agent overview is empty when the harness root does not exist", async () => {
       const overview = await svc.getOverview(CLAUDE_AGENT);
       expect(overview.memorySource).toBe("harness");
