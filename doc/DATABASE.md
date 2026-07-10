@@ -171,6 +171,12 @@ Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `s
 
 The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
 
+Plugin operator configuration in `plugin_config` is scoped by company. Each row
+belongs to one `(plugin_id, company_id)` pair, while plugin lifecycle state
+remains instance-scoped in `plugins`. Secret references inside plugin config
+bind through `company_secret_bindings` with `target_type = 'plugin'`,
+`target_id = plugins.id`, and the JSON Schema config path.
+
 ## Backups
 
 Paperclip supports automatic and manual logical database backups. These dumps include

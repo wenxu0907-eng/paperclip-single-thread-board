@@ -48,6 +48,9 @@ export const queryKeys = {
     instructionsBundle: (id: string) => ["agents", "instructions-bundle", id] as const,
     instructionsFile: (id: string, relativePath: string) =>
       ["agents", "instructions-bundle", id, "file", relativePath] as const,
+    memories: (id: string) => ["agents", "memories", id] as const,
+    memoryFile: (id: string, relativePath: string, projectId?: string) =>
+      ["agents", "memories", id, "file", relativePath, projectId ?? null] as const,
     keys: (agentId: string) => ["agents", "keys", agentId] as const,
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (companyId: string, adapterType: string, environmentId?: string | null) =>
@@ -312,7 +315,8 @@ export const queryKeys = {
     detail: (pluginId: string) => ["plugins", pluginId] as const,
     health: (pluginId: string) => ["plugins", pluginId, "health"] as const,
     uiContributions: ["plugins", "ui-contributions"] as const,
-    config: (pluginId: string) => ["plugins", pluginId, "config"] as const,
+    config: (pluginId: string, companyId: string) =>
+      ["plugins", pluginId, "companies", companyId, "config"] as const,
     localFolders: (pluginId: string, companyId: string) =>
       ["plugins", pluginId, "companies", companyId, "local-folders"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,

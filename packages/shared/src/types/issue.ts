@@ -708,6 +708,13 @@ export interface Issue {
   goalId: string | null;
   parentId: string | null;
   ancestors?: IssueAncestor[];
+  /**
+   * Ordered list of ancestor issue ids, nearest parent first, up to the root.
+   * Populated by list endpoints on request (e.g. the inbox) so the client can
+   * nest an issue under its nearest loaded ancestor when intermediate ancestors
+   * are filtered out of the loaded set.
+   */
+  ancestorIds?: string[];
   title: string;
   description: string | null;
   status: IssueStatus;

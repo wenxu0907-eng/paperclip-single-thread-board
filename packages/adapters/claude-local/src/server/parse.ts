@@ -2,6 +2,7 @@ import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
+  asBoolean,
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -164,6 +165,23 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   if (subtype) parts.push(`subtype=${subtype}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
+}
+
+export function isClaudeReportedSuccessResult(
+  parsed: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!parsed) return false;
+
+  // The Claude CLI emits a terminal `result` event with `subtype:"success"` and
+  // `is_error:false` when the turn itself completed cleanly. This structured
+  // result is authoritative over the process exit signal: background tasks the
+  // CLI spawns (e.g. a `run_in_background` polling loop) can be torn down when the
+  // turn ends, leaving a non-zero exit code even though Claude finished
+  // successfully. Treat such a run as a success rather than an adapter failure.
+  // See COM-27.
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype !== "success") return false;
+  return asBoolean(parsed.is_error, false) === false;
 }
 
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {

@@ -52,6 +52,8 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  pluginConfig,
+  plugins,
   projects,
   projectWorkspaces,
   routineRevisions,
@@ -82,6 +84,7 @@ import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
+  buildEventResultSummary,
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
@@ -2010,6 +2013,33 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Plugin key of the bundled Discord notification plugin. Run-lifecycle deep
+ * links fall back to this plugin's configured `paperclipBaseUrl` when the
+ * platform has no public URL configured, so operators only manage a single base
+ * URL (the one in the Discord plugin settings) for notification links.
+ */
+const DISCORD_NOTIFICATION_PLUGIN_KEY = "paperclip-plugin-discord";
+
+/**
+ * Public base URL explicitly configured for the platform (env / config), if any.
+ * Returns undefined when nothing is set so callers can apply their own fallback.
+ */
+function readConfiguredPublicBaseUrl(): string | undefined {
+  const fromEnv =
+    readNonEmptyString(process.env.PAPERCLIP_PUBLIC_URL) ??
+    readNonEmptyString(process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL) ??
+    readNonEmptyString(process.env.BETTER_AUTH_URL) ??
+    readNonEmptyString(process.env.BETTER_AUTH_BASE_URL);
+  return fromEnv?.trim() || undefined;
+}
+
+/** Last-resort base URL: the server's own localhost origin. */
+function localPublicBaseUrl(): string {
+  const port = readNonEmptyString(process.env.PORT)?.trim() || "3100";
+  return `http://localhost:${port}`;
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -2651,11 +2681,17 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
-function allowsIssueInteractionWake(
+export function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
+  // Interaction-resolution continuation wakes (a board accept/decline of a
+  // request_confirmation) carry an interactionId but no comment id. They are an
+  // explicit board decision the assignee must act on, so allow them to run in
+  // bounded interaction mode even when the issue is dependency-blocked instead
+  // of being silently skipped (COM-83: accepted report card never continued).
+  if (readNonEmptyString(contextSnapshot?.interactionId)) return true;
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
@@ -4929,6 +4965,12 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /**
+   * Public/external base URL (e.g. `https://app.example.com`) used to build
+   * absolute deep links in run-lifecycle plugin event payloads. When unset or
+   * pointing at localhost, links are omitted.
+   */
+  publicBaseUrl?: string;
   runtimeEnv?: Record<string, string | undefined>;
 }
 
@@ -4953,6 +4995,40 @@ export function resolveHeartbeatSchedulingSuppression(
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const configuredPublicBaseUrl = options.publicBaseUrl ?? readConfiguredPublicBaseUrl();
+
+  /**
+   * Resolve the base URL for a company's run-lifecycle notification deep links.
+   * Precedence: explicitly configured platform URL → the Discord plugin's
+   * `paperclipBaseUrl` for that company → the server's localhost origin. This
+   * lets operators manage a single base URL in the Discord plugin settings.
+   */
+  async function resolveNotificationBaseUrl(companyId: string): Promise<string> {
+    if (configuredPublicBaseUrl) return configuredPublicBaseUrl;
+    try {
+      const plugin = await db
+        .select({ id: plugins.id })
+        .from(plugins)
+        .where(eq(plugins.pluginKey, DISCORD_NOTIFICATION_PLUGIN_KEY))
+        .then((rows) => rows[0] ?? null);
+      if (plugin) {
+        const cfg = await db
+          .select({ configJson: pluginConfig.configJson })
+          .from(pluginConfig)
+          .where(and(eq(pluginConfig.pluginId, plugin.id), eq(pluginConfig.companyId, companyId)))
+          .then((rows) => rows[0] ?? null);
+        const fromPlugin = readNonEmptyString(cfg?.configJson?.paperclipBaseUrl);
+        if (fromPlugin) return fromPlugin.trim();
+      }
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "failed to resolve notification base URL from Discord plugin config",
+      );
+    }
+    return localPublicBaseUrl();
+  }
+
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -6863,7 +6939,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
     }
 
     return updated;
@@ -6900,7 +6976,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -6913,7 +6989,83 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
-  function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
+  async function buildRunLifecyclePluginPayload(run: typeof heartbeatRuns.$inferSelect) {
+    const context = parseObject(run.contextSnapshot);
+    const result = parseObject(run.resultJson);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const [agent, issue] = await Promise.all([
+      db
+        .select({
+          id: agents.id,
+          name: agents.name,
+        })
+        .from(agents)
+        .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null),
+      issueId
+        ? db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            parentId: issues.parentId,
+            projectId: issues.projectId,
+            projectName: projects.name,
+          })
+          .from(issues)
+          .leftJoin(projects, eq(projects.id, issues.projectId))
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+
+    const resultSummaryFull =
+      readNonEmptyString(result.summary) ??
+      readNonEmptyString(result.result) ??
+      readNonEmptyString(result.message) ??
+      readNonEmptyString(run.nextAction);
+    const resultSummary = buildEventResultSummary(
+      resultSummaryFull,
+      issue?.identifier ?? null,
+      await resolveNotificationBaseUrl(run.companyId),
+    );
+    const durationMs = run.startedAt && run.finishedAt
+      ? Math.max(0, new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime())
+      : null;
+
+    return {
+      runId: run.id,
+      agentId: run.agentId,
+      agentName: agent?.name ?? null,
+      status: run.status,
+      invocationSource: run.invocationSource,
+      triggerDetail: run.triggerDetail,
+      error: run.error ?? null,
+      errorCode: run.errorCode ?? null,
+      issueId: issue?.id ?? issueId ?? null,
+      issueIdentifier: issue?.identifier ?? null,
+      issueTitle: issue?.title ?? null,
+      issueStatus: issue?.status ?? null,
+      issueParentId: issue?.parentId ?? null,
+      // True when this run is for a subtask (an issue with a parent). Lets
+      // notification consumers (e.g. the Discord plugin) filter to main tasks only.
+      isSubtask: Boolean(issue?.parentId),
+      projectId: issue?.projectId ?? readNonEmptyString(context.projectId),
+      projectName: issue?.projectName ?? null,
+      taskKey: readNonEmptyString(context.taskKey),
+      wakeReason: readNonEmptyString(context.wakeReason),
+      wakeSource: readNonEmptyString(context.wakeSource),
+      wakeTriggerDetail: readNonEmptyString(context.wakeTriggerDetail),
+      resultSummary,
+      resultSummaryFull,
+      durationMs,
+      startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+      finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+    };
+  }
+
+  async function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
     const eventType =
       run.status === "running"
         ? "agent.run.started"
@@ -6934,20 +7086,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       entityId: run.id,
       entityType: "heartbeat_run",
       companyId: run.companyId,
-      payload: {
-        runId: run.id,
-        agentId: run.agentId,
-        status: run.status,
-        invocationSource: run.invocationSource,
-        triggerDetail: run.triggerDetail,
-        error: run.error ?? null,
-        errorCode: run.errorCode ?? null,
-        issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
-          : null,
-        startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
-        finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
-      },
+      payload: await buildRunLifecyclePluginPayload(run),
     });
   }
 
@@ -9467,7 +9606,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
     });
-    publishRunLifecyclePluginEvent(claimed);
+    await publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 

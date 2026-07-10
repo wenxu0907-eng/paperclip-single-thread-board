@@ -39,11 +39,13 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - Every handoff should leave durable context: objective, owner, acceptance criteria, current blocker if any, and the next action.
 - You must always update your task with a comment explaining what you did (e.g., who you delegated to and why).
 
+<!-- MEMORY:BEGIN id=ceo-memory -->
 ## Memory and Planning
 
 You MUST use the `para-memory-files` skill for all memory operations: storing facts, writing daily notes, creating entities, running weekly synthesis, recalling past context, and managing plans. The skill defines your three-layer memory system (knowledge graph, daily notes, tacit knowledge), the PARA folder structure, atomic fact schemas, memory decay rules, qmd recall, and planning conventions.
 
 Invoke it whenever you need to remember, retrieve, or organize anything.
+<!-- MEMORY:END id=ceo-memory -->
 
 ## Safety Considerations
 

@@ -157,12 +157,15 @@ function relativePathFromReal(rootReal: string, targetReal: string) {
   return path.relative(rootReal, targetReal).split(path.sep).join(path.posix.sep);
 }
 
-function isInsideRoot(rootReal: string, targetReal: string) {
+// NOTE: isInsideRoot / normalizeWorkspaceRelativePath / denyReasonForPathSegments /
+// throwIfDenied / looksLikeText / readStableFile are shared path-hardening
+// primitives, reused by agent-memory-files.ts. Keep them candidate-agnostic.
+export function isInsideRoot(rootReal: string, targetReal: string) {
   const realRelative = path.relative(rootReal, targetReal);
   return realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative));
 }
 
-function normalizeWorkspaceRelativePath(input: string): NormalizedPath {
+export function normalizeWorkspaceRelativePath(input: string): NormalizedPath {
   const trimmed = input.trim();
   if (!trimmed) throw unprocessable("Workspace file path is required", { code: "invalid_path" });
   if (Buffer.byteLength(trimmed, "utf8") > MAX_RELATIVE_PATH_BYTES) {
@@ -187,7 +190,7 @@ function normalizeWorkspaceRelativePath(input: string): NormalizedPath {
   };
 }
 
-function denyReasonForPathSegments(segments: string[]): string | null {
+export function denyReasonForPathSegments(segments: string[]): string | null {
   const lowerSegments = segments.map((segment) => segment.toLowerCase());
   if (lowerSegments.some((segment) => DENIED_SEGMENTS.has(segment))) return "denied_path_segment";
 
@@ -204,7 +207,7 @@ function denyReasonForPathSegments(segments: string[]): string | null {
   return null;
 }
 
-function throwIfDenied(segments: string[]) {
+export function throwIfDenied(segments: string[]) {
   const denialReason = denyReasonForPathSegments(segments);
   if (denialReason) {
     throw new HttpError(403, "Workspace file path is denied by policy", { code: denialReason });
@@ -296,7 +299,7 @@ function listItemFromDirectory(input: {
   };
 }
 
-function looksLikeText(buffer: Buffer) {
+export function looksLikeText(buffer: Buffer) {
   if (buffer.length === 0) return true;
   let controlBytes = 0;
   for (const byte of buffer) {
@@ -515,7 +518,7 @@ async function statLocalDirectory(candidate: WorkspaceCandidate, normalized: Nor
   };
 }
 
-async function readStableFile(realPath: string, maxBytes: number) {
+export async function readStableFile(realPath: string, maxBytes: number) {
   const handle = await fs.open(realPath, "r");
   try {
     const before = await handle.stat();

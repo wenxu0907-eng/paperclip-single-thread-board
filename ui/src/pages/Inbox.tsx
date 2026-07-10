@@ -837,6 +837,7 @@ export function Inbox() {
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         includeRoutineExecutions: true,
+        includeAncestorIds: true,
         includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }).then((rows) => rows as Issue[]),
@@ -857,6 +858,7 @@ export function Inbox() {
         inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
+        includeAncestorIds: true,
         includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }).then((rows) => rows as Issue[]),
@@ -883,6 +885,7 @@ export function Inbox() {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
+        includeAncestorIds: true,
         includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }).then((rows) => rows as Issue[]),

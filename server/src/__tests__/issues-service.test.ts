@@ -99,6 +99,49 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     });
   });
 
+  it.each([
+    ["title-case API echo", (id: string) => `tool_result stdout: Comment ID: ${id}\n`],
+    ["custom print line", (id: string) => `{"text":"comment: ${id}"}\n`],
+    ["bare JSON id field", (id: string) => `{"id":"${id}","body":"..."}\n`],
+  ])("recovers agent attribution when the run log echoes the comment id as %s (COM-57)", (_label, render) => {
+    // Real-world regression (LUC-62 + COM-57): agents post issue comments under
+    // user auth, so the row lands as user/local-board. The only link back to the
+    // authoring run is that the run's tool output captured the new comment's id —
+    // but different tools print it differently. Matching the bare UUID recovers
+    // all of them; the run window + issue scope keep board comments safe.
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId,
+          agentId,
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: render(commentId),
+        },
+      ],
+    );
+
+    expect(derived.get(commentId)).toEqual({
+      derivedAuthorAgentId: agentId,
+      derivedCreatedByRunId: runId,
+      derivedAuthorSource: "run_log_comment_post",
+    });
+  });
+
   it("resolves directly from the comment's own run id without reading logs", () => {
     const commentId = randomUUID();
     const runId = randomUUID();
@@ -6062,6 +6105,188 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     });
   });
 
+});
+
+describeEmbeddedPostgres("issueService.update parent done guard", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-parent-done-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedParentWithChildren(childStatuses: string[]) {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const childIds = childStatuses.map(() => randomUUID());
+    const identifierPrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: identifierPrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent",
+        identifier: `${identifierPrefix}-1`,
+        status: "in_progress",
+        priority: "medium",
+      },
+      ...childStatuses.map((status, index) => ({
+        id: childIds[index],
+        companyId,
+        parentId,
+        title: `Child ${index + 1}`,
+        identifier: `${identifierPrefix}-${index + 2}`,
+        status,
+        priority: "medium" as const,
+      })),
+    ]);
+
+    return { companyId, parentId, childIds };
+  }
+
+  it("rejects marking a parent done while a subtask is unfinished", async () => {
+    const { parentId, childIds } = await seedParentWithChildren(["in_progress", "done"]);
+
+    await expect(svc.update(parentId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        unfinishedChildIssueIds: [childIds[0]],
+      }),
+    });
+
+    const [parent] = await db.select().from(issues).where(eq(issues.id, parentId));
+    expect(parent.status).toBe("in_progress");
+    expect(parent.completedAt).toBeNull();
+  });
+
+  it("allows marking a parent done once every subtask is terminal", async () => {
+    const { parentId } = await seedParentWithChildren(["done", "cancelled"]);
+
+    const updated = await svc.update(parentId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(updated?.completedAt).not.toBeNull();
+  });
+
+  it("allows marking a childless issue done", async () => {
+    const { parentId } = await seedParentWithChildren([]);
+
+    const updated = await svc.update(parentId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+});
+
+describeEmbeddedPostgres("issueService.addComment agent attribution (COM-57)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-addcomment-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Answering Agent",
+      role: "engineer",
+      status: "active",
+      reportsTo: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issue = await svc.create(companyId, {
+      title: "Question for the agent",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+    return { companyId, agentId, issueId: issue.id, runId };
+  }
+
+  it("stores authorAgentId derived from the run when the caller omits agentId", async () => {
+    const { agentId, issueId, runId } = await seed();
+
+    // An agent's answer posted with only a run context (no explicit agentId)
+    // must still be attributed to the agent at the source, not persisted as an
+    // author-less row that the UI renders as a "Board" bubble.
+    const comment = await svc.addComment(issueId, "Here is my answer.", { runId });
+
+    expect(comment.authorAgentId).toBe(agentId);
+    expect(comment.authorType).toBe("agent");
+
+    const [stored] = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id));
+    expect(stored.authorAgentId).toBe(agentId);
+    expect(stored.authorType).toBe("agent");
+  });
+
+  it("keeps an explicit agentId over the run-derived one", async () => {
+    const { agentId, issueId, runId } = await seed();
+
+    const comment = await svc.addComment(issueId, "Explicit author.", {
+      agentId,
+      runId,
+    });
+
+    expect(comment.authorAgentId).toBe(agentId);
+    expect(comment.authorType).toBe("agent");
+  });
 });
 
 describeEmbeddedPostgres("issueService.getSubtreeDigest", () => {

@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  findFirstUnreadCommentAnchorId,
   isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
@@ -459,6 +460,89 @@ describe("buildIssueChatMessages", () => {
           runAgentId: "agent-1",
         },
       },
+    });
+  });
+
+  it("renders an author-less agent comment as an assistant bubble (COM-57)", () => {
+    // Regression: an agent's answer comment persisted with authorType "agent" but
+    // NONE of authorAgentId/runAgentId/derivedAuthorAgentId set must not fall
+    // through to the right-aligned blue "Board" (user) bubble.
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorType: "agent",
+          authorAgentId: null,
+          authorUserId: null,
+          runId: null,
+          runAgentId: null,
+          derivedAuthorAgentId: null,
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map(),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: { custom: { authorType: "agent" } },
+    });
+  });
+
+  it("renders a comment with only a run context as an assistant bubble (COM-57)", () => {
+    // Comments are only created inside a run by agents; a lingering run context
+    // (createdByRunId) with no agent id must still render as an agent bubble.
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: null,
+          runAgentId: null,
+          derivedAuthorAgentId: null,
+          runId: "run-9",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map(),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: { custom: { authorType: "agent" } },
+    });
+  });
+
+  it("renders a user-stamped comment carrying createdByRunId as an assistant bubble (COM-57)", () => {
+    // Real-world regression (LUC-62): an agent answer was persisted with
+    // authorType "user"/local-board and NO runId/derived ids, but it still
+    // recorded the originating run in `createdByRunId`. Only agents own runs, so
+    // that field alone must route the row to an agent bubble, not "Board".
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "local-board",
+          runId: null,
+          runAgentId: null,
+          derivedAuthorAgentId: null,
+          derivedCreatedByRunId: null,
+          createdByRunId: "run-luc62",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map(),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      metadata: { custom: { authorType: "agent" } },
     });
   });
 
@@ -1178,5 +1262,78 @@ describe("stabilizeThreadMessages", () => {
     );
 
     expect(secondStable.messages).toBe(firstStable.messages);
+  });
+});
+
+describe("findFirstUnreadCommentAnchorId (COM-7 / 2b)", () => {
+  const me = "user-1";
+  const other = "user-2";
+  const lastTouch = new Date("2026-04-06T12:00:00.000Z");
+
+  function buildMessages(comments: IssueChatComment[]) {
+    return buildIssueChatMessages({
+      comments,
+      interactions: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: me,
+    });
+  }
+
+  it("returns the first comment created after the marker by another author", () => {
+    const messages = buildMessages([
+      createComment({ id: "old", createdAt: new Date("2026-04-06T11:00:00.000Z") }),
+      createComment({
+        id: "new-1",
+        authorUserId: other,
+        createdAt: new Date("2026-04-06T13:00:00.000Z"),
+      }),
+      createComment({
+        id: "new-2",
+        authorUserId: other,
+        createdAt: new Date("2026-04-06T14:00:00.000Z"),
+      }),
+    ]);
+    expect(findFirstUnreadCommentAnchorId(messages, lastTouch, me)).toBe("comment-new-1");
+  });
+
+  it("ignores the viewer's own comments when picking the first unread", () => {
+    const messages = buildMessages([
+      createComment({ id: "old", createdAt: new Date("2026-04-06T11:00:00.000Z") }),
+      createComment({
+        id: "mine",
+        authorUserId: me,
+        createdAt: new Date("2026-04-06T13:00:00.000Z"),
+      }),
+      createComment({
+        id: "theirs",
+        authorUserId: other,
+        createdAt: new Date("2026-04-06T13:30:00.000Z"),
+      }),
+    ]);
+    expect(findFirstUnreadCommentAnchorId(messages, lastTouch, me)).toBe("comment-theirs");
+  });
+
+  it("returns null on a first/never-touched visit (no marker)", () => {
+    const messages = buildMessages([
+      createComment({
+        id: "new-1",
+        authorUserId: other,
+        createdAt: new Date("2026-04-06T13:00:00.000Z"),
+      }),
+    ]);
+    expect(findFirstUnreadCommentAnchorId(messages, null, me)).toBeNull();
+  });
+
+  it("returns null when nothing is newer than the marker", () => {
+    const messages = buildMessages([
+      createComment({
+        id: "old",
+        authorUserId: other,
+        createdAt: new Date("2026-04-06T11:00:00.000Z"),
+      }),
+    ]);
+    expect(findFirstUnreadCommentAnchorId(messages, lastTouch, me)).toBeNull();
   });
 });

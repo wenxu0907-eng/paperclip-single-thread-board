@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
+  buildEventResultSummary,
+  HEARTBEAT_RUN_EVENT_SUMMARY_MAX_CHARS,
+  isLinkableBaseUrl,
   mergeHeartbeatRunResultJson,
 } from "../services/heartbeat-run-summary.js";
 
@@ -94,5 +97,56 @@ describe("mergeHeartbeatRunResultJson", () => {
       summary: "adapter result",
       stdout: "raw stdout",
     });
+  });
+});
+
+describe("isLinkableBaseUrl", () => {
+  it("accepts absolute http(s) URLs, including localhost", () => {
+    expect(isLinkableBaseUrl("https://app.example.com")).toBe(true);
+    expect(isLinkableBaseUrl("http://paperclip.internal")).toBe(true);
+    expect(isLinkableBaseUrl("http://localhost:3100")).toBe(true);
+    expect(isLinkableBaseUrl("http://127.0.0.1:3100")).toBe(true);
+  });
+
+  it("rejects missing, non-http, and malformed URLs", () => {
+    expect(isLinkableBaseUrl(undefined)).toBe(false);
+    expect(isLinkableBaseUrl("")).toBe(false);
+    expect(isLinkableBaseUrl("ftp://example.com")).toBe(false);
+    expect(isLinkableBaseUrl("not a url")).toBe(false);
+  });
+});
+
+describe("buildEventResultSummary", () => {
+  it("returns null when there is no summary", () => {
+    expect(buildEventResultSummary(null, "PAP-35", "https://app.example.com")).toBeNull();
+  });
+
+  it("leaves a short summary unchanged", () => {
+    const short = "All done.";
+    expect(buildEventResultSummary(short, "PAP-35", "https://app.example.com")).toBe(short);
+  });
+
+  it("appends a view-full-summary link for long summaries within the budget", () => {
+    const long = "x".repeat(2000);
+    const result = buildEventResultSummary(long, "PAP-35", "https://app.example.com");
+    expect(result).not.toBeNull();
+    expect(result!.length).toBeLessThanOrEqual(HEARTBEAT_RUN_EVENT_SUMMARY_MAX_CHARS);
+    // The entire markdown link must survive the consumer's leading slice.
+    expect(result).toContain("[View full summary](https://app.example.com/PAP/issues/PAP-35)");
+    expect(result!.startsWith("x")).toBe(true);
+  });
+
+  it("links to a localhost base URL too", () => {
+    const long = "x".repeat(2000);
+    const result = buildEventResultSummary(long, "PAP-35", "http://localhost:3100");
+    expect(result).toContain("[View full summary](http://localhost:3100/PAP/issues/PAP-35)");
+    expect(result!.length).toBeLessThanOrEqual(HEARTBEAT_RUN_EVENT_SUMMARY_MAX_CHARS);
+  });
+
+  it("returns the full text (no link) when no usable base URL or identifier", () => {
+    const long = "x".repeat(2000);
+    expect(buildEventResultSummary(long, null, "https://app.example.com")).toBe(long);
+    expect(buildEventResultSummary(long, "PAP-35", undefined)).toBe(long);
+    expect(buildEventResultSummary(long, "PAP-35", "ftp://example.com")).toBe(long);
   });
 });

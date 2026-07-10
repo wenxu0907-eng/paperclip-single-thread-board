@@ -149,6 +149,44 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/already exists/i);
   });
 
+  it("replaces top-level plugin secret bindings when syncing refs for a target", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const firstSecret = await svc.create(companyId, {
+      name: `plugin-first-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "one",
+    });
+    const secondSecret = await svc.create(companyId, {
+      name: `plugin-second-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "two",
+    });
+    const target = { targetType: "plugin" as const, targetId: randomUUID() };
+
+    await svc.syncSecretRefsForTarget(companyId, target, [{
+      secretId: firstSecret.id,
+      configPath: "discordBotTokenRef",
+    }]);
+    await svc.syncSecretRefsForTarget(companyId, target, [{
+      secretId: secondSecret.id,
+      configPath: "discordBotTokenRef",
+    }]);
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, target.targetId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      companyId,
+      secretId: secondSecret.id,
+      targetType: "plugin",
+      targetId: target.targetId,
+      configPath: "discordBotTokenRef",
+    });
+  });
+
   it("syncs top-level secret refs idempotently", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

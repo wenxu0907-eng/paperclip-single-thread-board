@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
@@ -129,6 +130,9 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
+let tempRoot: string | null = null;
+let sharedCodexHome: string | null = null;
+
 async function createApp() {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
@@ -198,6 +202,13 @@ async function unregisterTestAdapter(type: string) {
 
 describe("agent routes adapter validation", () => {
   beforeEach(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-routes-"));
+    sharedCodexHome = path.join(tempRoot, "host-codex-home");
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), "{}");
+    vi.stubEnv("PAPERCLIP_HOME", tempRoot);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "agent-routes-test");
+    vi.stubEnv("CODEX_HOME", sharedCodexHome);
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -280,6 +291,12 @@ describe("agent routes adapter validation", () => {
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
+    vi.unstubAllEnvs();
+    if (tempRoot) {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+      tempRoot = null;
+      sharedCodexHome = null;
+    }
   });
 
   it("creates agents for dynamically registered external adapter types", async () => {
@@ -316,8 +333,12 @@ describe("agent routes adapter validation", () => {
     const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
     const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
+    expect(adapterConfig.model).toBe("gpt-5.5");
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.CODEX_HOME).toBeUndefined();
+    const authPath = path.join(String(env.CODEX_HOME), "auth.json");
+    await expect(fs.lstat(authPath).then((stat) => stat.isSymbolicLink())).resolves.toBe(true);
+    await expect(fs.readlink(authPath)).resolves.toBe(path.join(sharedCodexHome!, "auth.json"));
   });
 
   it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
@@ -357,8 +378,12 @@ describe("agent routes adapter validation", () => {
     const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = patch.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
+    expect(adapterConfig.model).toBe("gpt-5.4");
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+    const authPath = path.join(String(env.CODEX_HOME), "auth.json");
+    await expect(fs.lstat(authPath).then((stat) => stat.isSymbolicLink())).resolves.toBe(true);
+    await expect(fs.readlink(authPath)).resolves.toBe(path.join(sharedCodexHome!, "auth.json"));
   });
 
   it("allows codex_local agents to share the host Codex home", async () => {

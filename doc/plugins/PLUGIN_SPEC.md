@@ -1215,14 +1215,14 @@ The `@paperclipai/plugin-sdk/ui` subpath should also export an `ErrorBoundary` c
 
 ## 19.8 Plugin Settings UI
 
-Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated settings form at `/settings/plugins/:pluginId`. The host renders the form from the JSON Schema.
+Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated settings form under the host plugin settings page. The stored config is company-scoped: the UI reads and writes `/api/plugins/:pluginId/companies/:companyId/config`, and workers should read it with `ctx.config.get({ companyId })`.
 
 The auto-generated form supports:
 
 - text inputs, number inputs, toggles, select dropdowns derived from schema types and enums
 - nested objects rendered as fieldsets
 - arrays rendered as repeatable field groups with add/remove controls
-- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that resolves through the Paperclip secret provider system rather than a plain text input
+- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker for the selected company and persists only the secret UUID
 - validation messages derived from schema constraints (`required`, `minLength`, `pattern`, `minimum`, etc.)
 - a "Test Connection" action if the plugin declares a `validateConfig` RPC method — the host calls it and displays the result inline
 
@@ -1231,6 +1231,12 @@ For plugins that need richer settings UX beyond what JSON Schema can express, th
 Both approaches coexist: a plugin can use the auto-generated form for simple config and add a custom settings page slot for advanced configuration or operational dashboards.
 
 For plugins that need a company-scoped settings surface, declare a `companySettingsPage` slot with a `routePath`. The host renders a sidebar item under Company Settings and mounts the component at `/:companyPrefix/company/settings/:routePath`. The page receives `companyId` and `companyPrefix` in its host context. Core settings routes such as `access`, `invites`, `environments`, and `secrets` are reserved and cannot be shadowed by plugin declarations.
+
+Workers resolving config-backed secrets must pass company scope to the SDK:
+`ctx.secrets.resolve(secretRef, { companyId, configPath })`. The host rejects
+secret resolution without company scope, rejects secrets from other companies,
+and requires a matching `company_secret_bindings` row for the plugin/config
+path before returning plaintext.
 
 ## 20. Local Tooling
 

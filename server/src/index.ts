@@ -834,7 +834,14 @@ export async function startServer(): Promise<StartedServer> {
   };
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    // Pass the configured public base URL through for run-lifecycle deep links.
+    // When unset, heartbeatService resolves a fallback itself (env → localhost),
+    // so all of its construction sites — including API routes and the plugin
+    // host that finalize on-demand/retry runs — produce working links.
+    const heartbeat = heartbeatService(db as any, {
+      pluginWorkerManager,
+      publicBaseUrl: config.authPublicBaseUrl,
+    });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });

@@ -14,6 +14,14 @@ description: >
 
 Persistent, file-based memory organized by Tiago Forte's PARA method. Three layers: a knowledge graph, daily notes, and tacit knowledge. All paths are relative to `$AGENT_HOME`.
 
+## Critical: always anchor to `$AGENT_HOME`
+
+Every memory path is **absolute under `$AGENT_HOME`** -- never relative to the current working directory.
+
+- Always write the full path, e.g. `"$AGENT_HOME/memory/$(date +%F).md"`, not `memory/...`. Your cwd during a run is usually a project/issue workspace, **not** your home -- a bare `memory/` path silently lands in the wrong place and your memory will not be found later.
+- Confirm the anchor before writing: `echo "$AGENT_HOME"`. If it is empty or unset, **stop and report it** -- do not guess a path or fall back to cwd.
+- Never create a second `memory/`, `life/`, or `MEMORY.md` anywhere outside `$AGENT_HOME`.
+
 ## Three Memory Layers
 
 ### Layer 1: Knowledge Graph (`$AGENT_HOME/life/` -- PARA)
@@ -48,7 +56,7 @@ $AGENT_HOME/life/
 **Fact rules:**
 
 - Save durable facts immediately to `items.yaml`.
-- Weekly: rewrite `summary.md` from active facts.
+- Weekly synthesis (no scheduler -- you trigger it): on the first run of a new ISO week (detect from the latest `$AGENT_HOME/memory/*.md` filenames), rewrite each active entity's `summary.md` from `items.yaml` by recency tier (hot/warm/cold) and bump access metadata. See [references/schemas.md](references/schemas.md) for the decay tiers.
 - Never delete facts. Supersede instead (`status: superseded`, add `superseded_by`).
 - When an entity goes inactive, move its folder to `$AGENT_HOME/life/archives/`.
 
@@ -66,7 +74,8 @@ For the atomic fact YAML schema and memory decay rules, see [references/schemas.
 Raw timeline of events -- the "when" layer.
 
 - Write continuously during conversations.
-- Extract durable facts to Layer 1 during heartbeats.
+- **Extraction is not optional.** Before you end any run in which you wrote daily notes or learned a durable fact, distill those notes into Layer 1: append atomic facts to the relevant `$AGENT_HOME/life/<entity>/items.yaml` and update its `summary.md`. Daily notes alone are not memory -- a timeline that never gets distilled means nothing accumulates.
+- Update `$AGENT_HOME/MEMORY.md` (Layer 3) whenever you learn a new operating pattern.
 
 ### Layer 3: Tacit Knowledge (`$AGENT_HOME/MEMORY.md`)
 
@@ -87,17 +96,22 @@ Memory does not survive session restarts. Files do.
 
 ## Memory Recall -- Use qmd
 
-Use `qmd` rather than grepping files:
+Prefer `qmd` (hybrid BM25 + vector + reranking) over grepping -- it finds things even when the wording differs.
+
+Index your personal folder once (and after large additions), then search:
 
 ```bash
-qmd query "what happened at Christmas"   # Semantic search with reranking
+qmd collection add "$AGENT_HOME"          # register your home as a collection
+qmd update                                # (re)index; first run downloads models (~2GB, cached)
+qmd query  "what happened at Christmas"   # hybrid search with query expansion + reranking
 qmd search "specific phrase"              # BM25 keyword search
-qmd vsearch "conceptual question"         # Pure vector similarity
+qmd vsearch "conceptual question"         # pure vector similarity
 ```
 
-Index your personal folder: `qmd index $AGENT_HOME`
+`qmd` needs Node >= 22; run `qmd doctor` if results look wrong. The first `update` downloads embedding/reranker models to `~/.cache/qmd/models/`.
 
-Vectors + BM25 + reranking finds things even when the wording differs.
+**Fallback if `qmd` is unavailable** (`command -v qmd` is empty): use ripgrep over your home --
+`rg -i "<term>" "$AGENT_HOME"` (keyword-only, no semantic match, but always works).
 
 ## Planning
 

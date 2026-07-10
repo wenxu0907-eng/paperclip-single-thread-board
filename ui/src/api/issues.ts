@@ -60,6 +60,7 @@ export type IssueListFilters = {
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
+  includeAncestorIds?: boolean;
   hasPlanDocument?: boolean;
   q?: string;
   limit?: number;
@@ -91,6 +92,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
   if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
   if (filters?.includeLiveDescendantSummary) params.set("includeLiveDescendantSummary", "true");
+  if (filters?.includeAncestorIds) params.set("includeAncestorIds", "true");
   if (filters?.hasPlanDocument !== undefined) {
     params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
   }

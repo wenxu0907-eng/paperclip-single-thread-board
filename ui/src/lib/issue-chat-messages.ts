@@ -113,6 +113,52 @@ function fingerprintThreadMessage(message: ThreadMessage) {
   return JSON.stringify(message);
 }
 
+/**
+ * Anchor id of the first comment that is "new since the viewer's last visit"
+ * (COM-7 / 2b). Used to render a Slack-style "New" divider and to land the
+ * thread on the first unread content instead of the top of an old thread.
+ *
+ * "First unread" mirrors `buildInboxThreadSummary`'s notion of a new reply:
+ * the earliest message (in thread order) that is a real comment/system notice,
+ * not deleted, created strictly after `myLastTouchAt`, and not authored by the
+ * current user. A null/undefined marker means a first/never-touched visit, in
+ * which case nothing is "old to you" and we return null (no divider).
+ */
+export function findFirstUnreadCommentAnchorId(
+  messages: readonly ThreadMessage[],
+  myLastTouchAt: Date | string | null | undefined,
+  currentUserId: string | null | undefined,
+): string | null {
+  if (myLastTouchAt === null || myLastTouchAt === undefined) return null;
+  const lastTouch = toTimestamp(myLastTouchAt);
+  for (const message of messages) {
+    const custom = message.metadata?.custom as
+      | {
+          kind?: unknown;
+          anchorId?: unknown;
+          authorType?: unknown;
+          authorUserId?: unknown;
+          deletedAt?: unknown;
+        }
+      | undefined;
+    if (!custom) continue;
+    if (custom.kind !== "comment" && custom.kind !== "system_notice") continue;
+    if (custom.deletedAt) continue;
+    const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : null;
+    if (!anchorId) continue;
+    if (toTimestamp(message.createdAt) <= lastTouch) continue;
+    if (
+      custom.authorType === "user"
+      && currentUserId
+      && custom.authorUserId === currentUserId
+    ) {
+      continue;
+    }
+    return anchorId;
+  }
+  return null;
+}
+
 export function stabilizeThreadMessages(
   messages: readonly ThreadMessage[],
   previousMessages: readonly ThreadMessage[],
@@ -352,7 +398,36 @@ function effectiveCommentRunAgentId(comment: IssueChatComment) {
 }
 
 function effectiveCommentAuthorType(comment: IssueChatComment) {
-  return effectiveCommentAuthorAgentId(comment) ? "agent" : comment.authorType;
+  if (effectiveCommentAuthorAgentId(comment)) return "agent";
+  // A comment can be authored by an agent yet reach the UI with none of the
+  // agent ids populated (historically-written rows). Treat an explicit
+  // `authorType === "agent"` or the presence of a run context (only agents post
+  // comments inside a run) as agent authorship so it is not mis-attributed to
+  // the board. (COM-57)
+  if (isAgentAuthoredComment(comment)) return "agent";
+  return comment.authorType;
+}
+
+/**
+ * Whether a comment should be rendered as an agent (assistant) message even when
+ * `authorAgentId`/`runAgentId`/`derivedAuthorAgentId` are all null. This hardens
+ * the read path against author-less agent rows: an `authorType === "agent"`
+ * comment, or any comment carrying a run context (comments are only created
+ * inside a run by agents), is agent-authored. Without this such rows fall
+ * through to the right-aligned blue "Board" bubble. (COM-57)
+ */
+function isAgentAuthoredComment(comment: IssueChatComment) {
+  if (effectiveCommentAuthorAgentId(comment)) return true;
+  if (comment.authorType === "agent") return true;
+  if (effectiveCommentRunId(comment)) return true;
+  // A row persisted with `createdByRunId` was created inside a heartbeat run —
+  // and only agents own runs (a board/user POST never carries a run context).
+  // Historical rows exist where an agent's answer was stamped `authorType:"user"`
+  // (e.g. posted through a user-scoped key) while still recording the run id in
+  // `createdByRunId`; without reading it here they fall through to the blue
+  // "Board" bubble even though the run id proves agent authorship. (COM-57)
+  if (comment.createdByRunId) return true;
+  return false;
 }
 
 function authorNameForComment(
@@ -430,7 +505,7 @@ function createCommentMessage(args: {
     return message;
   }
 
-  if (authorAgentId) {
+  if (authorAgentId || isAgentAuthoredComment(comment)) {
     const message: ThreadAssistantMessage = {
       id: comment.id,
       role: "assistant",

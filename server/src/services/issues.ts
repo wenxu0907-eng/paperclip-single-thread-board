@@ -443,10 +443,22 @@ export function deriveIssueCommentRunLogAttribution(
       overlappingRuns.push({ run, runEndMs });
     }
 
-    // Tier 2: an overlapping run log explicitly recorded posting this comment.
+    // Tier 2: an overlapping run log captured the id of this comment.
+    // Match on the bare comment UUID appearing anywhere in the run log.
+    // Agents post issue comments under user auth (local-CLI), so the row lands
+    // as author_type=user/local-board with no agent id — the ONLY durable link
+    // back to the authoring run is that the run's tool output captured the id
+    // of the comment it just created. Different agents/tools print that id
+    // differently ("comment id: <id>", the API's "Comment ID: <id>", a bare
+    // JSON `"id":"<id>"`, a custom "comment: <id>" line…), so an exact-phrase
+    // match silently missed most of them and the comment rendered as a
+    // right-aligned "Board" bubble. A comment id is a globally-unique UUID and
+    // this only runs for comments created *within this run's active window* on
+    // *this same issue*, so a genuine board comment — created before its own
+    // triggered run and never echoed by an unrelated run — cannot match. (COM-57)
     let bestLogMatch: { runId: string; agentId: string; distanceMs: number } | null = null;
     for (const { run, runEndMs } of overlappingRuns) {
-      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
+      if (!run.logContent.includes(comment.id)) continue;
       const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
       if (!bestLogMatch || distanceMs < bestLogMatch.distanceMs) {
         bestLogMatch = { runId: run.runId, agentId: run.agentId, distanceMs };
@@ -6402,6 +6414,26 @@ export function issueService(db: Db) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
         }
       }
+      if (patch.status === "done" && existing.status !== "done") {
+        const unfinishedChildren = await dbOrTx
+          .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, existing.companyId),
+              eq(issues.parentId, id),
+              notInArray(issues.status, ["done", "cancelled"]),
+            ),
+          );
+        if (unfinishedChildren.length > 0) {
+          throw unprocessable("Cannot mark issue done while subtasks are unfinished", {
+            unfinishedChildIssueIds: unfinishedChildren.map((child: { id: string }) => child.id),
+            unfinishedChildIssueIdentifiers: unfinishedChildren.map(
+              (child: { identifier: string }) => child.identifier,
+            ),
+          });
+        }
+      }
       const shouldValidateNextAssignee =
         Boolean(nextAssigneeAgentId) &&
         (issueData.assigneeAgentId !== undefined || patch.status === "in_progress");
@@ -7319,10 +7351,27 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      // Resolve the authoring agent from the run context when the caller supplies
+      // a runId but omits an explicit agentId/authorType. Agent answers posted
+      // with only a run context would otherwise persist as author-less rows that
+      // the UI mis-attributes to the board ("Board" bubble). Store the agent id at
+      // the source so new rows attribute correctly. (COM-57)
+      let resolvedAuthorAgentId = actor.agentId ?? null;
+      if (!resolvedAuthorAgentId && !options?.authorType && actor.runId) {
+        const run = await dbOrTx
+          .select({ agentId: heartbeatRuns.agentId })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, actor.runId))
+          .then((rows: Array<{ agentId: string | null }>) => rows[0] ?? null);
+        if (run?.agentId) resolvedAuthorAgentId = run.agentId;
+      }
       const authorType = issueCommentAuthorTypeSchema.parse(
-        options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
+        options?.authorType ?? (resolvedAuthorAgentId ? "agent" : actor.userId ? "user" : "system"),
       );
-      assertIssueCommentAuthorTypeAllowed(actor, authorType);
+      assertIssueCommentAuthorTypeAllowed(
+        { agentId: resolvedAuthorAgentId, userId: actor.userId },
+        authorType,
+      );
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
@@ -7331,7 +7380,7 @@ export function issueService(db: Db) {
         .values({
           companyId: issue.companyId,
           issueId,
-          authorAgentId: actor.agentId ?? null,
+          authorAgentId: resolvedAuthorAgentId,
           authorUserId: actor.userId ?? null,
           authorType,
           createdByRunId: actor.runId ?? null,
@@ -7690,6 +7739,52 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+
+    /**
+     * Batch-resolve the ancestor id chain for a set of issues in a single
+     * recursive query. Returns a map from each issue id to its ancestor ids
+     * ordered nearest-parent-first up to the root. Issues with no parent are
+     * omitted from the map.
+     */
+    getAncestorIdsForIssues: async (
+      companyId: string,
+      issueIds: string[],
+    ): Promise<Map<string, string[]>> => {
+      const result = new Map<string, string[]>();
+      const ids = [...new Set(issueIds)].filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+      if (ids.length === 0) return result;
+      const rows = await db.execute(sql`
+        WITH RECURSIVE chain(origin_id, id, parent_id, depth) AS (
+          SELECT id, id, parent_id, 0
+          FROM issues
+          WHERE company_id = ${companyId}
+            AND id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+          UNION ALL
+          SELECT chain.origin_id, parent.id, parent.parent_id, chain.depth + 1
+          FROM issues parent
+          JOIN chain ON parent.id = chain.parent_id
+          WHERE parent.company_id = ${companyId}
+            AND chain.depth < 50
+        )
+        SELECT origin_id, id AS ancestor_id, depth
+        FROM chain
+        WHERE depth > 0
+        ORDER BY origin_id, depth
+      `);
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (typeof row !== "object" || row === null) continue;
+        const rec = row as Record<string, unknown>;
+        const originId = typeof rec.origin_id === "string" ? rec.origin_id : null;
+        const ancestorId = typeof rec.ancestor_id === "string" ? rec.ancestor_id : null;
+        if (!originId || !ancestorId || originId === ancestorId) continue;
+        const arr = result.get(originId) ?? [];
+        arr.push(ancestorId);
+        result.set(originId, arr);
+      }
+      return result;
     },
   };
 }

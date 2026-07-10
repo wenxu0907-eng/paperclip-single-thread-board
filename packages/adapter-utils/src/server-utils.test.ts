@@ -13,6 +13,7 @@ import {
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  resolvePaperclipDesiredSkillNames,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -205,6 +206,46 @@ describe("materializePaperclipSkillCopy", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("resolvePaperclipDesiredSkillNames", () => {
+  const available = [
+    { key: "paperclipai/paperclip/para-memory-files", runtimeName: "para-memory-files" },
+    { key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip" },
+    { key: "company/ascii-heart", runtimeName: "ascii-heart" },
+  ];
+
+  it("returns [] when no explicit skill list is configured", () => {
+    expect(resolvePaperclipDesiredSkillNames({}, available)).toEqual([]);
+  });
+
+  it("force-includes para-memory-files when an explicit list omits it", () => {
+    const result = resolvePaperclipDesiredSkillNames(
+      { paperclipSkillSync: { desiredSkills: ["ascii-heart"] } },
+      available,
+    );
+    expect(result).toContain("paperclipai/paperclip/para-memory-files");
+    expect(result).toContain("company/ascii-heart");
+  });
+
+  it("does not duplicate para-memory-files when already present", () => {
+    const result = resolvePaperclipDesiredSkillNames(
+      { paperclipSkillSync: { desiredSkills: ["para-memory-files"] } },
+      available,
+    );
+    expect(result.filter((k) => k === "paperclipai/paperclip/para-memory-files")).toHaveLength(1);
+  });
+
+  it("still includes the required skill reference even if it is not in the runtime list", () => {
+    // canonicalize falls back to the bare reference, so the required skill is
+    // never silently dropped from an explicit list.
+    const result = resolvePaperclipDesiredSkillNames(
+      { paperclipSkillSync: { desiredSkills: ["ascii-heart"] } },
+      [{ key: "company/ascii-heart", runtimeName: "ascii-heart" }],
+    );
+    expect(result).toContain("company/ascii-heart");
+    expect(result).toContain("para-memory-files");
   });
 });
 

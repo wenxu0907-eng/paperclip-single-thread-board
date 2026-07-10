@@ -138,7 +138,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "HTTP",
     description: "Internal HTTP adapter",
     icon: Cpu,
-    comingSoon: true,
+    comingSoon: false,
   },
 };
 

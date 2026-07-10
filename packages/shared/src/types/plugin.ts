@@ -742,6 +742,8 @@ export interface PluginConfig {
   id: string;
   /** FK to `plugins.id`. Unique — each plugin has at most one config row. */
   pluginId: string;
+  /** FK to `companies.id`. Plugin configuration is scoped per company. */
+  companyId: string;
   /** Operator-provided configuration values (validated against `instanceConfigSchema`). */
   configJson: Record<string, unknown>;
   /** Most recent config validation error, if any. */

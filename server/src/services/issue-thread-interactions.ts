@@ -191,7 +191,7 @@ function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
 }
 
-function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
+function shouldReturnResolvedConfirmationToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
@@ -203,6 +203,27 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
   return true;
+}
+
+function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
+  issue: IssueResolutionContext;
+  current: IssueThreadInteractionRow;
+  actor: InteractionActor;
+}) {
+  return shouldReturnResolvedConfirmationToCreatorAgent(args);
+}
+
+// A decline (reject) should hand the issue back to the requesting agent so it
+// can act on the decline reason — but only when the confirmation asked to wake
+// its assignee on any resolution. `wake_assignee_on_accept` intentionally wakes
+// only on accept, so a reject there leaves the issue with the board.
+function shouldReturnRejectedConfirmationToCreatorAgent(args: {
+  issue: IssueResolutionContext;
+  current: IssueThreadInteractionRow;
+  actor: InteractionActor;
+}) {
+  if (args.current.continuationPolicy !== "wake_assignee") return false;
+  return shouldReturnResolvedConfirmationToCreatorAgent(args);
 }
 
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
@@ -894,13 +915,13 @@ export function issueThreadInteractionService(db: Db) {
     current: IssueThreadInteractionRow;
     input: RejectIssueThreadInteraction;
     actor: InteractionActor;
-  }): Promise<IssueThreadInteraction> {
+  }): Promise<{ interaction: IssueThreadInteraction; continuationIssue: IssueWakeTarget | null }> {
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
       actor: args.actor,
     });
     if (expired) {
-      return expired;
+      return { interaction: expired, continuationIssue: null };
     }
 
     const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
@@ -910,33 +931,81 @@ export function issueThreadInteractionService(db: Db) {
     }
 
     const now = new Date();
-    const [updated] = await db
-      .update(issueThreadInteractions)
-      .set({
-        status: "rejected",
-        result: {
-          version: 1,
-          outcome: "rejected",
-          reason: reason || null,
-        },
-        resolvedByAgentId: args.actor.agentId ?? null,
-        resolvedByUserId: args.actor.userId ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(issueThreadInteractions.id, args.current.id),
-        eq(issueThreadInteractions.status, "pending"),
-      ))
-      .returning();
+    const result = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "rejected",
+          result: {
+            version: 1,
+            outcome: "rejected",
+            reason: reason || null,
+          },
+          resolvedByAgentId: args.actor.agentId ?? null,
+          resolvedByUserId: args.actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, args.current.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
 
-    if (!updated) {
-      throw conflict("Interaction has already been resolved");
-    }
-    await touchIssue(db, args.issue.id);
-    const rejected = hydrateInteraction(updated);
-    await emitInteractionResolvedTelemetry(db, rejected);
-    return rejected;
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      const issueContext = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(eq(issues.id, args.issue.id))
+        .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+      if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+        throw notFound("Issue not found");
+      }
+
+      let continuationIssue: IssueWakeTarget | null = null;
+      if (shouldReturnRejectedConfirmationToCreatorAgent({
+        issue: issueContext,
+        current: args.current,
+        actor: args.actor,
+      })) {
+        const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+        const returnedIssue = await issueService(db).update(args.issue.id, {
+          status: returnStatus,
+          assigneeAgentId: args.current.createdByAgentId,
+          assigneeUserId: null,
+          actorAgentId: args.actor.agentId ?? null,
+          actorUserId: args.actor.userId ?? null,
+        }, tx);
+
+        if (returnedIssue) {
+          continuationIssue = {
+            id: returnedIssue.id,
+            assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
+            assigneeUserId: returnedIssue.assigneeUserId ?? null,
+            status: returnedIssue.status,
+          };
+        }
+      } else {
+        await touchIssue(tx, args.issue.id);
+      }
+
+      return {
+        interaction: hydrateInteraction(updated),
+        continuationIssue,
+      };
+    });
+    await emitInteractionResolvedTelemetry(db, result.interaction);
+    return result;
   }
 
   return {
@@ -1350,8 +1419,10 @@ export function issueThreadInteractionService(db: Db) {
       const data = rejectIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
-        case "suggest_tasks":
-          return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
+        case "suggest_tasks": {
+          const interaction = await issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
+          return { interaction, continuationIssue: null };
+        }
         case "request_confirmation":
         case "request_checkbox_confirmation":
           return rejectRequestConfirmation({

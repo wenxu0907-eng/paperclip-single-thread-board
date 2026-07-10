@@ -155,6 +155,77 @@ describe("worker performAction context", () => {
   });
 });
 
+describe("worker validateConfig context", () => {
+  it("passes companyId to onValidateConfig", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+    const plugin = definePlugin({
+      async setup() {},
+      async onValidateConfig(config, context) {
+        return {
+          ok: context?.companyId === "company-1" && config.channelId === "channel-1",
+        };
+      },
+    });
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (!isJsonRpcResponse(message)) return;
+      pending.get(String(message.id))?.(message);
+      pending.delete(String(message.id));
+    });
+
+    try {
+      await expect(callWorker("initialize", {
+        manifest: {
+          id: "paperclip.test-validate-context",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Validate Context Test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: [],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      })).resolves.toMatchObject({ ok: true });
+
+      await expect(callWorker("validateConfig", {
+        config: { channelId: "channel-1" },
+        companyId: "company-1",
+      })).resolves.toEqual({ ok: true });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+    }
+  });
+});
+
 describe("worker invocation scope propagation", () => {
   it("keeps overlapping company scopes local to each getData invocation", async () => {
     const hostToWorker = new PassThrough();

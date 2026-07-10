@@ -12,6 +12,7 @@ import {
   createContext,
   Component,
   forwardRef,
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -50,6 +51,7 @@ import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
+  findFirstUnreadCommentAnchorId,
   formatDurationWords,
   isCoTSegmentActive,
   stabilizeThreadMessages,
@@ -412,6 +414,12 @@ interface IssueChatComposerProps {
 
 interface IssueChatThreadProps {
   comments: IssueChatComment[];
+  /**
+   * Per-user "last seen" marker for this thread (COM-7 / 2b). When set, the
+   * thread renders a "New" divider before the first unread comment and lands
+   * the initial scroll there instead of the latest comment.
+   */
+  myLastTouchAt?: Date | null;
   interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
@@ -2984,6 +2992,15 @@ interface VirtualizedIssueChatThreadListProps {
   stoppingRunId?: string | null;
   interruptingQueuedRunId?: string | null;
   variant: "full" | "embedded";
+  // COM-12: divider/collapse parity for the virtualized (150+ row) path. The
+  // virtualizer indexes a synthetic-row model (messages + divider + toggle),
+  // and the imperative handle translates the message indices the parent passes
+  // into row indices, so every existing scroll caller keeps working unchanged.
+  firstUnreadAnchorId: string | null;
+  firstUnreadIndex: number;
+  canCollapseEarlier: boolean;
+  earlierExpanded: boolean;
+  onToggleEarlier: () => void;
 }
 
 interface VirtualizedIssueChatThreadListHandle {
@@ -3000,8 +3017,125 @@ function issueChatMessageAnchorId(message: ThreadMessage): string | null {
   return typeof custom?.anchorId === "string" ? custom.anchorId : null;
 }
 
+// COM-7 / 2b: Slack-style divider rendered immediately before the first comment
+// that is new since the viewer's last visit. Purely additive markup — it does
+// not participate in scroll/anchor math.
+function IssueChatNewDivider() {
+  return (
+    <div
+      className="my-1 flex items-center gap-3 select-none"
+      role="separator"
+      aria-label="New messages"
+      data-testid="issue-chat-new-divider"
+    >
+      <div className="h-px flex-1 bg-primary/40" />
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-primary">
+        New
+      </span>
+      <div className="h-px flex-1 bg-primary/40" />
+    </div>
+  );
+}
+
+// COM-7 / 2b: collapses the resolved/old history that sits above the "New"
+// divider behind a toggle, so the live ask is what the viewer sees first.
+const ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD = 3;
+
+function IssueChatEarlierToggle({
+  count,
+  expanded,
+  onToggle,
+}: {
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="my-1 flex justify-center" data-testid="issue-chat-earlier-toggle">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 gap-1.5 rounded-full px-3 text-xs text-muted-foreground"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        <ChevronDown
+          className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")}
+          aria-hidden
+        />
+        {expanded
+          ? "Hide earlier messages"
+          : `Show ${count} earlier ${count === 1 ? "message" : "messages"}`}
+      </Button>
+    </div>
+  );
+}
+
 function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
+}
+
+// COM-12: synthetic-row model shared by the virtualized path so it renders the
+// same "New" divider + collapsible earlier history as the plain path. The
+// virtualizer indexes these rows (not raw messages); a message that is part of
+// the collapsed earlier block is dropped from the model entirely, exactly as
+// the plain path returns `null` for it.
+type VirtualChatRow =
+  | { kind: "message"; message: ThreadMessage; messageIndex: number }
+  | { kind: "new-divider" }
+  | { kind: "earlier-toggle" };
+
+interface IssueChatRowDecorations {
+  firstUnreadAnchorId: string | null;
+  firstUnreadIndex: number;
+  canCollapseEarlier: boolean;
+  earlierExpanded: boolean;
+}
+
+export function buildIssueChatVirtualRows(
+  messages: readonly ThreadMessage[],
+  decorations: IssueChatRowDecorations,
+): VirtualChatRow[] {
+  const { firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded } =
+    decorations;
+  const rows: VirtualChatRow[] = [];
+  messages.forEach((message, index) => {
+    const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+    if (isEarlier && !earlierExpanded) {
+      // Collapse the whole earlier block behind a single toggle row.
+      if (index === 0) rows.push({ kind: "earlier-toggle" });
+      return;
+    }
+    if (canCollapseEarlier && earlierExpanded && index === 0) {
+      rows.push({ kind: "earlier-toggle" });
+    }
+    if (issueChatMessageAnchorId(message) === firstUnreadAnchorId) {
+      rows.push({ kind: "new-divider" });
+    }
+    rows.push({ kind: "message", message, messageIndex: index });
+  });
+  return rows;
+}
+
+function virtualChatRowKey(row: VirtualChatRow): React.Key {
+  switch (row.kind) {
+    case "message":
+      return row.message.id;
+    case "new-divider":
+      return "issue-chat-row-new-divider";
+    case "earlier-toggle":
+      return "issue-chat-row-earlier-toggle";
+  }
+}
+
+function findVirtualRowIndexByAnchorId(
+  rows: readonly VirtualChatRow[],
+  anchorId: string,
+): number {
+  return rows.findIndex(
+    (row) => row.kind === "message" && issueChatMessageAnchorId(row.message) === anchorId,
+  );
 }
 
 export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
@@ -3248,6 +3382,11 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
   stoppingRunId,
   interruptingQueuedRunId,
   variant,
+  firstUnreadAnchorId,
+  firstUnreadIndex,
+  canCollapseEarlier,
+  earlierExpanded,
+  onToggleEarlier,
   mode,
   probeRef,
 }, ref) {
@@ -3282,27 +3421,55 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
     : VIRTUALIZED_THREAD_GAP_FULL_PX;
 
+  // COM-12: synthetic-row model (messages + divider + collapse toggle). The
+  // virtualizer below indexes `rows`, not `messages`.
+  const rows = useMemo(
+    () =>
+      buildIssueChatVirtualRows(messages, {
+        firstUnreadAnchorId,
+        firstUnreadIndex,
+        canCollapseEarlier,
+        earlierExpanded,
+      }),
+    [messages, firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded],
+  );
+  // Map a message index (the unit the parent's scroll callers speak) to its
+  // row index. Collapsed-earlier messages are absent — scrolling to one is a
+  // no-op, matching the plain path where its DOM node does not exist.
+  const rowIndexByMessageIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    rows.forEach((row, rowIndex) => {
+      if (row.kind === "message") map.set(row.messageIndex, rowIndex);
+    });
+    return map;
+  }, [rows]);
+
   const virtualizer = useIssueThreadVirtualizer({
-    count: messages.length,
+    count: rows.length,
     estimateSize: () => VIRTUALIZED_THREAD_ROW_ESTIMATE_PX,
     overscan: VIRTUALIZED_THREAD_OVERSCAN,
     scrollMargin,
     gap,
-    getItemKey: (index) => messages[index]?.id ?? index,
+    getItemKey: (index) => {
+      const row = rows[index];
+      return row ? virtualChatRowKey(row) : index;
+    },
     mode,
   });
 
   useImperativeHandle(ref, () => ({
     scrollToIndex: (index, options) => {
       if (index < 0 || index >= messages.length) return;
-      virtualizer.scrollToIndex(index, {
+      const rowIndex = rowIndexByMessageIndex.get(index);
+      if (rowIndex === undefined) return;
+      virtualizer.scrollToIndex(rowIndex, {
         align: options?.align ?? "center",
         behavior: options?.behavior ?? "smooth",
       });
     },
     scrollToLatest: (options) => {
-      if (messages.length === 0) return;
-      virtualizer.scrollToIndex(messages.length - 1, {
+      if (rows.length === 0) return;
+      virtualizer.scrollToIndex(rows.length - 1, {
         align: "end",
         behavior: options?.behavior ?? "smooth",
       });
@@ -3310,7 +3477,7 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     measure: () => {
       virtualizer.measure();
     },
-  }), [messages.length, virtualizer]);
+  }), [messages.length, rows.length, rowIndexByMessageIndex, virtualizer]);
 
   useLayoutEffect(() => {
     return () => {
@@ -3337,8 +3504,10 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     pendingPrependAnchorRef.current = null;
     virtualizer.measure();
     if (!pendingAnchor || typeof window === "undefined") return;
-    const nextIndex = findMessageAnchorIndex(messages, pendingAnchor.anchorId);
-    if (nextIndex <= pendingAnchor.index) return;
+    // pendingAnchor.index is the captured row index (data-index), so resolve
+    // the anchor to its new row index — not its message index.
+    const nextIndex = findVirtualRowIndexByAnchorId(rows, pendingAnchor.anchorId);
+    if (nextIndex < 0 || nextIndex <= pendingAnchor.index) return;
 
     virtualizer.scrollToIndex(nextIndex, { align: "start", behavior: "auto" });
     requestAnimationFrame(() => {
@@ -3367,9 +3536,9 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
       style={{ position: "relative", width: "100%", height: totalSize }}
     >
       {virtualItems.map((virtualItem) => {
-        const message = messages[virtualItem.index];
-        if (!message) return null;
-        const anchorId = issueChatMessageAnchorId(message);
+        const row = rows[virtualItem.index];
+        if (!row) return null;
+        const anchorId = row.kind === "message" ? issueChatMessageAnchorId(row.message) : null;
         return (
           <div
             key={virtualItem.key}
@@ -3383,9 +3552,9 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
               virtualizer.measureElement(event.currentTarget);
             }}
             onClickCapture={(event) => {
-              const row = event.currentTarget;
+              const rowEl = event.currentTarget;
               requestAnimationFrame(() => {
-                virtualizer.measureElement(row);
+                virtualizer.measureElement(rowEl);
               });
             }}
             onTransitionEndCapture={(event) => {
@@ -3399,13 +3568,23 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
               transform: `translateY(${virtualItem.start - scrollMargin}px)`,
             }}
           >
-            <IssueChatMessageRow
-              message={message}
-              feedbackVoteByTargetId={feedbackVoteByTargetId}
-              activeRunIds={activeRunIds}
-              stoppingRunId={stoppingRunId}
-              interruptingQueuedRunId={interruptingQueuedRunId}
-            />
+            {row.kind === "message" ? (
+              <IssueChatMessageRow
+                message={row.message}
+                feedbackVoteByTargetId={feedbackVoteByTargetId}
+                activeRunIds={activeRunIds}
+                stoppingRunId={stoppingRunId}
+                interruptingQueuedRunId={interruptingQueuedRunId}
+              />
+            ) : row.kind === "new-divider" ? (
+              <IssueChatNewDivider />
+            ) : (
+              <IssueChatEarlierToggle
+                count={firstUnreadIndex}
+                expanded={earlierExpanded}
+                onToggle={onToggleEarlier}
+              />
+            )}
           </div>
         );
       })}
@@ -4237,6 +4416,7 @@ export function IssueChatThread({
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
   externalReferences,
+  myLastTouchAt = null,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -4253,6 +4433,9 @@ export function IssueChatThread({
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
+  // COM-7 / 2b: whether the collapsed "earlier" history above the New divider
+  // is expanded. Default collapsed; reset whenever the unread anchor changes.
+  const [earlierExpanded, setEarlierExpanded] = useState(false);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -4376,6 +4559,7 @@ export function IssueChatThread({
   }, [rawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
+  const firstUnreadAnchorIdRef = useRef<string | null>(null);
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -4404,6 +4588,26 @@ export function IssueChatThread({
     });
     return map;
   }, [messages]);
+
+  // COM-7 / 2b: anchor of the first comment that is new since the viewer's
+  // last visit. Drives the "New" divider and the initial scroll target. We
+  // suppress it when the first-unread row is already the very first message —
+  // there is nothing "old" above it to divide off.
+  const firstUnreadAnchorId = useMemo(() => {
+    const anchorId = findFirstUnreadCommentAnchorId(messages, myLastTouchAt, currentUserId);
+    if (!anchorId) return null;
+    if (messageAnchorIndex.get(anchorId) === 0) return null;
+    return anchorId;
+  }, [messages, myLastTouchAt, currentUserId, messageAnchorIndex]);
+  firstUnreadAnchorIdRef.current = firstUnreadAnchorId;
+  // Collapse the earlier history again whenever the unread boundary moves.
+  useEffect(() => {
+    setEarlierExpanded(false);
+  }, [firstUnreadAnchorId]);
+  const firstUnreadIndex = firstUnreadAnchorId
+    ? messageAnchorIndex.get(firstUnreadAnchorId) ?? -1
+    : -1;
+  const canCollapseEarlier = firstUnreadIndex >= ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD;
 
   function scrollToThreadAnchor(
     anchorId: string,
@@ -4565,9 +4769,22 @@ export function IssueChatThread({
       return;
     }
     didInitialLatestScrollRef.current = true;
-    // Defer a frame so the virtualizer/DOM has mounted its initial rows before
-    // we resolve and scroll to the latest comment's anchor.
-    const frame = requestAnimationFrame(() => scrollToLatestCommentWithSettle(latestMessagesRef.current));
+    // COM-7 / 2b: when there is unread content, land on the first unread comment
+    // (the "New" divider) instead of the latest comment, so the viewer sees the
+    // live ask first rather than the bottom of an old thread. Falls back to the
+    // latest-comment behavior (PAP-95) when nothing is unread.
+    const unreadAnchorId = firstUnreadAnchorIdRef.current;
+    const frame = requestAnimationFrame(() => {
+      if (unreadAnchorId) {
+        const landed = scrollToThreadAnchor(
+          unreadAnchorId,
+          { align: "start", behavior: "auto" },
+          latestMessagesRef.current,
+        );
+        if (landed) return;
+      }
+      scrollToLatestCommentWithSettle(latestMessagesRef.current);
+    });
     return () => cancelAnimationFrame(frame);
   }, [autoScrollToLatestOnInitialLoad, messages, variant, location.hash]);
 
@@ -4865,21 +5082,51 @@ export function IssueChatThread({
                   stoppingRunId={stoppingRunId}
                   interruptingQueuedRunId={interruptingQueuedRunId}
                   variant={variant}
+                  firstUnreadAnchorId={firstUnreadAnchorId}
+                  firstUnreadIndex={firstUnreadIndex}
+                  canCollapseEarlier={canCollapseEarlier}
+                  earlierExpanded={earlierExpanded}
+                  onToggleEarlier={() => setEarlierExpanded((prev) => !prev)}
                 />
               ) : (
                 // Keep transcript rendering independent from assistant-ui's
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
-                messages.map((message) => (
-                  <IssueChatMessageRow
-                    key={message.id}
-                    message={message}
-                    feedbackVoteByTargetId={feedbackVoteByTargetId}
-                    activeRunIds={activeRunIds}
-                    stoppingRunId={stoppingRunId}
-                    interruptingQueuedRunId={interruptingQueuedRunId}
-                  />
-              ))
+                messages.map((message, index) => {
+                  const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+                  if (isEarlier && !earlierExpanded) {
+                    // Render the toggle once in place of the whole collapsed block.
+                    return index === 0 ? (
+                      <IssueChatEarlierToggle
+                        key="issue-chat-earlier-toggle"
+                        count={firstUnreadIndex}
+                        expanded={false}
+                        onToggle={() => setEarlierExpanded(true)}
+                      />
+                    ) : null;
+                  }
+                  return (
+                    <Fragment key={message.id}>
+                      {canCollapseEarlier && earlierExpanded && index === 0 ? (
+                        <IssueChatEarlierToggle
+                          count={firstUnreadIndex}
+                          expanded
+                          onToggle={() => setEarlierExpanded(false)}
+                        />
+                      ) : null}
+                      {issueChatMessageAnchorId(message) === firstUnreadAnchorId ? (
+                        <IssueChatNewDivider />
+                      ) : null}
+                      <IssueChatMessageRow
+                        message={message}
+                        feedbackVoteByTargetId={feedbackVoteByTargetId}
+                        activeRunIds={activeRunIds}
+                        stoppingRunId={stoppingRunId}
+                        interruptingQueuedRunId={interruptingQueuedRunId}
+                      />
+                    </Fragment>
+                  );
+              })
             )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">

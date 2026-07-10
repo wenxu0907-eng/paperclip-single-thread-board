@@ -18,6 +18,7 @@ export {
   type BuiltInAgentStatus,
 } from "./built-in-agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
+export { agentMemoryFileService } from "./agent-memory-files.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { documentAnnotationService } from "./document-annotations.js";

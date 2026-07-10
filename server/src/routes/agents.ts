@@ -22,6 +22,7 @@ import {
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
+  updateAgentMemoryFileSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
@@ -50,6 +51,7 @@ import {
   issueRecoveryActionService,
   issueService,
   logActivity,
+  projectService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -61,6 +63,7 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { agentMemoryFileService } from "../services/agent-memory-files.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -85,7 +88,15 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
+import {
+  ensureSymlink as ensureCodexLocalSymlink,
+  pathExists as codexLocalPathExists,
+  resolveSharedCodexHomeDir,
+} from "@paperclipai/adapter-codex-local/server";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -190,6 +201,8 @@ export function agentRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
+  const memories = agentMemoryFileService();
+  const projects = projectService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -1186,12 +1199,28 @@ export function agentRoutes(
     };
   }
 
+  async function ensureCodexLocalAgentAuthSymlink(
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    if (adapterType !== "codex_local") return;
+    const env = asRecord(adapterConfig.env) ? adapterConfig.env as Record<string, unknown> : {};
+    const codexHome = asEnvBindingString(env.CODEX_HOME);
+    if (!codexHome) return;
+    const source = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    if (!(await codexLocalPathExists(source))) return;
+    await ensureCodexLocalSymlink(path.join(codexHome, "auth.json"), source);
+  }
+
   function applyCreateDefaultsByAdapterType(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
     if (adapterType === "codex_local") {
+      if (!asNonEmptyString(next.model)) {
+        next.model = DEFAULT_CODEX_LOCAL_MODEL;
+      }
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
         typeof next.dangerouslyBypassSandbox === "boolean";
@@ -1281,7 +1310,9 @@ export function agentRoutes(
     }
 
     const files = input?.files
-      ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role));
+      ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role), {
+        adapterType: agent.adapterType,
+      });
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
@@ -2329,6 +2360,7 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    await ensureCodexLocalAgentAuthSymlink(agent.adapterType, requestedAdapterConfig);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -2511,6 +2543,7 @@ export function agentRoutes(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    await ensureCodexLocalAgentAuthSymlink(createInput.adapterType, requestedAdapterConfig);
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
 
     const actor = getActorInfo(req);
@@ -2861,6 +2894,97 @@ export function agentRoutes(
     res.json(result.bundle);
   });
 
+  // Resolve the runtime working dir for each of a company's projects. Harness
+  // auto-memory is keyed by this dir (the project workspace), so it locates the
+  // project-scoped, shared memory. Best-effort: failures degrade to no projects.
+  async function resolveCompanyProjectDirs(
+    companyId: string,
+  ): Promise<{ projectId: string; projectName: string; dir: string }[]> {
+    try {
+      const list = await projects.list(companyId);
+      return list
+        .map((project) => ({
+          projectId: project.id,
+          projectName: project.name,
+          dir: project.codebase?.effectiveLocalFolder ?? "",
+        }))
+        .filter((entry) => entry.dir.trim().length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  router.get("/agents/:id/memories", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, agent);
+    const overview = await memories.getOverview(agent);
+    overview.projectMemories = await memories.getProjectHarnessOverviews(
+      await resolveCompanyProjectDirs(agent.companyId),
+    );
+    res.json(overview);
+  });
+
+  router.get("/agents/:id/memories/file", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, agent);
+    const relativePath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relativePath.trim()) {
+      res.status(422).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    if (projectId) {
+      const projectDirs = await resolveCompanyProjectDirs(agent.companyId);
+      const match = projectDirs.find((entry) => entry.projectId === projectId);
+      if (!match) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      res.json(await memories.readProjectMemoryFile(match.dir, relativePath));
+      return;
+    }
+    res.json(await memories.readMemoryFile(agent, relativePath));
+  });
+
+  router.put("/agents/:id/memories/file", validate(updateAgentMemoryFileSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUpdateAgent(req, agent);
+    const result = await memories.writeMemoryFile(agent, req.body.path, req.body.content);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.memory_file_updated",
+      entityType: "agent",
+      entityId: agent.id,
+      details: {
+        path: result.resource.relativePath,
+        size: result.resource.byteSize,
+      },
+    });
+
+    res.json(result);
+  });
+
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -2957,6 +3081,7 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      await ensureCodexLocalAgentAuthSymlink(requestedAdapterType, effectiveAdapterConfig);
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
     if (requestedRuntimeConfig) {

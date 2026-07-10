@@ -36,6 +36,13 @@ export const upsertAgentInstructionsFileSchema = z.object({
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
+export const updateAgentMemoryFileSchema = z.object({
+  path: z.string().trim().min(1),
+  content: z.string(),
+});
+
+export type UpdateAgentMemoryFile = z.infer<typeof updateAgentMemoryFileSchema>;
+
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
   if (envValue === undefined) return;

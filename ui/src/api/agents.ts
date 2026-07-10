@@ -5,6 +5,8 @@ import type {
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
+  AgentMemoryOverview,
+  AgentMemoryFileContent,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
   AgentKeyCreated,
@@ -168,6 +170,20 @@ export const agentsApi = {
     api.delete<AgentInstructionsBundle>(
       agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),
     ),
+  memories: (id: string, companyId?: string) =>
+    api.get<AgentMemoryOverview>(agentPath(id, companyId, "/memories")),
+  memoryFile: (id: string, relativePath: string, companyId?: string, projectId?: string) =>
+    api.get<AgentMemoryFileContent>(
+      agentPath(
+        id,
+        companyId,
+        `/memories/file?path=${encodeURIComponent(relativePath)}${
+          projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""
+        }`,
+      ),
+    ),
+  saveMemoryFile: (id: string, data: { path: string; content: string }, companyId?: string) =>
+    api.put<AgentMemoryFileContent>(agentPath(id, companyId, "/memories/file"), data),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
   clearError: (id: string, companyId?: string) =>

@@ -678,6 +678,40 @@ describe("inbox helpers", () => {
     ).toEqual([parentIssue.id, childIssue.id]);
   });
 
+  it("nests a descendant under its nearest loaded ancestor when an intermediate ancestor is filtered out", () => {
+    // Chain: root -> middle -> leaf. The middle issue is NOT in the loaded
+    // inbox set (e.g. it was completed and filtered out), but the leaf carries
+    // ancestorIds so it should still nest under the loaded root rather than
+    // surfacing as its own top-level parent.
+    const rootIssue = makeIssue("root", true);
+    rootIssue.lastActivityAt = new Date("2026-03-11T01:00:00.000Z");
+    const leafIssue = makeIssue("leaf", true);
+    leafIssue.parentId = "middle"; // intermediate ancestor absent from the set
+    leafIssue.ancestorIds = ["middle", rootIssue.id]; // nearest-parent-first
+    leafIssue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const [section] = buildGroupedInboxSections(
+      getInboxWorkItems({ issues: [rootIssue, leafIssue], approvals: [] }),
+      "none",
+      {},
+      { nestingEnabled: true },
+    );
+
+    // Only the root is a top-level item; the leaf is nested underneath it.
+    expect(section?.displayItems.map((item) => item.kind === "issue" ? item.issue.id : "other")).toEqual([
+      rootIssue.id,
+    ]);
+    expect(section?.childrenByIssueId.get(rootIssue.id)?.map((c) => c.id)).toEqual([leafIssue.id]);
+
+    expect(
+      buildInboxKeyboardNavEntries([section!], new Set(), new Set()).map((entry) => entry.type === "top"
+        ? entry.item.kind === "issue" ? entry.item.issue.id : "other"
+        : entry.type === "child"
+          ? entry.issueId
+          : entry.groupKey),
+    ).toEqual([rootIssue.id, leafIssue.id]);
+  });
+
   it("stops cyclic child issue traversal when building keyboard navigation", () => {
     const parentIssue = makeIssue("parent", true);
     const childIssue = makeIssue("child", true);

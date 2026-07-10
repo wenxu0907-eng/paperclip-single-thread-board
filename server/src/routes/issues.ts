@@ -139,6 +139,7 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  decodeMultipartFilename,
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
@@ -1808,9 +1809,19 @@ function queueResolvedInteractionContinuationWakeup(input: {
     input.interaction.continuationPolicy !== "wake_assignee"
     && input.interaction.continuationPolicy !== "wake_assignee_on_accept"
   ) return;
+  // A confirmation-like decline (report card / plan) is feedback the assignee
+  // must act on, so ownership — not the raw policy — decides who resumes: the
+  // assignee guard below wakes the agent when the issue is still agent-assigned
+  // (COM-83) and leaves board handoffs with the board. Other kinds keep the
+  // accept-only contract: `wake_assignee_on_accept` only resumes on accept
+  // (e.g. rejected suggested tasks must not wake the proposer).
+  const isConfirmationLike =
+    input.interaction.kind === "request_confirmation"
+    || input.interaction.kind === "request_checkbox_confirmation";
   if (
     input.interaction.continuationPolicy === "wake_assignee_on_accept"
     && input.interaction.status !== "accepted"
+    && !isConfirmationLike
   ) return;
   if (input.interaction.status === "expired") return;
   if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
@@ -4699,12 +4710,18 @@ export function issueRoutes(
           if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
           else recoveryActionByIssue.delete(issue.id);
         }));
+        const includeAncestorIds =
+          req.query.includeAncestorIds === "true" || req.query.includeAncestorIds === "1";
+        const ancestorIdsByIssue = includeAncestorIds
+          ? await svc.getAncestorIdsForIssues(companyId, issueIds)
+          : null;
         return {
           kind: "full",
           body: result.map((issue) => ({
             ...issue,
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+            ...(ancestorIdsByIssue ? { ancestorIds: ancestorIdsByIssue.get(issue.id) ?? [] } : {}),
           })),
         };
       },
@@ -9207,10 +9224,11 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
+      const { interaction, continuationIssue } = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
+      const continuationWakeIssue = continuationIssue ?? issue;
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -9236,9 +9254,35 @@ export function issueRoutes(
         },
       });
 
+      if (continuationIssue) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            status: continuationIssue.status,
+            assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
+            assigneeUserId: continuationIssue.assigneeUserId ?? null,
+            source: "request_confirmation_reject",
+            interactionId: interaction.id,
+            _previous: {
+              status: issue.status,
+              assigneeAgentId: issue.assigneeAgentId ?? null,
+              assigneeUserId: issue.assigneeUserId ?? null,
+            },
+          },
+        });
+      }
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
-        issue,
+        issue: continuationWakeIssue,
         interaction,
         actor,
         source: "issue.interaction.reject",
@@ -9617,6 +9661,31 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    // Agent runtimes post issue comments under local board/user auth (there is no
+    // agent identity on the HTTP request), but they tag the request with their
+    // heartbeat run via the `x-paperclip-run-id` header. When that run belongs to
+    // an agent in this company, attribute the comment to that agent at write time
+    // so it is stored as author_type=agent and renders as an agent bubble instead
+    // of a right-aligned "Board" bubble. The board UI never sends the header, so
+    // genuine board comments are unaffected; an explicit body `authorType` wins.
+    // This is the durable write-path fix; run-log derivation only recovered rows
+    // whose posting run happened to echo the id in a flushed log. (COM-57)
+    let runScopedCommentAgentId: string | null = null;
+    if (!actor.agentId && actor.runId && !req.body.authorType) {
+      const runRow = await db
+        .select({ agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, actor.runId))
+        .then((rows) => rows[0] ?? null);
+      if (runRow?.agentId && runRow.companyId === issue.companyId) {
+        runScopedCommentAgentId = runRow.agentId;
+      }
+    }
+    const commentAuthorTypeDefault: "agent" | "user" =
+      actor.actorType === "agent" || runScopedCommentAgentId ? "agent" : "user";
+    const commentActorAgentId = actor.agentId ?? runScopedCommentAgentId ?? undefined;
+    const commentActorUserId =
+      actor.actorType === "user" && !runScopedCommentAgentId ? actor.actorId : undefined;
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -9826,7 +9895,7 @@ export function issueRoutes(
 
       const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
       const commentOptions = {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: req.body.authorType ?? commentAuthorTypeDefault,
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust,
@@ -9838,8 +9907,8 @@ export function issueRoutes(
             id,
             req.body.body,
             {
-              agentId: actor.agentId ?? undefined,
-              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              agentId: commentActorAgentId,
+              userId: commentActorUserId,
               runId: actor.runId,
             },
             commentOptions,
@@ -9906,11 +9975,11 @@ export function issueRoutes(
       });
     } else {
       comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        agentId: commentActorAgentId,
+        userId: commentActorUserId,
         runId: actor.runId,
       }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        authorType: req.body.authorType ?? commentAuthorTypeDefault,
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
@@ -10390,7 +10459,7 @@ export function issueRoutes(
     const stored = await storage.putFile({
       companyId,
       namespace: `issues/${issueId}`,
-      originalFilename: file.originalname || null,
+      originalFilename: decodeMultipartFilename(file.originalname),
       contentType,
       body: file.buffer,
     });
