@@ -145,6 +145,7 @@ import {
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
+import { contentDispositionHeader } from "../http/content-disposition.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
@@ -10544,7 +10545,7 @@ export function issueRoutes(
     const disposition = parseBooleanQuery(req.query.download)
       ? "attachment"
       : isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
-    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
+    res.setHeader("Content-Disposition", contentDispositionHeader(disposition, filename));
 
     object.stream.on("error", (err) => {
       next(err);
