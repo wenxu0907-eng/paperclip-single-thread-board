@@ -381,6 +381,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
       name: "Paperclip",
       issuePrefix: `E${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(issues).values({
       id: issueId,

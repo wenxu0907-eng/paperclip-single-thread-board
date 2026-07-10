@@ -16,6 +16,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     spentMonthlyCents: 0,
     attachmentMaxBytes: 10 * 1024 * 1024,
     requireBoardApprovalForNewAgents: false,
+    boardOnlyOnParents: false,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,

@@ -105,6 +105,7 @@ describeEmbeddedPostgres("companySearchService", () => {
       name,
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     return companyId;
   }

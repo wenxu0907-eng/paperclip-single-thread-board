@@ -216,6 +216,7 @@ function portabilityExport(): CompanyPortabilityExportResult {
         logoPath: null,
         attachmentMaxBytes: null,
         requireBoardApprovalForNewAgents: false,
+        boardOnlyOnParents: false,
         feedbackDataSharingEnabled: false,
         feedbackDataSharingConsentAt: null,
         feedbackDataSharingConsentByUserId: null,

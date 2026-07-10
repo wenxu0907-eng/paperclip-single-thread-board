@@ -125,6 +125,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       issuePrefix,
       defaultResponsibleUserId,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

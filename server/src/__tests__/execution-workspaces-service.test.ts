@@ -261,6 +261,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Paperclip",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(projects).values({
       id: projectId,
@@ -336,6 +337,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Paperclip",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(projects).values({
       id: projectId,
@@ -433,6 +435,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Paperclip",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(projects).values({
       id: projectId,
@@ -2128,12 +2131,14 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         name: "Paperclip",
         issuePrefix: "PAP",
         requireBoardApprovalForNewAgents: false,
+        boardOnlyOnParents: false,
       },
       {
         id: otherCompanyId,
         name: "OtherCo",
         issuePrefix: "OTH",
         requireBoardApprovalForNewAgents: false,
+        boardOnlyOnParents: false,
       },
     ]);
     await db.insert(projects).values([
@@ -2348,6 +2353,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Paperclip",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(projects).values([
       {
@@ -2443,6 +2449,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Paperclip",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(projects).values({
       id: projectId,

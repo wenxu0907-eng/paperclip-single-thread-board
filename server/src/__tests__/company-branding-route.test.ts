@@ -66,6 +66,7 @@ function createCompany() {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+    boardOnlyOnParents: false,
     brandColor: "#123456",
     logoAssetId: "11111111-1111-4111-8111-111111111111",
     logoUrl: "/api/assets/11111111-1111-4111-8111-111111111111/content",
@@ -321,6 +322,7 @@ describe("PATCH /api/companies/:companyId", () => {
         budgetMonthlyCents: 1000,
         spentMonthlyCents: 500,
         requireBoardApprovalForNewAgents: true,
+        boardOnlyOnParents: false,
         feedbackDataSharingEnabled: true,
         issuePrefix: "BAD",
       });

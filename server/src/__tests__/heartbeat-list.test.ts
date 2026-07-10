@@ -45,6 +45,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -111,6 +112,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -156,6 +158,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -240,6 +243,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

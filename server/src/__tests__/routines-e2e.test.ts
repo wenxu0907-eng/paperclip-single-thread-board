@@ -196,6 +196,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

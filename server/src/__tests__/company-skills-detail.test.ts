@@ -111,6 +111,7 @@ describeEmbeddedPostgres("companySkillService.detail", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -168,6 +169,7 @@ describeEmbeddedPostgres("companySkillService.detail", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values([
       {

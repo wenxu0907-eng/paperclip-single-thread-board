@@ -141,6 +141,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Archive Test Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -311,6 +312,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "archived",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -417,6 +419,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Update Archive Test Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -527,6 +530,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "paused",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -594,6 +598,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "archived",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -637,6 +642,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "paused",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -689,6 +695,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Orphan Wakeup Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -764,6 +771,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Idempotent Archive Test Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -807,6 +815,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "paused",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

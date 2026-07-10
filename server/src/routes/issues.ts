@@ -121,6 +121,14 @@ import {
   resolveTaskWatchdogMutationScope,
   taskWatchdogScopeAllowsIssueMutation,
 } from "../services/task-watchdog-scope.js";
+import {
+  BOARD_ONLY_ON_PARENTS_MESSAGE,
+  BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE,
+  boardOnlyOnParentsActive,
+  boardOnlyOnParentsEnabled,
+  violatesBoardOnlyOnParents,
+  violatesBoardOnlyOnParentsReviewer,
+} from "../services/board-only-on-parents.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -1695,6 +1703,18 @@ function summarizeExecutionParticipants(
       userId: participant.userId ?? null,
     })) ?? []
   );
+}
+
+/**
+ * Extracts the user IDs of human reviewers configured on an execution policy's review
+ * stage. Used by the single-thread board guard to reject board humans as reviewers on
+ * child issues (agent reviewers are ignored — only `type === "user"` participants count).
+ */
+function humanReviewerUserIdsFromPolicy(policy: NormalizedExecutionPolicy | null): string[] {
+  return summarizeExecutionParticipants(policy, "review")
+    .filter((participant): participant is ActivityExecutionParticipant & { userId: string } =>
+      participant.type === "user" && typeof participant.userId === "string" && participant.userId.trim().length > 0)
+    .map((participant) => participant.userId);
 }
 
 function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
@@ -6886,6 +6906,30 @@ export function issueRoutes(
       !watchdogProductBugFollowUp &&
       !(await assertTaskWatchdogCreateIssueAllowed(req, res, companyId, createParent))
     ) return;
+    const createAssigneeViolatesBoardOnlyOnParents = violatesBoardOnlyOnParents({
+      hasParent: Boolean(effectiveParentId),
+      assigneeUserId: rawCreateBody.assigneeUserId as string | null | undefined,
+    });
+    const createReviewerViolatesBoardOnlyOnParents = humanReviewerUserIdsFromPolicy(
+      normalizeIssueExecutionPolicy(rawCreateBody.executionPolicy),
+    ).some((reviewerUserId) =>
+      violatesBoardOnlyOnParentsReviewer({ hasParent: Boolean(effectiveParentId), reviewerUserId }));
+    if (createAssigneeViolatesBoardOnlyOnParents || createReviewerViolatesBoardOnlyOnParents) {
+      const boardGuardCompany = await companiesSvc.getById(companyId);
+      if (
+        boardOnlyOnParentsActive({
+          envEnabled: boardOnlyOnParentsEnabled(),
+          companySetting: boardGuardCompany?.boardOnlyOnParents,
+        })
+      ) {
+        res.status(422).json({
+          error: createAssigneeViolatesBoardOnlyOnParents
+            ? BOARD_ONLY_ON_PARENTS_MESSAGE
+            : BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE,
+        });
+        return;
+      }
+    }
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       companyId,
       rawCreateBody.assigneeAgentId as string | null | undefined,
@@ -7095,6 +7139,29 @@ export function issueRoutes(
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
+    const childAssigneeViolatesBoardOnlyOnParents = violatesBoardOnlyOnParents({
+      hasParent: true,
+      assigneeUserId: createBody.assigneeUserId as string | null | undefined,
+    });
+    const childReviewerViolatesBoardOnlyOnParents = humanReviewerUserIdsFromPolicy(
+      normalizeIssueExecutionPolicy(createBody.executionPolicy),
+    ).some((reviewerUserId) => violatesBoardOnlyOnParentsReviewer({ hasParent: true, reviewerUserId }));
+    if (childAssigneeViolatesBoardOnlyOnParents || childReviewerViolatesBoardOnlyOnParents) {
+      const boardGuardCompany = await companiesSvc.getById(parent.companyId);
+      if (
+        boardOnlyOnParentsActive({
+          envEnabled: boardOnlyOnParentsEnabled(),
+          companySetting: boardGuardCompany?.boardOnlyOnParents,
+        })
+      ) {
+        res.status(422).json({
+          error: childAssigneeViolatesBoardOnlyOnParents
+            ? BOARD_ONLY_ON_PARENTS_MESSAGE
+            : BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE,
+        });
+        return;
+      }
+    }
     const childAssignmentScope = {
       projectId: createBody.projectId ?? parent.projectId ?? null,
       parentIssueId: parent.id,
@@ -7787,6 +7854,32 @@ export function issueRoutes(
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
     const nextAssigneeUserId =
       updateFields.assigneeUserId === undefined ? existing.assigneeUserId : (updateFields.assigneeUserId as string | null);
+    const updateAssigneeViolatesBoardOnlyOnParents =
+      updateFields.assigneeUserId !== undefined &&
+      violatesBoardOnlyOnParents({
+        hasParent: Boolean(existing.parentId),
+        assigneeUserId: nextAssigneeUserId,
+      });
+    const updateReviewerViolatesBoardOnlyOnParents =
+      req.body.executionPolicy !== undefined &&
+      humanReviewerUserIdsFromPolicy(nextExecutionPolicy).some((reviewerUserId) =>
+        violatesBoardOnlyOnParentsReviewer({ hasParent: Boolean(existing.parentId), reviewerUserId }));
+    if (updateAssigneeViolatesBoardOnlyOnParents || updateReviewerViolatesBoardOnlyOnParents) {
+      const boardGuardCompany = await companiesSvc.getById(existing.companyId);
+      if (
+        boardOnlyOnParentsActive({
+          envEnabled: boardOnlyOnParentsEnabled(),
+          companySetting: boardGuardCompany?.boardOnlyOnParents,
+        })
+      ) {
+        res.status(422).json({
+          error: updateAssigneeViolatesBoardOnlyOnParents
+            ? BOARD_ONLY_ON_PARENTS_MESSAGE
+            : BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE,
+        });
+        return;
+      }
+    }
     const assigneeWillChange =
       nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
     const isAgentReturningIssueToCreator =
@@ -8914,6 +9007,33 @@ export function issueRoutes(
 
     const interactions = await interactionSvc.listForIssue(id);
     res.json(interactions);
+  });
+
+  router.get("/issues/:id/decision-queue", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const interactionSvc = issueThreadInteractionService(db);
+    const decisionQueue = await interactionSvc.listDecisionQueue(id);
+    res.json({ decisionQueue });
+  });
+
+  router.get("/issues/:id/digest", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const digest = await svc.getSubtreeDigest(id);
+    res.json({ digest });
   });
 
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {

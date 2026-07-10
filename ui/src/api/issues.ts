@@ -16,6 +16,7 @@ import type {
   IssueLabel,
   IssueRecoveryAction,
   IssueRetryNowResponse,
+  IssueStatus,
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -100,6 +101,40 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.sortDir) params.set("sortDir", filters.sortDir);
   return params;
 }
+
+/** Source issue an aggregated decision-queue item was rolled up from. */
+export type DecisionQueueSourceIssue = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+};
+
+/**
+ * A pending board-facing interaction hydrated for the decision queue,
+ * enriched with the child issue it originated from.
+ */
+export type IssueDecisionQueueItem = IssueThreadInteraction & {
+  sourceIssue: DecisionQueueSourceIssue;
+};
+
+/** Aggregated pending board decisions across a root issue's descendant subtree. */
+export type IssueDecisionQueue = {
+  rootIssueId: string;
+  count: number;
+  items: IssueDecisionQueueItem[];
+};
+
+/** Rolled-up status summary of a root issue's descendant subtree (internal fan-out). */
+export type IssueSubtreeDigest = {
+  rootIssueId: string;
+  descendantCount: number;
+  countsByStatus: Record<IssueStatus, number>;
+  openCount: number;
+  blockedCount: number;
+  pendingDecisionCount: number;
+  lastActivityAt: string | null;
+};
 
 export const issuesApi = {
   list: (
@@ -232,6 +267,14 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  getDecisionQueue: (id: string) =>
+    api
+      .get<{ decisionQueue: IssueDecisionQueue }>(`/issues/${id}/decision-queue`)
+      .then((res) => res.decisionQueue),
+  getSubtreeDigest: (id: string) =>
+    api
+      .get<{ digest: IssueSubtreeDigest }>(`/issues/${id}/digest`)
+      .then((res) => res.digest),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
   createInteraction: (id: string, data: Record<string, unknown>) =>

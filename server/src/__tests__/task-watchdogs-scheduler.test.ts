@@ -65,6 +65,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       issuePrefix: `WD${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`,
       issueCounter: 0,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     return companyId;
   }

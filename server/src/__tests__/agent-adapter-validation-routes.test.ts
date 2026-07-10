@@ -153,6 +153,7 @@ async function createApp() {
           {
             id: "company-1",
             requireBoardApprovalForNewAgents: false,
+            boardOnlyOnParents: false,
           },
         ]),
       })),

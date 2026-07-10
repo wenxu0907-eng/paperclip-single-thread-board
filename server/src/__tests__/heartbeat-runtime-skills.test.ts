@@ -122,6 +122,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
     await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Runtime Coach\n\nVersion one.\n", "utf8");
     await db.insert(companySkills).values({

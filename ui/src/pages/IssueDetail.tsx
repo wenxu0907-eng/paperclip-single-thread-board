@@ -77,6 +77,8 @@ import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from 
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { DecisionQueuePanel } from "../components/DecisionQueuePanel";
+import { SubtreeDigestPanel } from "../components/SubtreeDigestPanel";
 import { InlineEditor } from "../components/InlineEditor";
 import {
   IssueChatThread,
@@ -4435,6 +4437,16 @@ export function IssueDetail() {
           }}
         />
       </div>
+
+      {/* Top-level intent issues surface a rolled-up status of their internal
+          fan-out plus every pending board decision from their whole child
+          subtree, so the board can skim and resolve from one place. */}
+      {!issue.parentId ? (
+        <SubtreeDigestPanel issueId={issue.id} />
+      ) : null}
+      {!issue.parentId ? (
+        <DecisionQueuePanel companyId={issue.companyId} issueId={issue.id} />
+      ) : null}
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}

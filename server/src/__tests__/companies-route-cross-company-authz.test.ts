@@ -93,6 +93,7 @@ function createCompany(id: string) {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+    boardOnlyOnParents: false,
     feedbackDataSharingEnabled: false,
     brandColor: "#123456",
     logoAssetId: null,

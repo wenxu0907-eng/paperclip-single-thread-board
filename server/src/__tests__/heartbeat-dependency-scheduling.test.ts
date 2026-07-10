@@ -178,6 +178,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -560,6 +561,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -697,6 +699,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -897,6 +900,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -1029,6 +1033,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,

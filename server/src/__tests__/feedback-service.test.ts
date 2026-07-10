@@ -90,6 +90,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       name: "Paperclip",
       issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -150,6 +151,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       name: "Paperclip",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(companySkills).values([
@@ -294,6 +296,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       name: "Paperclip",
       issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -363,6 +366,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -932,6 +936,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       name: "Paperclip",
       issuePrefix: `H${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(issues).values({

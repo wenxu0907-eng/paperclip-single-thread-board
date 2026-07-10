@@ -193,6 +193,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -310,6 +311,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values({
@@ -511,6 +513,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values({
@@ -659,6 +662,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values({
@@ -854,6 +858,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values([
@@ -1055,6 +1060,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values({
@@ -1223,6 +1229,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values({
@@ -1436,6 +1443,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values({
@@ -1588,6 +1596,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values([
@@ -1791,6 +1800,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values([
@@ -1940,6 +1950,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
+        boardOnlyOnParents: false,
       });
 
       await db.insert(agents).values({

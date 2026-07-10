@@ -159,11 +159,13 @@ describe("company portability", () => {
       logoAssetId: null,
       logoUrl: null,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     companySvc.create.mockResolvedValue({
       id: "company-imported",
       name: "Imported Paperclip",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     agentSvc.list.mockResolvedValue([
       {
@@ -541,6 +543,7 @@ describe("company portability", () => {
       logoAssetId: null,
       logoUrl: null,
       requireBoardApprovalForNewAgents: true,
+      boardOnlyOnParents: false,
     });
 
     const exported = await portability.exportBundle("company-1", {
@@ -846,6 +849,7 @@ describe("company portability", () => {
       logoAssetId: "logo-1",
       logoUrl: "/api/assets/logo-1/content",
       requireBoardApprovalForNewAgents: true,
+      boardOnlyOnParents: false,
     });
     assetSvc.getById.mockResolvedValue({
       id: "logo-1",
@@ -2928,6 +2932,7 @@ describe("company portability", () => {
       description: "Existing company",
       brandColor: "#123456",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     agentSvc.create.mockResolvedValue({
       id: "agent-cmo",
