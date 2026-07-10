@@ -14,6 +14,7 @@ import { HttpError, unprocessable } from "../errors.js";
 import { workspaceFileResourceService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
+import { contentDispositionHeader } from "../http/content-disposition.js";
 
 export type WorkspaceFileResourceService = {
   getIssue(issueId: string): Promise<{ companyId: string }>;
@@ -113,10 +114,6 @@ function limiterKey(companyId: string, actorId: string, issueId: string) {
 
 function parseBooleanQuery(value: unknown) {
   return value === true || value === "true" || value === "1";
-}
-
-function safeAttachmentFilename(value: string) {
-  return value.replaceAll("\"", "").replace(/[\\/\r\n]/g, "_") || "workspace-file";
 }
 
 function readQuery(query: unknown) {
@@ -655,7 +652,7 @@ export function fileResourceRoutes(db: Db, opts: {
         }
         res.setHeader("Cache-Control", "private, max-age=60");
         res.setHeader("X-Content-Type-Options", "nosniff");
-        res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
+        res.setHeader("Content-Disposition", contentDispositionHeader("attachment", result.resource.title, "workspace-file"));
         await pipeline(createReadStream(result.realPath), res);
         return;
       }
