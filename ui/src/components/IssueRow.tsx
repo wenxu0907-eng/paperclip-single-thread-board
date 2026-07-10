@@ -90,6 +90,7 @@ export function IssueRow({
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
+  const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   // Three-state inbox legibility (COM-6): `unopened` reads strong, `opened`
   // (clicked/viewed but still actionable) reads subtly de-emphasised but stays
