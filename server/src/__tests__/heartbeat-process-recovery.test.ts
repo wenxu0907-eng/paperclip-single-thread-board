@@ -36,6 +36,8 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  routineTriggers,
+  routines,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -99,6 +101,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
+import { routineService } from "../services/routines.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -366,6 +369,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    // Routines reference both issues (parentIssueId, set null) and agents
+    // (assigneeAgentId, no cascade), so clear them before issues/agents.
+    // Cascades to routine triggers/runs/revisions.
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -2441,6 +2448,129 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+  });
+
+  // COM-90 (follow-up to INV-74): a routine/monitor anchor issue is left `in_progress`
+  // between fires with no active run, no next-check, and no blocker. The stranded-recovery
+  // sweep must not treat that live-continuation state as a missing disposition, or it
+  // re-wakes the agent every ~30s in a tight loop.
+  async function anchorRoutineWithSchedule(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    status: "active" | "paused";
+    dueAt: Date;
+  }) {
+    const svc = routineService(db, {
+      heartbeat: {
+        // Stubbed so dispatching a fired routine does not spawn a real adapter run.
+        wakeup: async () => ({ id: randomUUID() }),
+      },
+    });
+    const routine = await svc.create(
+      input.companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: input.issueId,
+        title: "Monitor anchor",
+        description: "Recurring monitor anchored to this issue",
+        assigneeAgentId: input.agentId,
+        priority: "medium",
+        status: input.status,
+        concurrencyPolicy: "always_enqueue",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "every-minute",
+        cronExpression: "* * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: input.dueAt })
+      .where(eq(routineTriggers.id, trigger.id));
+    return { svc, routine, triggerId: trigger.id };
+  }
+
+  it("flags a non-routine stranded in_progress issue with a productive but disposition-less run", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // No routine anchors this issue, so the watchdog still recovers it (no regression).
+    expect(result.routineAnchorSkipped).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+  });
+
+  it("does not flag a routine-anchored in_progress zombie issue and lets the routine keep firing", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const { svc } = await anchorRoutineWithSchedule({
+      companyId,
+      agentId,
+      issueId,
+      status: "active",
+      dueAt: new Date("2020-01-01T00:00:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // The active routine anchoring this issue is a live continuation, so the
+    // missing-disposition watchdog skips it instead of re-waking the agent.
+    expect(result.routineAnchorSkipped).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    // The issue stays in_progress — it is not escalated to blocked.
+    expect(sourceIssue?.status).toBe("in_progress");
+
+    // Monitoring is not regressed: the anchoring routine still fires on schedule.
+    const tick = await svc.tickScheduledTriggers(new Date());
+    expect(tick.triggered).toBe(1);
+  });
+
+  it("still flags a stranded in_progress issue when its anchoring routine is paused", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    await anchorRoutineWithSchedule({
+      companyId,
+      agentId,
+      issueId,
+      status: "paused",
+      dueAt: new Date("2020-01-01T00:00:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // A paused routine is not a live continuation, so recovery must not be suppressed.
+    expect(result.routineAnchorSkipped).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toContain(issueId);
   });
 
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
