@@ -50,6 +50,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
     hasExplicitBlockerPath: false,
+    hasOpenDelegatedChildren: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
     hasActiveRoutineContinuation: false,
@@ -128,6 +129,17 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",
       reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("does not queue a missing-disposition wake when the issue has open delegated child issues owning the next action", () => {
+    // COM-96: a parent that has fanned work out to still-open child issues has a
+    // legitimate next-step path (its children). It should not trip the
+    // "missing disposition" recovery card just because the parent run itself
+    // recorded no direct disposition.
+    expect(decide({ hasOpenDelegatedChildren: true })).toEqual({
+      kind: "skip",
+      reason: "issue has open delegated child issues owning the next action",
     });
   });
 
