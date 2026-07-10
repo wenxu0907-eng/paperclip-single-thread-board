@@ -112,6 +112,7 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  decodeMultipartFilename,
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
@@ -8354,7 +8355,7 @@ export function issueRoutes(
     const stored = await storage.putFile({
       companyId,
       namespace: `issues/${issueId}`,
-      originalFilename: file.originalname || null,
+      originalFilename: decodeMultipartFilename(file.originalname),
       contentType,
       body: file.buffer,
     });

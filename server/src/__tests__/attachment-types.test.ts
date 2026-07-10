@@ -1,12 +1,39 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_ALLOWED_TYPES,
+  decodeMultipartFilename,
   INLINE_ATTACHMENT_TYPES,
   isInlineAttachmentContentType,
   matchesContentType,
   normalizeContentType,
   parseAllowedTypes,
 } from "../attachment-types.js";
+
+describe("decodeMultipartFilename", () => {
+  it("recovers a UTF-8 filename that multer decoded as Latin-1", () => {
+    const original = "亚新出海获客引擎_v6_AI-Agent执行版.pptx";
+    // Multer/busboy hand us the UTF-8 bytes reinterpreted as a Latin-1 string.
+    const mangled = Buffer.from(original, "utf8").toString("latin1");
+    expect(decodeMultipartFilename(mangled)).toBe(original);
+  });
+
+  it("leaves pure-ASCII filenames unchanged", () => {
+    expect(decodeMultipartFilename("Yaxin-Overseas-GTM-Deck-v5.pptx")).toBe(
+      "Yaxin-Overseas-GTM-Deck-v5.pptx",
+    );
+  });
+
+  it("does not corrupt a filename that is already valid UTF-8", () => {
+    const clean = "亚新出海获客引擎.pptx";
+    expect(decodeMultipartFilename(clean)).toBe(clean);
+  });
+
+  it("returns null for empty or missing names", () => {
+    expect(decodeMultipartFilename(null)).toBeNull();
+    expect(decodeMultipartFilename(undefined)).toBeNull();
+    expect(decodeMultipartFilename("")).toBeNull();
+  });
+});
 
 describe("parseAllowedTypes", () => {
   it("returns default image types when input is undefined", () => {
