@@ -103,6 +103,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const goalId = randomUUID();
     const issueId = randomUUID();
     const assigneeAgentId = randomUUID();
+    const responsibleUserId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -138,6 +139,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "in_progress",
       priority: "medium",
       requestDepth: 2,
+      responsibleUserId,
     });
 
     const created = await interactionsSvc.create({
@@ -200,6 +202,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       .select({
         title: issues.title,
         workMode: issues.workMode,
+        responsibleUserId: issues.responsibleUserId,
       })
       .from(issues)
       .where(eq(issues.companyId, companyId));
@@ -207,6 +210,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect.arrayContaining([
         expect.objectContaining({ title: "Create the root follow-up", workMode: "planning" }),
         expect.objectContaining({ title: "Create the nested follow-up", workMode: "standard" }),
+      ]),
+    );
+    expect(createdIssueRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Create the root follow-up", responsibleUserId }),
+        expect.objectContaining({ title: "Create the nested follow-up", responsibleUserId }),
       ]),
     );
 
@@ -564,6 +573,233 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
+    const commentId = randomUUID();
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    expect(created).toMatchObject({
+      kind: "ask_user_questions",
+      payload: {
+        supersedeOnUserComment: true,
+      },
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: commentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      kind: "ask_user_questions",
+      status: "expired",
+      result: {
+        version: 1,
+        answers: [],
+        expirationReason: "superseded_by_comment",
+        commentId,
+        summaryMarkdown: null,
+      },
+      resolvedByUserId: "local-board",
+    });
+  });
+
+  it("keeps ask_user_questions pending when user-comment supersede is explicitly disabled", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Question supersede opt-out");
+
+    await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        supersedeOnUserComment: false,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(Date.now() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(0);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("does not supersede ask_user_questions for agent, system, or older user comments", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Question supersede exclusions");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+    const createdAtMs = new Date(created.createdAt).getTime();
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(createdAtMs + 1_000),
+      authorUserId: null,
+    }, {
+      agentId: randomUUID(),
+    })).resolves.toHaveLength(0);
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(createdAtMs + 1_000),
+      authorUserId: null,
+    }, {})).resolves.toHaveLength(0);
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(createdAtMs - 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    })).resolves.toHaveLength(0);
+
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("repairs historical ask_user_questions superseded by later user comments idempotently", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Historical question supersede");
+    const commentId = randomUUID();
+    const createdAt = new Date("2026-05-18T12:00:00.000Z");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+    await db
+      .update(issueThreadInteractions)
+      .set({ createdAt, updatedAt: createdAt })
+      .where(eq(issueThreadInteractions.id, created.id));
+
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorType: "system",
+      body: "System-side progress note.",
+      createdAt: new Date("2026-05-18T12:00:30.000Z"),
+      updatedAt: new Date("2026-05-18T12:00:30.000Z"),
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      body: "Please revise this first.",
+      createdAt: new Date("2026-05-18T12:01:00.000Z"),
+      updatedAt: new Date("2026-05-18T12:01:00.000Z"),
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
+      id: issueId,
+      companyId,
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      kind: "ask_user_questions",
+      status: "expired",
+      result: {
+        version: 1,
+        answers: [],
+        expirationReason: "superseded_by_comment",
+        commentId,
+        summaryMarkdown: null,
+      },
+      resolvedByAgentId: null,
+      resolvedByUserId: "local-board",
+    });
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
+      id: issueId,
+      companyId,
+    })).resolves.toEqual([]);
   });
 
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {
@@ -1960,5 +2196,253 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "accepted",
       });
     });
+  });
+});
+
+describeEmbeddedPostgres("issueThreadInteractionService.listDecisionQueue", () => {
+  let db!: ReturnType<typeof createDb>;
+  let interactionsSvc!: ReturnType<typeof issueThreadInteractionService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-queue-");
+    db = createDb(tempDb.connectionString);
+    interactionsSvc = issueThreadInteractionService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(issues);
+    await db.delete(goals);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Decision queue",
+      level: "task",
+      status: "active",
+    });
+    return { companyId, goalId };
+  }
+
+  async function seedIssue(args: {
+    companyId: string;
+    goalId: string;
+    identifier: string;
+    title?: string;
+    parentId?: string | null;
+    status?: string;
+  }) {
+    const id = randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId: args.companyId,
+      goalId: args.goalId,
+      parentId: args.parentId ?? null,
+      identifier: args.identifier,
+      title: args.title ?? args.identifier,
+      status: args.status ?? "in_progress",
+      priority: "medium",
+    });
+    return id;
+  }
+
+  async function seedInteraction(args: {
+    companyId: string;
+    issueId: string;
+    kind: string;
+    status: string;
+    createdAt: Date;
+    payload: unknown;
+  }) {
+    const id = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id,
+      companyId: args.companyId,
+      issueId: args.issueId,
+      kind: args.kind,
+      status: args.status,
+      continuationPolicy: "wake_assignee",
+      payload: args.payload as never,
+      createdAt: args.createdAt,
+      updatedAt: args.createdAt,
+    });
+    return id;
+  }
+
+  const confirmationPayload = { version: 1, prompt: "Apply this plan?" };
+  const askPayload = {
+    version: 1,
+    questions: [
+      {
+        id: "scope",
+        prompt: "Choose the scope",
+        selectionMode: "single",
+        required: true,
+        options: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+      },
+    ],
+  };
+  const suggestPayload = {
+    version: 1,
+    tasks: [{ clientKey: "follow-up", title: "Follow up" }],
+  };
+
+  it("aggregates pending board-facing interactions across the whole subtree, ordered by createdAt", async () => {
+    const { companyId, goalId } = await seedCompany();
+    const rootId = await seedIssue({ companyId, goalId, identifier: "ROOT-1" });
+    const childId = await seedIssue({ companyId, goalId, identifier: "CHILD-1", parentId: rootId });
+    const grandchildId = await seedIssue({
+      companyId,
+      goalId,
+      identifier: "GRAND-1",
+      parentId: childId,
+    });
+
+    // Insert out of createdAt order to prove sorting.
+    const rootInteractionId = await seedInteraction({
+      companyId,
+      issueId: rootId,
+      kind: "request_confirmation",
+      status: "pending",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      payload: confirmationPayload,
+    });
+    const grandchildInteractionId = await seedInteraction({
+      companyId,
+      issueId: grandchildId,
+      kind: "ask_user_questions",
+      status: "pending",
+      createdAt: new Date("2026-05-03T00:00:00.000Z"),
+      payload: askPayload,
+    });
+    const childInteractionId = await seedInteraction({
+      companyId,
+      issueId: childId,
+      kind: "suggest_tasks",
+      status: "pending",
+      createdAt: new Date("2026-05-02T00:00:00.000Z"),
+      payload: suggestPayload,
+    });
+
+    const queue = await interactionsSvc.listDecisionQueue(rootId);
+
+    expect(queue.rootIssueId).toBe(rootId);
+    expect(queue.count).toBe(3);
+    expect(queue.items.map((item) => item.id)).toEqual([
+      rootInteractionId,
+      childInteractionId,
+      grandchildInteractionId,
+    ]);
+    expect(queue.items.map((item) => item.sourceIssue.identifier)).toEqual([
+      "ROOT-1",
+      "CHILD-1",
+      "GRAND-1",
+    ]);
+    const grandchildItem = queue.items.find((item) => item.id === grandchildInteractionId);
+    expect(grandchildItem?.sourceIssue).toMatchObject({
+      id: grandchildId,
+      identifier: "GRAND-1",
+      title: "GRAND-1",
+      status: "in_progress",
+    });
+  });
+
+  it("excludes non-pending interactions", async () => {
+    const { companyId, goalId } = await seedCompany();
+    const rootId = await seedIssue({ companyId, goalId, identifier: "ROOT-2" });
+    const childId = await seedIssue({ companyId, goalId, identifier: "CHILD-2", parentId: rootId });
+
+    const pendingId = await seedInteraction({
+      companyId,
+      issueId: rootId,
+      kind: "request_confirmation",
+      status: "pending",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      payload: confirmationPayload,
+    });
+    for (const status of ["accepted", "rejected", "expired"]) {
+      await seedInteraction({
+        companyId,
+        issueId: childId,
+        kind: "request_confirmation",
+        status,
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        payload: confirmationPayload,
+      });
+    }
+
+    const queue = await interactionsSvc.listDecisionQueue(rootId);
+    expect(queue.count).toBe(1);
+    expect(queue.items.map((item) => item.id)).toEqual([pendingId]);
+  });
+
+  it("does not leak pending interactions from an unrelated sibling subtree", async () => {
+    const { companyId, goalId } = await seedCompany();
+    const rootId = await seedIssue({ companyId, goalId, identifier: "ROOT-3" });
+    const childId = await seedIssue({ companyId, goalId, identifier: "CHILD-3", parentId: rootId });
+
+    const otherRootId = await seedIssue({ companyId, goalId, identifier: "OTHER-1" });
+    const otherChildId = await seedIssue({
+      companyId,
+      goalId,
+      identifier: "OTHER-CHILD-1",
+      parentId: otherRootId,
+    });
+
+    const mineId = await seedInteraction({
+      companyId,
+      issueId: childId,
+      kind: "ask_user_questions",
+      status: "pending",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      payload: askPayload,
+    });
+    await seedInteraction({
+      companyId,
+      issueId: otherChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      payload: confirmationPayload,
+    });
+
+    const queue = await interactionsSvc.listDecisionQueue(rootId);
+    expect(queue.count).toBe(1);
+    expect(queue.items.map((item) => item.id)).toEqual([mineId]);
+    expect(queue.items[0]?.sourceIssue.identifier).toBe("CHILD-3");
+  });
+
+  it("returns an empty queue for a leaf issue with no pending decisions", async () => {
+    const { companyId, goalId } = await seedCompany();
+    const rootId = await seedIssue({ companyId, goalId, identifier: "ROOT-4" });
+
+    const queue = await interactionsSvc.listDecisionQueue(rootId);
+    expect(queue).toEqual({ rootIssueId: rootId, count: 0, items: [] });
+  });
+
+  it("returns an empty queue for an unknown root issue", async () => {
+    const missingId = randomUUID();
+    const queue = await interactionsSvc.listDecisionQueue(missingId);
+    expect(queue).toEqual({ rootIssueId: missingId, count: 0, items: [] });
   });
 });

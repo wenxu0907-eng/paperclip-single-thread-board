@@ -2,6 +2,7 @@ import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
+  CompactIssue,
   CreateIssueTreeHold,
   DocumentRevision,
   FeedbackTargetType,
@@ -15,6 +16,7 @@ import type {
   IssueLabel,
   IssueRecoveryAction,
   IssueRetryNowResponse,
+  IssueStatus,
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -25,7 +27,7 @@ import type {
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
@@ -36,71 +38,122 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+export type IssueListFilters = {
+  attention?: "blocked";
+  status?: string;
+  projectId?: string;
+  parentId?: string;
+  assigneeAgentId?: string;
+  participantAgentId?: string;
+  assigneeUserId?: string;
+  touchedByUserId?: string;
+  inboxArchivedByUserId?: string;
+  unreadForUserId?: string;
+  labelId?: string;
+  workspaceId?: string;
+  executionWorkspaceId?: string;
+  originKind?: string;
+  originKindPrefix?: string;
+  originId?: string;
+  descendantOf?: string;
+  includeRoutineExecutions?: boolean;
+  includeBlockedBy?: boolean;
+  includeBlockedInboxAttention?: boolean;
+  includeLiveDescendantSummary?: boolean;
+  includeAncestorIds?: boolean;
+  hasPlanDocument?: boolean;
+  q?: string;
+  limit?: number;
+  offset?: number;
+  sortField?: "updated";
+  sortDir?: "asc" | "desc";
+};
+
+function issueListSearchParams(filters?: IssueListFilters) {
+  const params = new URLSearchParams();
+  if (filters?.attention) params.set("attention", filters.attention);
+  if (filters?.status) params.set("status", filters.status);
+  if (filters?.projectId) params.set("projectId", filters.projectId);
+  if (filters?.parentId) params.set("parentId", filters.parentId);
+  if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
+  if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
+  if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+  if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
+  if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
+  if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
+  if (filters?.labelId) params.set("labelId", filters.labelId);
+  if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
+  if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
+  if (filters?.originKind) params.set("originKind", filters.originKind);
+  if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
+  if (filters?.originId) params.set("originId", filters.originId);
+  if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+  if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+  if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
+  if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
+  if (filters?.includeLiveDescendantSummary) params.set("includeLiveDescendantSummary", "true");
+  if (filters?.includeAncestorIds) params.set("includeAncestorIds", "true");
+  if (filters?.hasPlanDocument !== undefined) {
+    params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
+  }
+  if (filters?.q) params.set("q", filters.q);
+  if (filters?.limit) params.set("limit", String(filters.limit));
+  if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
+  if (filters?.sortField) params.set("sortField", filters.sortField);
+  if (filters?.sortDir) params.set("sortDir", filters.sortDir);
+  return params;
+}
+
+/** Source issue an aggregated decision-queue item was rolled up from. */
+export type DecisionQueueSourceIssue = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+};
+
+/**
+ * A pending board-facing interaction hydrated for the decision queue,
+ * enriched with the child issue it originated from.
+ */
+export type IssueDecisionQueueItem = IssueThreadInteraction & {
+  sourceIssue: DecisionQueueSourceIssue;
+};
+
+/** Aggregated pending board decisions across a root issue's descendant subtree. */
+export type IssueDecisionQueue = {
+  rootIssueId: string;
+  count: number;
+  items: IssueDecisionQueueItem[];
+};
+
+/** Rolled-up status summary of a root issue's descendant subtree (internal fan-out). */
+export type IssueSubtreeDigest = {
+  rootIssueId: string;
+  descendantCount: number;
+  countsByStatus: Record<IssueStatus, number>;
+  openCount: number;
+  blockedCount: number;
+  pendingDecisionCount: number;
+  lastActivityAt: string | null;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
-    filters?: {
-      attention?: "blocked";
-      status?: string;
-      projectId?: string;
-      parentId?: string;
-      assigneeAgentId?: string;
-      participantAgentId?: string;
-      assigneeUserId?: string;
-      touchedByUserId?: string;
-      inboxArchivedByUserId?: string;
-      unreadForUserId?: string;
-      labelId?: string;
-      workspaceId?: string;
-      executionWorkspaceId?: string;
-      originKind?: string;
-      originKindPrefix?: string;
-      originId?: string;
-      descendantOf?: string;
-      includeRoutineExecutions?: boolean;
-      includeBlockedBy?: boolean;
-      includeBlockedInboxAttention?: boolean;
-      includeAncestorIds?: boolean;
-      hasPlanDocument?: boolean;
-      q?: string;
-      limit?: number;
-      offset?: number;
-      sortField?: "updated";
-      sortDir?: "asc" | "desc";
-    },
+    filters?: IssueListFilters,
+    options?: RequestOptions,
   ) => {
-    const params = new URLSearchParams();
-    if (filters?.attention) params.set("attention", filters.attention);
-    if (filters?.status) params.set("status", filters.status);
-    if (filters?.projectId) params.set("projectId", filters.projectId);
-    if (filters?.parentId) params.set("parentId", filters.parentId);
-    if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
-    if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
-    if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
-    if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
-    if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
-    if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
-    if (filters?.labelId) params.set("labelId", filters.labelId);
-    if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
-    if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
-    if (filters?.originKind) params.set("originKind", filters.originKind);
-    if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
-    if (filters?.originId) params.set("originId", filters.originId);
-    if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
-    if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
-    if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
-    if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
-    if (filters?.includeAncestorIds) params.set("includeAncestorIds", "true");
-    if (filters?.hasPlanDocument !== undefined) {
-      params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
-    }
-    if (filters?.q) params.set("q", filters.q);
-    if (filters?.limit) params.set("limit", String(filters.limit));
-    if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
-    if (filters?.sortField) params.set("sortField", filters.sortField);
-    if (filters?.sortDir) params.set("sortDir", filters.sortDir);
+    const params = issueListSearchParams(filters);
     const qs = params.toString();
-    return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
+    const path = `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`;
+    return options ? api.get<Issue[]>(path, options) : api.get<Issue[]>(path);
+  },
+  listCompact: (companyId: string, filters?: IssueListFilters, options?: RequestOptions) => {
+    const params = issueListSearchParams(filters);
+    params.set("view", "compact");
+    const path = `/companies/${companyId}/issues?${params.toString()}`;
+    return options ? api.get<CompactIssue[]>(path, options) : api.get<CompactIssue[]>(path);
   },
   count: (
     companyId: string,
@@ -128,7 +181,9 @@ export const issuesApi = {
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
-  get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  get: (id: string, options?: RequestOptions) => options
+    ? api.get<Issue>(`/issues/${id}`, options)
+    : api.get<Issue>(`/issues/${id}`),
   getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
@@ -214,6 +269,14 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  getDecisionQueue: (id: string) =>
+    api
+      .get<{ decisionQueue: IssueDecisionQueue }>(`/issues/${id}/decision-queue`)
+      .then((res) => res.decisionQueue),
+  getSubtreeDigest: (id: string) =>
+    api
+      .get<{ digest: IssueSubtreeDigest }>(`/issues/${id}/digest`)
+      .then((res) => res.digest),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
   createInteraction: (id: string, data: Record<string, unknown>) =>

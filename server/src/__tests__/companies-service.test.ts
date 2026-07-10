@@ -3,18 +3,28 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
+  agentConfigRevisions,
   agents,
   agentWakeupRequests,
+  builtInManagedResources,
   companies,
+  companySkillVersions,
+  companySkills,
+  companyMemberships,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  principalPermissionGrants,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companyService } from "../services/companies.js";
+import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
+import { reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -35,11 +45,19 @@ describeEmbeddedPostgres("companyService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(routineTriggers);
+    await db.delete(routines);
+    await db.delete(builtInManagedResources);
+    await db.delete(companySkillVersions);
+    await db.delete(companySkills);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(agents);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -63,6 +81,50 @@ describeEmbeddedPostgres("companyService", () => {
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
   });
 
+  it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
+    const created = await companyService(db).create({
+      name: "Fresh Company",
+    });
+
+    const agentRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
+    const reflectionRows = agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach");
+    expect(reflectionRows).toHaveLength(1);
+    expect(reflectionRows[0]).toMatchObject({
+      name: "Reflection Coach",
+      status: "paused",
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+    });
+
+    const [skill] = await db
+      .select()
+      .from(companySkills)
+      .where(and(
+        eq(companySkills.companyId, created.id),
+        eq(companySkills.key, "paperclipai/bundled/paperclip-operations/reflection-coach"),
+      ));
+    expect(skill).toMatchObject({
+      slug: "reflection-coach",
+    });
+
+    const [routine] = await db.select().from(routines).where(eq(routines.companyId, created.id));
+    expect(routine).toMatchObject({
+      status: "paused",
+      assigneeAgentId: reflectionRows[0]!.id,
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:recent-agent-reflection",
+    });
+    const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
+    expect(trigger).toMatchObject({
+      kind: "schedule",
+      enabled: false,
+    });
+
+    await reconcileBuiltInAgentsOnStartup(db);
+    const afterReconcileRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
+    expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
+  });
+
   it("archives companies by pausing runnable agents and cancelling active runs", async () => {
     const companyId = randomUUID();
     const runningAgentId = randomUUID();
@@ -79,6 +141,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Archive Test Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -249,6 +312,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "archived",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -355,6 +419,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Update Archive Test Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -465,6 +530,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "paused",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([
@@ -532,6 +598,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "archived",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -575,6 +642,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "paused",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -627,6 +695,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Orphan Wakeup Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -702,6 +771,7 @@ describeEmbeddedPostgres("companyService", () => {
       name: "Idempotent Archive Test Co",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -745,6 +815,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "paused",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

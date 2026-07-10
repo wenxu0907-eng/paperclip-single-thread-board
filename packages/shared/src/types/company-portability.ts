@@ -1,6 +1,6 @@
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
-import type { IssueCommentAuthorType } from "../constants.js";
+import type { IssueCommentAuthorType, PermissionKey } from "../constants.js";
 import type { IssueCommentMetadata, IssueCommentPresentation } from "./issue.js";
 
 export interface CompanyPortabilityInclude {
@@ -38,6 +38,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   logoPath: string | null;
   attachmentMaxBytes: number | null;
   requireBoardApprovalForNewAgents: boolean;
+  boardOnlyOnParents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: string | null;
   feedbackDataSharingConsentByUserId: string | null;
@@ -145,6 +146,10 @@ export interface CompanyPortabilityAgentManifestEntry {
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;
   permissions: Record<string, unknown>;
+  permissionGrants: Array<{
+    permissionKey: PermissionKey;
+    scope: Record<string, unknown> | null;
+  }>;
   budgetMonthlyCents: number;
   metadata: Record<string, unknown> | null;
 }

@@ -73,6 +73,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -240,6 +241,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       name: "Other Company",
       issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(heartbeatRunEvents).values({

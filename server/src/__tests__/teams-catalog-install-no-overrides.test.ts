@@ -48,6 +48,7 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
       name: "Clean install company",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     return companyId;
   }

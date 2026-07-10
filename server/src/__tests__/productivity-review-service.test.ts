@@ -68,6 +68,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       name: "Productivity Review Co",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values([
       {

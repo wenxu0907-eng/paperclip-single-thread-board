@@ -12,7 +12,9 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   attachmentMaxBytes: number;
+  defaultResponsibleUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  boardOnlyOnParents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;
   feedbackDataSharingConsentByUserId: string | null;

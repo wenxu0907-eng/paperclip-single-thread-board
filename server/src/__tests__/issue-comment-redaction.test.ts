@@ -63,6 +63,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       name: "Comment Redaction Co",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(issues).values({
       id: issueId,
@@ -216,6 +217,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       name: "Reference Redaction Co",
       issuePrefix: "REF",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(issues).values([
       {

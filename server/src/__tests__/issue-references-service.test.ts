@@ -90,6 +90,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
       name: "Paperclip",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(issues).values([
@@ -188,6 +189,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
       name: "Paperclip Backfill",
       issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(issues).values([

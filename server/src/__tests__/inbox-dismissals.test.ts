@@ -64,6 +64,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
       name: "Paperclip",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await dismissalsSvc.dismiss(companyId, userId, "approval:approval-1", firstDismissedAt);
@@ -93,6 +94,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
       name: "Paperclip",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([

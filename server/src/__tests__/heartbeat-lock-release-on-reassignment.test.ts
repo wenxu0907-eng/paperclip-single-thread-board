@@ -63,6 +63,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([

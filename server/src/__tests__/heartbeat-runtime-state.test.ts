@@ -74,6 +74,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -115,6 +116,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -148,6 +150,9 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       const status = await heartbeat.recordRuntimeProgress(run, {
         phase: "config_sync",
         message: "Syncing workspace to sandbox",
+        currentToolName: "bash",
+        lastAssistantSnippet: "Inspecting the repository",
+        lastEventAt: "2026-06-24T00:00:05.000Z",
       }, issueId);
 
       expect(status).toMatchObject({
@@ -157,6 +162,9 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
         runId,
         phase: "config_sync",
         message: "Syncing workspace to sandbox",
+        currentToolName: "bash",
+        lastAssistantSnippet: "Inspecting the repository",
+        lastEventAt: new Date("2026-06-24T00:00:05.000Z"),
       });
       expect(heartbeat.decorateActiveRunStatus({
         id: runId,
@@ -166,6 +174,9 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
         status: "running",
       })).toMatchObject({
         currentStatusMessage: "Syncing workspace to sandbox",
+        currentToolName: "bash",
+        lastAssistantSnippet: "Inspecting the repository",
+        lastEventAt: new Date("2026-06-24T00:00:05.000Z"),
       });
       expect(liveEvents).toContainEqual(expect.objectContaining({
         companyId,
@@ -176,6 +187,9 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
           issueId,
           phase: "config_sync",
           message: "Syncing workspace to sandbox",
+          currentToolName: "bash",
+          lastAssistantSnippet: "Inspecting the repository",
+          lastEventAt: "2026-06-24T00:00:05.000Z",
         }),
       }));
 
@@ -201,6 +215,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

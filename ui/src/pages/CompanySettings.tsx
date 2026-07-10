@@ -88,6 +88,16 @@ export function CompanySettings() {
     }
   });
 
+  const boardOnlyOnParentsMutation = useMutation({
+    mutationFn: (boardOnlyOnParents: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        boardOnlyOnParents
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
   const syncLogoState = (nextLogoUrl: string | null) => {
     setLogoUrl(nextLogoUrl ?? "");
     void queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -217,7 +227,7 @@ export function CompanySettings() {
                 companyName={companyName || selectedCompany.name}
                 logoUrl={logoUrl || null}
                 brandColor={brandColor || null}
-                className="rounded-[14px]"
+                className="rounded-(--rad-14)"
               />
             </div>
             <div className="flex-1 space-y-3">
@@ -267,6 +277,7 @@ export function CompanySettings() {
                 hint="Sets the hue for the company icon. Leave empty for auto-generated color."
               >
                 <div className="flex items-center gap-2">
+                  {/* token-extraction: allowlisted — <input type="color"> value must be a real hex string, not a var() reference. */}
                   <input
                     type="color"
                     value={brandColor || "#6366f1"}
@@ -361,6 +372,15 @@ export function CompanySettings() {
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
+          />
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <ToggleField
+            label="Board only on parent issues"
+            hint="Board members can only be assigned to top-level issues, not child tasks."
+            checked={!!selectedCompany.boardOnlyOnParents}
+            onChange={(v) => boardOnlyOnParentsMutation.mutate(v)}
+            toggleTestId="company-settings-board-only-on-parents-toggle"
           />
         </div>
       </div>

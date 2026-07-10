@@ -67,6 +67,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       name: `Company ${prefix}`,
       issuePrefix: prefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values([
       {
