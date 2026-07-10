@@ -7345,6 +7345,29 @@ export function issueRoutes(
       requestedChildren.push(childBody);
       assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(childBody));
       if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, childBody))) return;
+      const childAssigneeViolatesBoardOnlyOnParents = violatesBoardOnlyOnParents({
+        hasParent: true,
+        assigneeUserId: childBody.assigneeUserId as string | null | undefined,
+      });
+      const childReviewerViolatesBoardOnlyOnParents = humanReviewerUserIdsFromPolicy(
+        normalizeIssueExecutionPolicy(childBody.executionPolicy),
+      ).some((reviewerUserId) => violatesBoardOnlyOnParentsReviewer({ hasParent: true, reviewerUserId }));
+      if (childAssigneeViolatesBoardOnlyOnParents || childReviewerViolatesBoardOnlyOnParents) {
+        const boardGuardCompany = await companiesSvc.getById(sourceIssue.companyId);
+        if (
+          boardOnlyOnParentsActive({
+            envEnabled: boardOnlyOnParentsEnabled(),
+            companySetting: boardGuardCompany?.boardOnlyOnParents,
+          })
+        ) {
+          res.status(422).json({
+            error: childAssigneeViolatesBoardOnlyOnParents
+              ? BOARD_ONLY_ON_PARENTS_MESSAGE
+              : BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE,
+          });
+          return;
+        }
+      }
       if (childBody.assigneeAgentId || childBody.assigneeUserId) {
         await assertCanAssignTasks(req, sourceIssue.companyId, {
           projectId: childBody.projectId ?? sourceIssue.projectId ?? null,
