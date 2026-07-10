@@ -23,6 +23,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -693,6 +694,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueThreadInteractions.issueId, issueId),
           eq(issueThreadInteractions.status, "pending"),
           inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  // COM-90: an active routine whose fires are anchored to this issue is a live
+  // continuation, not a stranded execution path. When a monitor/anchor issue's own
+  // fire completes it is left `in_progress` with no active run, no next-check, and no
+  // blocker — a state the stranded-recovery sweep would otherwise flag as an undisposed
+  // issue and re-wake every ~30s (INV-74). The routine scheduler owns re-firing such an
+  // issue, so the recovery watchdog must not treat it as missing a disposition. This
+  // mirrors the `hasActiveRoutineContinuation` guard already applied on the
+  // post-run successful-run-handoff path (see heartbeat.ts).
+  async function hasActiveRoutineAnchor(companyId: string, issueId: string) {
+    return db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.parentIssueId, issueId),
+          eq(routines.status, "active"),
         ),
       )
       .limit(1)
@@ -2884,6 +2908,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       waitingOnReviewResolved: 0,
       recentProgressExempted: 0,
+      routineAnchorSkipped: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -2929,6 +2954,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // COM-90: skip stranded/missing-disposition recovery when an active routine
+      // anchors this issue. Its `in_progress` state between fires is a valid live
+      // continuation owned by the routine scheduler, not an undisposed zombie.
+      if (await hasActiveRoutineAnchor(issue.companyId, issue.id)) {
+        result.routineAnchorSkipped += 1;
         result.skipped += 1;
         continue;
       }
