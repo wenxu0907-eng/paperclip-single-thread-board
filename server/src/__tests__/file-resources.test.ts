@@ -276,7 +276,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       });
 
     expect(downloaded.status).toBe(200);
-    expect(downloaded.headers["content-disposition"]).toBe('attachment; filename="archive.bin"');
+    expect(downloaded.headers["content-disposition"]).toBe('attachment; filename="archive.bin"; filename*=UTF-8\'\'archive.bin');
     expect(downloaded.headers["x-content-type-options"]).toBe("nosniff");
     expect(Buffer.compare(downloaded.body as Buffer, bytes)).toBe(0);
   });
@@ -1363,7 +1363,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
     const first = await firstDownloadResponse;
     expect(first.status).toBe(200);
     expect(first.headers["content-length"]).toBeUndefined();
-    expect(first.headers["content-disposition"]).toBe('attachment; filename="slow-download.bin"');
+    expect(first.headers["content-disposition"]).toBe('attachment; filename="slow-download.bin"; filename*=UTF-8\'\'slow-download.bin');
     expect(Buffer.compare(first.body as Buffer, Buffer.from("slow"))).toBe(0);
   });
 

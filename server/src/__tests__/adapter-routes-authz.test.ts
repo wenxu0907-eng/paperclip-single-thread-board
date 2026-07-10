@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("node:child_process", () => ({
   execFile: mocks.execFile,
+  execFileSync: vi.fn(),
 }));
 
 vi.mock("../services/adapter-plugin-store.js", () => ({

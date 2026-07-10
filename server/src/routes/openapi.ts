@@ -5425,6 +5425,9 @@ const pluginLocalFolderRequestSchema = z.object({
 });
 
 for (const route of [
+  ["get", "/api/plugins/{pluginId}/companies/{companyId}/config", "Get plugin company config"],
+  ["post", "/api/plugins/{pluginId}/companies/{companyId}/config", "Save plugin company config"],
+  ["post", "/api/plugins/{pluginId}/companies/{companyId}/config/test", "Test plugin company config"],
   ["get", "/api/plugins/{pluginId}/companies/{companyId}/local-folders", "List plugin local folders"],
   ["get", "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}/status", "Get plugin local folder status"],
   ["post", "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}/validate", "Validate a plugin local folder"],

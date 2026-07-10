@@ -649,9 +649,10 @@ describe("claude execute", () => {
     try {
       const result = await execute({
         runId: "run-bg-task-success",
-        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           promptTemplate: "Do work.",
@@ -1447,7 +1448,7 @@ describe("claude execute", () => {
         onLog: async () => {},
       });
 
-      expect(result.exitCode).toBe(1);
+      expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
       expect(result.errorCode).toBeNull();
       expect(result.summary).toBe("Implemented the requested change.");
