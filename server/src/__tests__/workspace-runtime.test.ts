@@ -4777,6 +4777,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -4944,6 +4945,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
         name: "Paperclip",
         issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
         requireBoardApprovalForNewAgents: false,
+        boardOnlyOnParents: false,
       });
       await db.insert(agents).values({
         id: agentId,
@@ -5101,6 +5103,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(projects).values({
       id: projectId,
@@ -5191,6 +5194,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -5311,6 +5315,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,

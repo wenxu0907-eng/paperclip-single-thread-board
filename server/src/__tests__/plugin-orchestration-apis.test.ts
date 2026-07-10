@@ -88,6 +88,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       name: "Paperclip",
       issuePrefix: issuePrefix(companyId),
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -119,6 +120,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       name: "Other",
       issuePrefix: issuePrefix(otherCompanyId),
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(projects).values({
       id: projectId,

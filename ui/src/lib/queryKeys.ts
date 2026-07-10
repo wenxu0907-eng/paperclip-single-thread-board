@@ -86,6 +86,8 @@ export const queryKeys = {
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     commentsList: (issueId: string) => ["issues", "comments", issueId, "list"] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
+    decisionQueue: (issueId: string) => ["issues", "decision-queue", issueId] as const,
+    digest: (issueId: string) => ["issues", "digest", issueId] as const,
     acceptedPlanDecompositions: (issueId: string) =>
       ["issues", "accepted-plan-decompositions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,

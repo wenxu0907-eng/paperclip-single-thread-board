@@ -67,6 +67,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(companySkills).values({
@@ -433,6 +434,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -472,6 +474,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -522,6 +525,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -594,6 +598,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     const skill = await svc.createLocalSkill(companyId, {
@@ -627,6 +632,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     const skill = await svc.createLocalSkill(companyId, {
@@ -747,6 +753,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: sourceSkillId,
@@ -1022,6 +1029,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values([
       {
@@ -1173,6 +1181,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1254,6 +1263,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1291,6 +1301,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1345,6 +1356,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     const result = await svc.importFromSource(companyId, path.join(skillDir, "SKILL.md"));
@@ -1376,6 +1388,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     const result = await svc.importFromSource(companyId, path.join(repoDir, "SKILL.md"));
@@ -1394,6 +1407,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await expect(svc.importPackageFiles(companyId, {
@@ -1434,6 +1448,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1489,6 +1504,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1533,6 +1549,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1586,6 +1603,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1640,6 +1658,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1690,6 +1709,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values({
       id: skillId,
@@ -1741,6 +1761,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companySkills).values([
       {
@@ -1805,6 +1826,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     const skill = await svc.createLocalSkill(

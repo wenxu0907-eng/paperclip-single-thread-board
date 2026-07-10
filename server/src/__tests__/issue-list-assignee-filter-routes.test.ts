@@ -106,6 +106,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       name: "Paperclip",
       issuePrefix: uniqueIssuePrefix(),
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await seedCloudTenantMember(companyId);
     await db.insert(agents).values({
@@ -502,6 +503,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       name: "Paperclip",
       issuePrefix: uniqueIssuePrefix(),
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await seedCloudTenantMember(companyId);
     await db.insert(agents).values([
@@ -563,6 +565,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       name: "Paperclip",
       issuePrefix: uniqueIssuePrefix(),
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await seedCloudTenantMember(companyId);
 

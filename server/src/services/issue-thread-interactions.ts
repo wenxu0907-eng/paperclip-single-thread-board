@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -101,6 +101,14 @@ function isRequestConfirmationLikeKind(kind: string): kind is RequestConfirmatio
 function isUserCommentSupersedableKind(kind: string): kind is UserCommentSupersedableKind {
   return (USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS as readonly string[]).includes(kind);
 }
+
+// Interaction kinds that surface a board-facing decision in the batched decision queue:
+// the request-confirmation-like kinds plus ask_user_questions and suggest_tasks.
+const BOARD_DECISION_INTERACTION_KINDS = [
+  ...REQUEST_CONFIRMATION_INTERACTION_KINDS,
+  "ask_user_questions",
+  "suggest_tasks",
+] as const;
 
 function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -940,6 +948,89 @@ export function issueThreadInteractionService(db: Db) {
         .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
 
       return rows.map((row) => hydrateInteraction(row));
+    },
+
+    listDecisionQueue: async (rootIssueId: string) => {
+      // Resolve the root issue to scope the subtree walk by company (matches the
+      // recursive-CTE pattern in issues.ts). Missing root => empty queue.
+      const root = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, rootIssueId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!root) {
+        return { rootIssueId, count: 0, items: [] as Array<
+          IssueThreadInteraction & {
+            sourceIssue: { id: string; identifier: string | null; title: string; status: string };
+          }
+        > };
+      }
+
+      // Subtree = root itself PLUS all descendants (same self-inclusive CTE shape
+      // as lowTrustBoundaryIssueCondition in issues.ts).
+      const subtreeIssues = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(sql<boolean>`
+          ${issues.id} IN (
+            WITH RECURSIVE descendants(id) AS (
+              SELECT ${issues.id}
+              FROM ${issues}
+              WHERE ${issues.companyId} = ${root.companyId}
+                AND ${issues.id} = ${rootIssueId}
+              UNION
+              SELECT ${issues.id}
+              FROM ${issues}
+              JOIN descendants ON ${issues.parentId} = descendants.id
+              WHERE ${issues.companyId} = ${root.companyId}
+            )
+            SELECT id FROM descendants
+          )
+        `);
+
+      const subtreeIssueIds = subtreeIssues.map((issue) => issue.id);
+      if (subtreeIssueIds.length === 0) {
+        return { rootIssueId, count: 0, items: [] as Array<
+          IssueThreadInteraction & {
+            sourceIssue: { id: string; identifier: string | null; title: string; status: string };
+          }
+        > };
+      }
+
+      const issueById = new Map(subtreeIssues.map((issue) => [issue.id, issue]));
+
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            inArray(issueThreadInteractions.issueId, subtreeIssueIds),
+            eq(issueThreadInteractions.status, "pending"),
+            inArray(issueThreadInteractions.kind, [...BOARD_DECISION_INTERACTION_KINDS]),
+          ),
+        )
+        .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+
+      const items = rows.map((row) => {
+        const source = issueById.get(row.issueId);
+        return {
+          ...hydrateInteraction(row),
+          sourceIssue: {
+            id: row.issueId,
+            identifier: source?.identifier ?? null,
+            title: source?.title ?? "",
+            status: source?.status ?? "",
+          },
+        };
+      });
+
+      return { rootIssueId, count: items.length, items };
     },
 
     getById: async (interactionId: string) => {

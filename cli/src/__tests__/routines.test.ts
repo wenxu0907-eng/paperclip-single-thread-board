@@ -132,12 +132,14 @@ describeEmbeddedPostgres("disableAllRoutinesInConfig", () => {
         name: "Paperclip",
         issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
         requireBoardApprovalForNewAgents: false,
+        boardOnlyOnParents: false,
       },
       {
         id: otherCompanyId,
         name: "Other company",
         issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
         requireBoardApprovalForNewAgents: false,
+        boardOnlyOnParents: false,
       },
     ]);
 

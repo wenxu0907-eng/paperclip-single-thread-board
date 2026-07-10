@@ -98,6 +98,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

@@ -48,11 +48,13 @@ import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
+  IssueStatus,
   IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
+  ISSUE_STATUSES,
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
@@ -104,6 +106,41 @@ import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+
+// Interaction kinds that surface a board-facing decision — must match
+// BOARD_DECISION_INTERACTION_KINDS in issue-thread-interactions.ts (the same
+// filter listDecisionQueue uses). Inlined here to avoid a service import cycle.
+const SUBTREE_DIGEST_BOARD_DECISION_KINDS = [
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "ask_user_questions",
+  "suggest_tasks",
+] as const;
+
+export type SubtreeDigest = {
+  rootIssueId: string;
+  descendantCount: number;
+  countsByStatus: Record<IssueStatus, number>;
+  openCount: number;
+  blockedCount: number;
+  pendingDecisionCount: number;
+  lastActivityAt: string | null;
+};
+
+function emptySubtreeDigest(rootIssueId: string): SubtreeDigest {
+  const countsByStatus = Object.fromEntries(
+    ISSUE_STATUSES.map((status) => [status, 0]),
+  ) as Record<IssueStatus, number>;
+  return {
+    rootIssueId,
+    descendantCount: 0,
+    countsByStatus,
+    openCount: 0,
+    blockedCount: 0,
+    pendingDecisionCount: 0,
+    lastActivityAt: null,
+  };
+}
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -4996,6 +5033,83 @@ export function issueService(db: Db) {
 
     getByIdentifier: async (identifier: string) => {
       return getIssueByIdentifier(identifier);
+    },
+
+    getSubtreeDigest: async (rootIssueId: string): Promise<SubtreeDigest> => {
+      // Resolve the root to scope the subtree walk by company (matches the
+      // recursive-CTE pattern above). Missing root => zeroed digest, not an error.
+      const root = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, rootIssueId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!root) {
+        return emptySubtreeDigest(rootIssueId);
+      }
+
+      // Descendants only (children-first seed `parentId = rootIssueId`), NOT
+      // self-inclusive: the digest summarizes the internal fan-out BELOW the
+      // intent, so the root itself is excluded from the status/open/blocked tallies.
+      const descendants = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(sql<boolean>`
+          ${issues.id} IN (
+            WITH RECURSIVE descendants(id) AS (
+              SELECT ${issues.id}
+              FROM ${issues}
+              WHERE ${issues.companyId} = ${root.companyId}
+                AND ${issues.parentId} = ${rootIssueId}
+              UNION
+              SELECT ${issues.id}
+              FROM ${issues}
+              JOIN descendants ON ${issues.parentId} = descendants.id
+              WHERE ${issues.companyId} = ${root.companyId}
+            )
+            SELECT id FROM descendants
+          )
+        `);
+
+      const digest = emptySubtreeDigest(rootIssueId);
+      digest.descendantCount = descendants.length;
+
+      let lastActivityAt: Date | null = null;
+      for (const descendant of descendants) {
+        const status = descendant.status as IssueStatus;
+        if (status in digest.countsByStatus) {
+          digest.countsByStatus[status] += 1;
+        }
+        if (status !== "done" && status !== "cancelled") {
+          digest.openCount += 1;
+        }
+        if (status === "blocked") {
+          digest.blockedCount += 1;
+        }
+        if (descendant.updatedAt && (!lastActivityAt || descendant.updatedAt > lastActivityAt)) {
+          lastActivityAt = descendant.updatedAt;
+        }
+      }
+      digest.lastActivityAt = lastActivityAt ? lastActivityAt.toISOString() : null;
+
+      // Pending board-facing decisions across the subtree. Self-inclusive (root +
+      // descendants), matching listDecisionQueue's self-inclusive decision walk.
+      const subtreeIssueIds = [rootIssueId, ...descendants.map((descendant) => descendant.id)];
+      const [decisionRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueThreadInteractions)
+        .where(and(
+          inArray(issueThreadInteractions.issueId, subtreeIssueIds),
+          eq(issueThreadInteractions.status, "pending"),
+          inArray(issueThreadInteractions.kind, [...SUBTREE_DIGEST_BOARD_DECISION_KINDS]),
+        ));
+      digest.pendingDecisionCount = decisionRow?.count ?? 0;
+
+      return digest;
     },
 
     getCurrentScheduledRetry: async (issueId: string) => {

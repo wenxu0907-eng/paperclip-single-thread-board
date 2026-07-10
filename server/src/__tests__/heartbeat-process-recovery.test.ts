@@ -469,6 +469,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -669,6 +670,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -887,6 +889,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -1095,6 +1098,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -3652,6 +3656,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values([
       {
@@ -3782,6 +3787,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,

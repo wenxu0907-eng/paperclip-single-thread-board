@@ -113,6 +113,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -265,6 +266,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       name: "Paperclip",
       issuePrefix: "NONE",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(issues).values({
       id: issueId,

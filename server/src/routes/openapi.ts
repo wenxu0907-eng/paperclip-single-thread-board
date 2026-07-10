@@ -3386,6 +3386,24 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/decision-queue",
+  tags: ["issues"],
+  summary: "List the batched board decision queue across an issue's descendant subtree",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/digest",
+  tags: ["issues"],
+  summary: "Rolled-up status digest of an issue's descendant subtree (internal fan-out)",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/interactions",
   tags: ["issues"],

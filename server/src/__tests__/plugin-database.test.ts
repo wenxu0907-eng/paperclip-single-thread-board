@@ -430,6 +430,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       name: "Paperclip",
       issuePrefix: "TST",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(issues).values({
       id: issueId,

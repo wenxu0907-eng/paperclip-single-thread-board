@@ -61,6 +61,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       name: "Multilingual tenant",
       issuePrefix: "LNG",
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(companyMemberships).values({
       companyId,

@@ -6063,3 +6063,191 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
   });
 
 });
+
+describeEmbeddedPostgres("issueService.getSubtreeDigest", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-digest-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
+    });
+    return companyId;
+  }
+
+  function issueRow(companyId: string, input: {
+    id: string;
+    title: string;
+    status: string;
+    parentId?: string | null;
+    updatedAt?: Date;
+  }) {
+    return {
+      id: input.id,
+      companyId,
+      title: input.title,
+      status: input.status,
+      priority: "medium" as const,
+      parentId: input.parentId ?? null,
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
+    };
+  }
+
+  function pendingBoardInteractionRow(companyId: string, issueId: string) {
+    return {
+      companyId,
+      issueId,
+      kind: "request_confirmation" as const,
+      status: "pending" as const,
+      continuationPolicy: "wake_assignee" as const,
+      payload: { version: 1, prompt: "Approve?" },
+    };
+  }
+
+  it("summarizes descendant status counts across a multi-level tree, excluding the root", async () => {
+    const companyId = await seedCompany();
+    const rootId = randomUUID();
+    const childAId = randomUUID();
+    const grandchildA1Id = randomUUID();
+    const grandchildA2Id = randomUUID();
+    const childBId = randomUUID();
+    const childCId = randomUUID();
+    // Unrelated subtree that must never leak into the root's digest.
+    const otherRootId = randomUUID();
+    const otherChildId = randomUUID();
+
+    await db.insert(issues).values([
+      issueRow(companyId, { id: rootId, title: "Root intent", status: "in_progress" }),
+      issueRow(companyId, { id: childAId, title: "Child A", status: "todo", parentId: rootId }),
+      issueRow(companyId, { id: grandchildA1Id, title: "Grandchild A1", status: "blocked", parentId: childAId }),
+      issueRow(companyId, { id: grandchildA2Id, title: "Grandchild A2", status: "done", parentId: childAId }),
+      issueRow(companyId, { id: childBId, title: "Child B", status: "in_review", parentId: rootId }),
+      issueRow(companyId, { id: childCId, title: "Child C", status: "cancelled", parentId: rootId }),
+      issueRow(companyId, { id: otherRootId, title: "Other root", status: "todo" }),
+      issueRow(companyId, { id: otherChildId, title: "Other child", status: "blocked", parentId: otherRootId }),
+    ]);
+
+    const digest = await svc.getSubtreeDigest(rootId);
+
+    expect(digest.rootIssueId).toBe(rootId);
+    expect(digest.descendantCount).toBe(5);
+    // Every IssueStatus key is present and 0-filled; the root's in_progress is excluded.
+    expect(digest.countsByStatus).toEqual({
+      backlog: 0,
+      todo: 1,
+      in_progress: 0,
+      in_review: 1,
+      done: 1,
+      blocked: 1,
+      cancelled: 1,
+    });
+    // Open = not done and not cancelled: childA(todo), grandchildA1(blocked), childB(in_review).
+    expect(digest.openCount).toBe(3);
+    expect(digest.blockedCount).toBe(1);
+  });
+
+  it("reports lastActivityAt as the latest descendant update, ignoring the root", async () => {
+    const companyId = await seedCompany();
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    const grandchildId = randomUUID();
+
+    // Root is updated most recently, but must be ignored; latest descendant wins.
+    await db.insert(issues).values([
+      issueRow(companyId, { id: rootId, title: "Root", status: "in_progress", updatedAt: new Date("2026-07-10T00:00:00.000Z") }),
+      issueRow(companyId, { id: childId, title: "Child", status: "todo", parentId: rootId, updatedAt: new Date("2026-07-01T00:00:00.000Z") }),
+      issueRow(companyId, { id: grandchildId, title: "Grandchild", status: "done", parentId: childId, updatedAt: new Date("2026-07-05T00:00:00.000Z") }),
+    ]);
+
+    const digest = await svc.getSubtreeDigest(rootId);
+
+    expect(digest.lastActivityAt).toBe("2026-07-05T00:00:00.000Z");
+  });
+
+  it("counts pending board decisions across the self-inclusive subtree", async () => {
+    const companyId = await seedCompany();
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    const otherRootId = randomUUID();
+
+    await db.insert(issues).values([
+      issueRow(companyId, { id: rootId, title: "Root", status: "in_progress" }),
+      issueRow(companyId, { id: childId, title: "Child", status: "todo", parentId: rootId }),
+      issueRow(companyId, { id: otherRootId, title: "Other root", status: "todo" }),
+    ]);
+
+    await db.insert(issueThreadInteractions).values([
+      // Pending, on the root itself (self-inclusive decision walk).
+      pendingBoardInteractionRow(companyId, rootId),
+      // Pending, on a descendant.
+      pendingBoardInteractionRow(companyId, childId),
+      // Resolved decision on a descendant — excluded (not pending).
+      { ...pendingBoardInteractionRow(companyId, childId), status: "accepted" as const },
+      // Pending decision outside the subtree — excluded.
+      pendingBoardInteractionRow(companyId, otherRootId),
+    ]);
+
+    const digest = await svc.getSubtreeDigest(rootId);
+
+    expect(digest.pendingDecisionCount).toBe(2);
+  });
+
+  it("returns a zeroed digest for an unknown root", async () => {
+    const digest = await svc.getSubtreeDigest(randomUUID());
+
+    expect(digest).toEqual({
+      rootIssueId: expect.any(String),
+      descendantCount: 0,
+      countsByStatus: {
+        backlog: 0,
+        todo: 0,
+        in_progress: 0,
+        in_review: 0,
+        done: 0,
+        blocked: 0,
+        cancelled: 0,
+      },
+      openCount: 0,
+      blockedCount: 0,
+      pendingDecisionCount: 0,
+      lastActivityAt: null,
+    });
+  });
+
+  it("returns a zeroed digest for a childless root", async () => {
+    const companyId = await seedCompany();
+    const rootId = randomUUID();
+    await db.insert(issues).values(
+      issueRow(companyId, { id: rootId, title: "Lonely root", status: "todo" }),
+    );
+
+    const digest = await svc.getSubtreeDigest(rootId);
+
+    expect(digest.descendantCount).toBe(0);
+    expect(digest.pendingDecisionCount).toBe(0);
+    expect(digest.lastActivityAt).toBeNull();
+    expect(digest.openCount).toBe(0);
+  });
+});

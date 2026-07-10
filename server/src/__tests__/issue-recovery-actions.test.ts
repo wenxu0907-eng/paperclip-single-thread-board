@@ -159,6 +159,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       name: "Recovery Co",
       issuePrefix: prefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await db.insert(agents).values([
       {

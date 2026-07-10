@@ -56,6 +56,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       status: "archived",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -90,6 +91,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       status: "active",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([

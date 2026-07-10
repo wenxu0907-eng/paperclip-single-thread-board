@@ -74,6 +74,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -115,6 +116,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -213,6 +215,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({

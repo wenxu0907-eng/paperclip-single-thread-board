@@ -113,6 +113,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       name,
       issuePrefix: uniqueIssuePrefix(),
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
     await seedCloudTenantMember(companyId);
     return companyId;

@@ -161,6 +161,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
