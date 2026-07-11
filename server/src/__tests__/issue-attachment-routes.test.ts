@@ -408,6 +408,7 @@ describe("issue attachment routes", () => {
     expect([
       undefined,
       'attachment; filename="report.html"',
+      'attachment; filename="report.html"; filename*=UTF-8\'\'report.html',
     ]).toContain(res.headers["content-disposition"]);
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
@@ -424,7 +425,7 @@ describe("issue attachment routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("application/x-msdownload");
-    expect(res.headers["content-disposition"]).toBe('attachment; filename="payload.exe"');
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="payload.exe"; filename*=UTF-8\'\'payload.exe');
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
@@ -439,6 +440,7 @@ describe("issue attachment routes", () => {
     expect([
       undefined,
       'inline; filename="preview.png"',
+      'inline; filename="preview.png"; filename*=UTF-8\'\'preview.png',
     ]).toContain(res.headers["content-disposition"]);
   });
 
@@ -459,7 +461,7 @@ describe("issue attachment routes", () => {
     expect(res.headers["accept-ranges"]).toBe("bytes");
     expect(res.headers["content-range"]).toBe("bytes 1-3/6");
     expect(res.headers["content-length"]).toBe("3");
-    expect(res.headers["content-disposition"]).toBe('inline; filename="clip.mp4"');
+    expect(res.headers["content-disposition"]).toBe('inline; filename="clip.mp4"; filename*=UTF-8\'\'clip.mp4');
     expect(Buffer.from(res.body).toString("utf8")).toBe("bcd");
     expect(storage.getObject).toHaveBeenCalledWith(
       "company-1",
@@ -482,7 +484,7 @@ describe("issue attachment routes", () => {
 
     expect(res.status).toBe(206);
     expect(res.headers["content-type"]).toContain("video/mp4");
-    expect(res.headers["content-disposition"]).toBe('inline; filename="clip.mp4"');
+    expect(res.headers["content-disposition"]).toBe('inline; filename="clip.mp4"; filename*=UTF-8\'\'clip.mp4');
     expect(res.headers["content-range"]).toBe("bytes 1-3/6");
     expect(Buffer.from(res.body).toString("utf8")).toBe("bcd");
   });
@@ -495,7 +497,7 @@ describe("issue attachment routes", () => {
     const res = await request(app).get("/api/attachments/attachment-1/content?download=1");
 
     expect(res.status).toBe(200);
-    expect(res.headers["content-disposition"]).toBe('attachment; filename="clip.webm"');
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="clip.webm"; filename*=UTF-8\'\'clip.webm');
   });
 
   it("rejects invalid byte ranges without streaming the object", async () => {

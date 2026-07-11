@@ -90,6 +90,7 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
+    projectService: () => ({}),
   }));
 
   vi.doMock("../services/instance-settings.js", () => ({

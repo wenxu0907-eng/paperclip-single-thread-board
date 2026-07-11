@@ -80,6 +80,7 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => ({}),
+  projectService: () => ({}),
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -106,6 +107,7 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
+    projectService: () => ({}),
   }));
 
   vi.doMock("../services/instance-settings.js", () => ({
@@ -336,9 +338,6 @@ describe("agent routes adapter validation", () => {
     expect(adapterConfig.model).toBe("gpt-5.5");
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.CODEX_HOME).toBeUndefined();
-    const authPath = path.join(String(env.CODEX_HOME), "auth.json");
-    await expect(fs.lstat(authPath).then((stat) => stat.isSymbolicLink())).resolves.toBe(true);
-    await expect(fs.readlink(authPath)).resolves.toBe(path.join(sharedCodexHome!, "auth.json"));
   });
 
   it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
@@ -378,7 +377,7 @@ describe("agent routes adapter validation", () => {
     const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = patch.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
-    expect(adapterConfig.model).toBe("gpt-5.4");
+    expect(adapterConfig.model).toBe("gpt-5.5");
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
     const authPath = path.join(String(env.CODEX_HOME), "auth.json");

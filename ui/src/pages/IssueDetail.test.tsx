@@ -1062,7 +1062,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     const archiveButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Archive from inbox"]',
+      'button[aria-label="Mark reviewed"]',
     );
     expect(archiveButton).not.toBeNull();
 
@@ -1083,7 +1083,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(mockNavigate).toHaveBeenCalledWith("/inbox/mine", { replace: true });
-    expect(mockPushToast).toHaveBeenCalledWith({ title: "Task archived from inbox", tone: "success" });
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Marked reviewed", tone: "success" }));
   });
 
   it("shows assignee and originating avatars in the issue header metadata", async () => {
