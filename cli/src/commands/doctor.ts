@@ -10,7 +10,6 @@ import {
   llmCheck,
   logCheck,
   portCheck,
-  qmdCheck,
   secretsCheck,
   storageCheck,
   type CheckResult,
@@ -120,15 +119,6 @@ export async function doctor(opts: {
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);
-
-  // 10. Memory recall (qmd) check
-  results.push(
-    await runRepairableCheck({
-      run: () => qmdCheck(),
-      configPath,
-      opts,
-    }),
-  );
 
   // Summary
   return printSummary(results);
