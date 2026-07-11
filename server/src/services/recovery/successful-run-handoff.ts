@@ -7,6 +7,12 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+// Per-firing routine execution issues (originKind = "routine_execution") are owned by the
+// routine lifecycle, not a human/CEO. When such a run succeeds and leaves the instance
+// in_progress with no delegated child / interaction / blocker of its own, the routine — not a
+// missing-disposition card — owns whether and when work continues (it re-fires on schedule).
+// Raising the corrective card here is a false positive (COM-96 / COM-103).
+export const ROUTINE_EXECUTION_ORIGIN_KIND = "routine_execution";
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
@@ -45,7 +51,15 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
+  | "originKind"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -380,6 +394,9 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasActiveRoutineContinuation) {
     return { kind: "skip", reason: "active routine continuation owns the next action" };
+  }
+  if (issue.originKind === ROUTINE_EXECUTION_ORIGIN_KIND) {
+    return { kind: "skip", reason: "routine execution instance is owned by the routine lifecycle" };
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };

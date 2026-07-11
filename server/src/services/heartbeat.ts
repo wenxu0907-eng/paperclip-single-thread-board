@@ -7345,6 +7345,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        originKind: issues.originKind,
         projectId: issues.projectId,
       })
       .from(issues)
