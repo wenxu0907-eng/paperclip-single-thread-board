@@ -1753,6 +1753,40 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   return true;
 }
 
+// A human comment on an `in_review` issue that carries no live review path is
+// resume feedback: the board reviewed, replied, and wants the assignee to keep
+// working. Without this the issue would linger in `in_review` even as the
+// comment wakes the assignee, so the board sees an active run under a review
+// label. Unlike the closed/blocked reopen path (which routes through `todo`),
+// review resume moves straight to `in_progress` because the work already
+// started — the assignee continues rather than restarts. The presence of a live
+// review path (typed participant / pending interaction / pending approval) is
+// checked asynchronously at the call site; this predicate only covers the
+// synchronous gate. Mirrors the same-run self-comment suppression as the reopen
+// path so an agent commenting from the run that owns the lock can't flip its own
+// review status.
+function shouldResumeReviewedIssueFromComment(input: {
+  hasCommentBody: boolean;
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+  actorRunId: string | null | undefined;
+  checkoutRunId: string | null | undefined;
+  executionRunId: string | null | undefined;
+}) {
+  if (!input.hasCommentBody) return false;
+  if (
+    typeof input.actorRunId === "string"
+    && input.actorRunId.length > 0
+    && (input.actorRunId === input.checkoutRunId || input.actorRunId === input.executionRunId)
+  ) {
+    return false;
+  }
+  if (input.actorType !== "user") return false;
+  if (input.issueStatus !== "in_review") return false;
+  return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
+}
+
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   hasComment: boolean;
   issueStatus: string | null | undefined;
@@ -2786,6 +2820,35 @@ export function issueRoutes(
     }
   }
 
+  // True when an `in_review` issue still has something owning the next review
+  // action: a typed pending execution participant, a pending thread interaction,
+  // or a pending / revision-requested approval. Callers use this to distinguish a
+  // legitimately-parked review (leave it alone) from a stale review label that a
+  // human comment should clear by resuming the assignee.
+  async function issueHasActiveReviewPath(issue: {
+    id: string;
+    executionState: unknown;
+  }): Promise<boolean> {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    const participant = executionState?.status === "pending" ? executionState.currentParticipant : null;
+    if (
+      (participant?.type === "agent" && readNonEmptyString(participant.agentId)) ||
+      (participant?.type === "user" && readNonEmptyString(participant.userId))
+    ) {
+      return true;
+    }
+
+    const interactions = await issueThreadInteractionsSvc.listForIssue(issue.id);
+    if (interactions.some((interaction) => interaction.status === "pending")) return true;
+
+    const approvals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
+    if (approvals.some((approval) => approval.status === "pending" || approval.status === "revision_requested")) {
+      return true;
+    }
+
+    return false;
+  }
+
   async function classifySourceRecoveryRevalidation(input: {
     issue: IssueRouteSnapshot;
     trigger: RecoveryRevalidationTrigger;
@@ -2846,25 +2909,8 @@ export function issueRoutes(
       return `Recovery action became stale because the source issue is ${issue.status} with an agent owner.`;
     }
 
-    if (issue.status === "in_review") {
-      const executionState = parseIssueExecutionState(issue.executionState);
-      const participant = executionState?.status === "pending" ? executionState.currentParticipant : null;
-      if (
-        (participant?.type === "agent" && readNonEmptyString(participant.agentId)) ||
-        (participant?.type === "user" && readNonEmptyString(participant.userId))
-      ) {
-        return "Recovery action became stale because the source issue now has a typed review participant.";
-      }
-
-      const interactions = await issueThreadInteractionsSvc.listForIssue(issue.id);
-      if (interactions.some((interaction) => interaction.status === "pending")) {
-        return "Recovery action became stale because the source issue now has a pending issue interaction.";
-      }
-
-      const approvals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
-      if (approvals.some((approval) => approval.status === "pending" || approval.status === "revision_requested")) {
-        return "Recovery action became stale because the source issue now has a pending approval.";
-      }
+    if (issue.status === "in_review" && (await issueHasActiveReviewPath(issue))) {
+      return "Recovery action became stale because the source issue now has an active review path.";
     }
 
     const monitor = summarizeIssueMonitor(issue, normalizeIssueExecutionPolicy(issue.executionPolicy ?? null));
@@ -7782,6 +7828,27 @@ export function issueRoutes(
     ) {
       updateFields.status = "todo";
     }
+    // Human comment on an `in_review` issue with no live review path resumes the
+    // assignee: match the POST /comments behavior so the label reflects the run
+    // the comment wake triggers. Only implicit (caller sent no explicit status).
+    let resumedFromReview = false;
+    if (
+      commentBody &&
+      updateFields.status === undefined &&
+      shouldResumeReviewedIssueFromComment({
+        hasCommentBody: true,
+        issueStatus: existing.status,
+        assigneeAgentId: requestedAssigneeAgentId,
+        actorType: actor.actorType,
+        actorRunId: actor.runId,
+        checkoutRunId: existing.checkoutRunId,
+        executionRunId: existing.executionRunId,
+      }) &&
+      !(await issueHasActiveReviewPath(existing))
+    ) {
+      updateFields.status = "in_progress";
+      resumedFromReview = true;
+    }
     let cancelledScheduledRetryRunId: string | null = null;
     if (
       commentBody &&
@@ -8142,6 +8209,7 @@ export function issueRoutes(
         ...(commentBody ? { source: "comment" } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(resumedFromReview ? { resumedFromReview: true, resumedFrom: "in_review" } : {}),
         ...(scheduledRetrySupersededByComment
           ? {
               scheduledRetrySupersededByComment: true,
@@ -9759,6 +9827,7 @@ export function issueRoutes(
     }
     let reopened = false;
     let reopenFromStatus: string | null = null;
+    let resumedFromReview = false;
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
     let issueBeforeCommentDecision = issue;
@@ -9810,6 +9879,52 @@ export function issueRoutes(
           source: "comment",
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           identifier: currentIssue.identifier,
+        },
+      });
+    } else if (
+      !assigneeSelfCommentOnTerminal &&
+      shouldResumeReviewedIssueFromComment({
+        hasCommentBody: true,
+        issueStatus: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        actorType: actor.actorType,
+        actorRunId: actor.runId,
+        checkoutRunId: issue.checkoutRunId,
+        executionRunId: issue.executionRunId,
+      }) &&
+      !(await issueHasActiveReviewPath(issue))
+    ) {
+      // A human comment on an `in_review` issue with no live review path is
+      // resume feedback: move it back to in_progress so the label matches the
+      // run the assignee-wake below kicks off. Guarded to no-active-review-path
+      // so a legitimately-parked review (pending interaction / approval / typed
+      // participant) is left untouched and owned by that path instead.
+      const resumedIssue = await svc.update(id, { status: "in_progress" });
+      if (!resumedIssue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      resumedFromReview = true;
+      reopenFromStatus = issue.status;
+      currentIssue = resumedIssue;
+
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          status: "in_progress",
+          resumedFromReview: true,
+          resumedFrom: "in_review",
+          source: "comment",
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+          identifier: currentIssue.identifier,
+          _previous: { status: "in_review" },
         },
       });
     }
