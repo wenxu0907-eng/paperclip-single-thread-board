@@ -417,4 +417,56 @@ describe("plugin-worker-manager stderr failure context", () => {
       await handle.stop().catch(() => undefined);
     }
   });
+
+  it("does not crash the host when writing to a worker that died mid-write", async () => {
+    // Regression: when a worker process dies, its stdin pipe breaks. A
+    // host->worker write dispatched before the host has processed the exit
+    // fails asynchronously with EPIPE on child.stdin. That error is emitted on
+    // the stream (not thrown), so the try/catch around sendMessage cannot catch
+    // it. Without an 'error' listener on stdin it is unhandled and crashes the
+    // whole host process, taking the server down. This asserts the host
+    // survives such a write.
+    const uncaughtException = vi.fn();
+    process.on("uncaughtException", uncaughtException);
+
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: DELAYED_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {},
+      // Keep the worker dead after we kill it so the write hits a broken pipe.
+      autoRestart: false,
+    });
+
+    try {
+      await handle.start();
+
+      const pid = handle.diagnostics().pid;
+      expect(pid).toBeTypeOf("number");
+
+      // Abruptly kill the worker, then immediately write a payload larger than
+      // the OS pipe buffer (64KB). In the same tick the host has not yet
+      // observed the exit, so stdin is still "writable"; the oversized write
+      // cannot drain to the dead reader and fails asynchronously with EPIPE —
+      // reproducing the crash.
+      process.kill(pid as number, "SIGKILL");
+      const largePayload = "x".repeat(2 * 1024 * 1024);
+      for (let i = 0; i < 5; i += 1) {
+        handle.notify("workerEvent", { i, blob: largePayload });
+      }
+
+      // Let the asynchronous stream 'error' (EPIPE) and process 'exit' flush.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(uncaughtException).not.toHaveBeenCalled();
+    } finally {
+      process.off("uncaughtException", uncaughtException);
+      await handle.stop().catch(() => undefined);
+    }
+  }, 15_000);
 });
