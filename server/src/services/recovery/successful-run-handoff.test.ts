@@ -50,6 +50,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
     hasExplicitBlockerPath: false,
+    hasOpenDelegatedChildren: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
     hasActiveRoutineContinuation: false,
@@ -131,6 +132,17 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue a missing-disposition wake when the issue has open delegated child issues owning the next action", () => {
+    // COM-96: a parent that has fanned work out to still-open child issues has a
+    // legitimate next-step path (its children). It should not trip the
+    // "missing disposition" recovery card just because the parent run itself
+    // recorded no direct disposition.
+    expect(decide({ hasOpenDelegatedChildren: true })).toEqual({
+      kind: "skip",
+      reason: "issue has open delegated child issues owning the next action",
+    });
+  });
+
   it("does not queue when the issue is the recurring parent of an active routine", () => {
     expect(decide({ hasActiveRoutineContinuation: true })).toEqual({
       kind: "skip",
@@ -152,6 +164,22 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "active routine continuation owns the next action",
     });
+  });
+
+  it("does not queue a missing-disposition wake for a routine execution instance issue", () => {
+    // COM-96 / COM-103: a per-firing routine_execution issue (e.g. "Get AI news and send
+    // to inbox") whose run succeeds and ends in_progress with no delegated child of its own
+    // is owned by the routine lifecycle — the routine re-fires on schedule, so no human
+    // missing-disposition card is warranted. This is the leaf case the child guard (open
+    // delegated children) does not cover, because these instances have zero child issues.
+    expect(decide({ issue: { ...issue, originKind: "routine_execution" } as any })).toEqual({
+      kind: "skip",
+      reason: "routine execution instance is owned by the routine lifecycle",
+    });
+    // Safety net preserved: a normal assigned task (no routine origin) with the same
+    // "successful run, no next step" shape STILL trips the corrective card.
+    expect(decide({ issue: { ...issue, originKind: null } as any }).kind).toBe("enqueue");
+    expect(decide({ issue: { ...issue, originKind: "user_created" } as any }).kind).toBe("enqueue");
   });
 
   it("does not queue when a successful run has no progress signal", () => {

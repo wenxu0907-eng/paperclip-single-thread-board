@@ -7345,6 +7345,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        originKind: issues.originKind,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -7370,6 +7371,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      openDelegatedChild,
     ] = await Promise.all([
       issue
         ? db
@@ -7509,6 +7511,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, issue.companyId),
+              eq(issues.parentId, issue.id),
+              visibleIssueCondition(),
+              notInArray(issues.status, ["done", "cancelled"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -7522,6 +7539,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasQueuedWake: Boolean(queuedWake),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
+      hasOpenDelegatedChildren: Boolean(openDelegatedChild),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
