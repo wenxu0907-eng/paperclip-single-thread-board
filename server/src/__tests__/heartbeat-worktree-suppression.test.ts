@@ -267,11 +267,31 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await heartbeat.waitForRunExecutionDrain(run!.id);
     expect(terminalStatus).toBe("succeeded");
 
-    const runCount = await db
+    // The suppression-off path must create exactly one live-plane *assignment*
+    // run — that is what this test guards. Count by invocation source so it is
+    // not confused by unrelated recovery/automation runs.
+    //
+    // COM-111 run-start invariant: because the issue started `in_review`, the
+    // assignment run resumes it to `in_progress` on claim. The stub adapter
+    // (`process.exit(0)`) succeeds without recording a disposition, so the issue
+    // is left assigned + `in_progress` with no continuation — which legitimately
+    // triggers one corrective missing-disposition handoff wake (invocation
+    // source `automation`). That is a different subsystem, not a duplicated
+    // assignment run, so we assert on the assignment lineage specifically.
+    const assignmentRunCount = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.invocationSource, "assignment"))
       .then((rows) => rows[0]?.count ?? 0);
-    expect(runCount).toBe(1);
+    expect(assignmentRunCount).toBe(1);
+
+    // And the run-start invariant did resume the review to `in_progress`.
+    const resumedStatus = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.status ?? null);
+    expect(resumedStatus).toBe("in_progress");
   }, 10_000);
 
   it("recognizes explicit restore-in-progress suppression", () => {
