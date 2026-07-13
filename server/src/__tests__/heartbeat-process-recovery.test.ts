@@ -652,7 +652,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   async function seedStrandedIssueFixture(input: {
-    status: "todo" | "in_progress";
+    status: "todo" | "in_progress" | "in_review";
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | "execution_review_participant_recovery" | null;
     runSource?: string | null;
@@ -1720,7 +1720,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain("Latest failure: `process_lost`. Inspect the linked run for the full error detail.");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
   });
@@ -2734,8 +2734,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).not.toContain("issue_continuation_waiting_on_review");
   });
 
-  it("still escalates a continuation parked for review when no open dependency remains", async () => {
-    const { companyId, issueId } = await seedStrandedIssueFixture({
+  it("does NOT escalate a continuation parked for review to blocked when no open dependency remains (COM-116)", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
       retryReason: "issue_continuation_needed",
@@ -2746,10 +2746,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    // With no real waiting target, the deliberate-wait conversion must not fire;
-    // genuine-strand detection downstream is preserved.
+    // COM-116: `issue_continuation_waiting_on_review` is the executor
+    // self-parking for review, not a dead path. With no child/blocker to
+    // convert into a dependency wait, recovery must SKIP — never force the
+    // issue to `blocked` (that was the false positive that churned COM-114).
     expect(result.waitingOnReviewResolved).toBe(0);
+    expect(result.waitingOnReviewSkipped).toBe(1);
+    expect(result.escalated).toBe(0);
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    // The issue keeps its current status — it is NOT moved to blocked.
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    // No stranded-recovery action/issue is opened, and no block comment is posted.
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("does NOT escalate an in_review continuation parked for review to blocked (COM-116)", async () => {
+    // Mirrors the exact COM-114 shape: an issue parked in_review whose latest
+    // continuation retry self-cancelled with `issue_continuation_waiting_on_review`.
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_review",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_review");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
@@ -3691,7 +3730,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried dispatch");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain("Latest failure: `process_lost`. Inspect the linked run for the full error detail.");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
@@ -4091,7 +4130,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain("Latest failure: `process_lost`. Inspect the linked run for the full error detail.");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
@@ -4124,7 +4163,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain("Latest failure: `adapter_exit_code`. Inspect the linked run for the full error detail.");
     expect(comments[0]?.body).not.toContain("- Failure: none recorded");
   });
 
@@ -4485,7 +4524,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain("Latest failure: `process_lost`. Inspect the linked run for the full error detail.");
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
   });
@@ -4577,7 +4616,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(2);
-    expect(comments[1]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[1]?.body).toContain("Latest failure: `adapter_failed`. Inspect the linked run for the full error detail.");
   });
 
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {

@@ -193,10 +193,22 @@ function readNonEmptyString(value: unknown): string | null {
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;
 
-  if (readNonEmptyString(run.error) || readNonEmptyString(run.errorCode)) {
-    return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
+  const errorCode = readNonEmptyString(run.errorCode);
+  const errorMessage = readNonEmptyString(run.error);
+  if (!errorCode && !errorMessage) return null;
+
+  // COM-116: surface the actual failure classification on the thread instead
+  // of silently withholding it. The error *code* is a controlled, non-secret
+  // machine classification (e.g. `process_lost`, `acpx_turn_failed`) and is the
+  // single most useful "why did it fail" signal — safe to publish. The raw error
+  // *message*, by contrast, can contain stack traces or leaked secrets (e.g. an
+  // `Authorization: Bearer …` header), so we deliberately never inline it; the
+  // full message stays on the linked run. When we only have a message and no
+  // code, we keep the redaction-safe "withheld" wording.
+  if (errorCode) {
+    return ` Latest failure: \`${errorCode}\`. Inspect the linked run for the full error detail.`;
   }
-  return null;
+  return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
 }
 
 function buildExecutionReviewParticipantRecoveryComment(latestRun: LatestIssueRun) {
@@ -2907,6 +2919,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
+      waitingOnReviewSkipped: 0,
       recentProgressExempted: 0,
       routineAnchorSkipped: 0,
       skipped: 0,
@@ -3251,6 +3264,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             result.issueIds.push(issue.id);
             continue;
           }
+          // COM-116: `issue_continuation_waiting_on_review` is NOT a dead
+          // execution path — it is the executor voluntarily self-parking
+          // because its continuation summary says to wait for reviewer
+          // feedback/approval before more work starts. When there is no open
+          // child or blocker issue to convert into a first-class dependency
+          // wait (handled above), we must still NOT escalate it to `blocked`:
+          // the liveness paths for a parked-for-review issue are human-driven
+          // (accept the pending confirmation, or a board comment that resumes
+          // it via the in_review->in_progress path). Force-blocking here is a
+          // false positive that (a) masks the genuine wait state, (b) discards
+          // the underlying run's failure detail, and (c) churns the issue
+          // between blocked and re-review. Skip instead — a later human action
+          // or a genuinely-classified underlying failure will move it forward.
+          result.waitingOnReviewSkipped += 1;
+          result.skipped += 1;
+          continue;
         }
 
         if (classification.kind === "non_retryable") {
