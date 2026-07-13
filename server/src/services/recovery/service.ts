@@ -681,7 +681,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    if (run) return true;
+    // COM-112/COM-113: an orphaned `deferred_issue_execution` wake — one whose
+    // lock-holder run was process-lost in a server restart — must NOT mask a
+    // stranded issue. Such a wake is never promoted again (promotion only fires on
+    // a live run's clean finalization, and the holder is already terminal/gone), so
+    // counting it as an active execution path leaves the issue looking busy forever
+    // and it only unsticks on a human comment. Only treat a deferred wake as a live
+    // execution path when the issue still has a live run holding its lock; otherwise
+    // the stranded reconciler must be free to re-dispatch it. A legitimately-parked
+    // deferred wake (lock genuinely held by a live run) is unaffected.
+    if (deferredWake) return hasActiveRunForIssueId(companyId, issueId);
+    return false;
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -4463,6 +4474,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function sweepStaleIssueLocks() {
     const result = {
       cleared: 0,
+      reapedWakes: 0,
       issueIds: [] as string[],
     };
 
@@ -4470,6 +4482,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .select({
         id: issues.id,
         companyId: issues.companyId,
+        status: issues.status,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
@@ -4551,11 +4564,63 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           referencedRunStatuses: Object.fromEntries(runStatusById),
         },
       });
+
+      // COM-112/COM-113: the lock we just cleared may have a sibling
+      // `deferred_issue_execution` wake parked behind the now-dead lock-holder run.
+      // That wake will never be promoted (releaseIssueExecutionAndPromote only fires
+      // on a live run's clean finalization, and the holder is already terminal/gone),
+      // so left in place it lingers indefinitely, keeps counting as an active wake in
+      // other subsystems, and can be spuriously promoted after a later re-dispatch.
+      // Reap it as terminal so the stranded reconciler re-dispatches the issue from a
+      // clean slate. Guards: (1) never touch a wake still legitimately parked behind a
+      // live run for this issue; (2) skip done/cancelled issues, whose parked deferred
+      // wakes are comment-driven reopen wakes that must survive.
+      if (
+        issue.status !== "done" &&
+        issue.status !== "cancelled" &&
+        !(await hasActiveRunForIssueId(issue.companyId, issue.id))
+      ) {
+        const reaped = await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            error: "Deferred issue-execution wake reaped: lock-holder run was lost (COM-112)",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          )
+          .returning({ id: agentWakeupRequests.id });
+
+        if (reaped.length > 0) {
+          result.reapedWakes += reaped.length;
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "issue.orphaned_deferred_wake_reaped",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              source: "recovery.sweep_stale_issue_locks",
+              reapedWakeIds: reaped.map((row) => row.id),
+              clearedExecutionRunId: issue.executionRunId,
+            },
+          });
+        }
+      }
     }
 
-    if (result.cleared > 0) {
+    if (result.cleared > 0 || result.reapedWakes > 0) {
       logger.warn(
-        { cleared: result.cleared, issueIds: result.issueIds },
+        { cleared: result.cleared, reapedWakes: result.reapedWakes, issueIds: result.issueIds },
         "swept stale issue lock columns",
       );
     }

@@ -4877,4 +4877,144 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  // COM-112/COM-113: an orphaned `deferred_issue_execution` wake (its lock-holder run
+  // was process-lost in a server restart) used to mask a stranded assigned issue as an
+  // "active execution path", so the periodic reconciler skipped it forever and it only
+  // unstuck on a human comment. The reconciler must now ignore such an orphaned wake and
+  // re-dispatch within one tick.
+  it("re-dispatches a stranded in_progress issue whose deferred wake was orphaned by a process-lost lock owner (COM-112/COM-113)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    // The process-lost run still holds the issue's execution lock, and the assignee's
+    // follow-up wake is parked behind it as a now-orphaned deferred wake.
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const orphanedDeferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: orphanedDeferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Not masked/skipped: the issue is re-dispatched via the continuation-recovery path.
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    // A fresh dispatch run now exists for the assignee, distinct from the dead
+    // lock-holder (enqueueWakeup self-heals the stale executionRunId lock inline and
+    // creates a fresh run rather than re-parking behind the orphan).
+    const agentRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const freshRuns = agentRuns.filter((run) => run.id !== runId);
+    expect(freshRuns.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // COM-112/COM-113: the stale-lock sweep must also reap the orphaned deferred wake
+  // parked behind the dead lock-holder, atomically per issue, so it neither lingers
+  // indefinitely nor gets spuriously promoted after a later re-dispatch.
+  it("reaps an orphaned deferred wake and clears the stale lock in one sweep (COM-112/COM-113)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const orphanedDeferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: orphanedDeferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.cleared).toBe(1);
+    expect(result.reapedWakes).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+
+    const wake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, orphanedDeferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(wake?.status).toBe("cancelled");
+    expect(wake?.finishedAt).not.toBeNull();
+  });
+
+  // COM-113 safety invariant: a legitimately-parked deferred wake (lock genuinely held
+  // by a LIVE run) must be untouched — neither unmasked by the reconciler nor reaped by
+  // the sweep.
+  it("leaves a legitimately-parked deferred wake untouched while a live run holds the lock (COM-113)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    // Promote the lock-holder run back to a live (running) state holding the lock.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", errorCode: null, error: null, finishedAt: null })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const parkedDeferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: parkedDeferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const reconcile = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(reconcile.continuationRequeued).toBe(0);
+    expect(reconcile.issueIds).not.toContain(issueId);
+
+    const sweep = await heartbeat.sweepStaleIssueLocks();
+    expect(sweep.cleared).toBe(0);
+    expect(sweep.reapedWakes).toBe(0);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(runId);
+
+    const wake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, parkedDeferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(wake?.status).toBe("deferred_issue_execution");
+    expect(wake?.finishedAt).toBeNull();
+  });
 });
