@@ -953,6 +953,24 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
+// COM-111 run-start invariant (pure decision half): a working run that has just
+// acquired the execution lock on an issue should never leave it labelled
+// `in_review`. The comment routes already resume `in_review -> in_progress` on a
+// human comment; this covers every other trigger that starts a run
+// (automation/system wakes, monitors, scheduled retries). A review is left parked
+// only when something still owns the next review action (`hasActiveReviewPath`);
+// the live-review probe itself is done at the call site against the DB.
+export function shouldResumeReviewedIssueOnRunStart(input: {
+  issueStatus: string | null | undefined;
+  runOwnsExecutionLock: boolean;
+  hasActiveReviewPath: boolean;
+}): boolean {
+  if (input.issueStatus !== "in_review") return false;
+  if (!input.runOwnsExecutionLock) return false;
+  if (input.hasActiveReviewPath) return false;
+  return true;
+}
+
 async function resolveRunScopedMentionedSkillKeys(input: {
   db: Db;
   companyId: string;
@@ -9635,9 +9653,114 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
         );
+
+      // COM-111 run-start invariant: once a working run actually starts executing
+      // against an `in_review` issue, the review label is stale — the board would
+      // otherwise see a live run under a review status. The comment routes already
+      // resume `in_review -> in_progress` on a human comment; this covers every
+      // other trigger that starts a run (automation/system wakes, monitors,
+      // scheduled retries). Only flip when the run owns the execution lock and the
+      // review is not legitimately parked: a pending thread interaction, a pending
+      // or revision_requested approval, or a typed pending execution participant all
+      // own the next action and keep the issue in `in_review`.
+      const lockedIssue = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          executionState: issues.executionState,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      // Cheap synchronous gate first so the active-review-path DB probe only runs
+      // for the rare claim that actually lands on an `in_review` issue it owns.
+      if (
+        lockedIssue &&
+        shouldResumeReviewedIssueOnRunStart({
+          issueStatus: lockedIssue.status,
+          runOwnsExecutionLock: lockedIssue.executionRunId === claimed.id,
+          hasActiveReviewPath: false,
+        }) &&
+        !(await claimedIssueHasActiveReviewPath(claimed.companyId, lockedIssue.id, lockedIssue.executionState))
+      ) {
+        const resumed = await db
+          .update(issues)
+          .set({ status: "in_progress", updatedAt: claimedAt })
+          .where(
+            and(
+              eq(issues.id, lockedIssue.id),
+              eq(issues.companyId, claimed.companyId),
+              eq(issues.status, "in_review"),
+              eq(issues.executionRunId, claimed.id),
+            ),
+          )
+          .returning({ id: issues.id })
+          .then((rows) => rows[0] ?? null);
+        if (resumed) {
+          await appendRunEvent(claimed, await nextRunEventSeq(claimed.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message:
+              "Resumed issue from in_review to in_progress: a live run started with no active review path (COM-111).",
+            payload: { issueId: lockedIssue.id, from: "in_review", to: "in_progress" },
+          });
+        }
+      }
     }
 
     return claimed;
+  }
+
+  // True when an `in_review` issue still has something owning the next review
+  // action — a typed pending execution participant, a pending thread interaction,
+  // or a pending / revision_requested approval. Mirrors `issueHasActiveReviewPath`
+  // in the issue routes so the run-start invariant and the comment-route resume
+  // agree on what counts as a legitimately-parked review.
+  async function claimedIssueHasActiveReviewPath(
+    companyId: string,
+    issueId: string,
+    executionState: unknown,
+  ): Promise<boolean> {
+    const parsed = parseIssueExecutionState(executionState);
+    const participant = parsed?.status === "pending" ? parsed.currentParticipant : null;
+    if (
+      (participant?.type === "agent" && readNonEmptyString(participant.agentId)) ||
+      (participant?.type === "user" && readNonEmptyString(participant.userId))
+    ) {
+      return true;
+    }
+
+    const pendingInteraction = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (pendingInteraction) return true;
+
+    const pendingApproval = await db
+      .select({ id: issueApprovals.approvalId })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(pendingApproval);
   }
 
   async function cancelQueuedRunForBlockedDependencies(
