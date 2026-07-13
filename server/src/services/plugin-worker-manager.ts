@@ -754,6 +754,29 @@ export function createPluginWorkerHandle(
       });
     }
 
+    // A worker that dies mid-write breaks its stdin pipe. Node surfaces that
+    // as an asynchronous 'error' (typically EPIPE) on the stdin stream, which
+    // cannot be caught by the try/catch around sendMessage. Without a listener
+    // that error is unhandled and crashes the whole host process — taking the
+    // server down. The 'exit' handler below drives recovery/restart and
+    // rejects pending requests, so here we only log and swallow: the in-flight
+    // write is already lost.
+    // A worker that dies mid-write breaks its stdin pipe. Node surfaces that
+    // as an asynchronous 'error' (typically EPIPE) on the stdin stream, which
+    // cannot be caught by the try/catch around sendMessage. Without a listener
+    // that error is unhandled and crashes the whole host process — taking the
+    // server down. The 'exit' handler below drives recovery/restart and
+    // rejects pending requests, so here we only log and swallow: the in-flight
+    // write is already lost.
+    if (child.stdin) {
+      child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+        log.warn(
+          { err: err.message, code: err.code },
+          "worker stdin stream error (worker likely exited mid-write)",
+        );
+      });
+    }
+
     // Handle process exit
     child.on("exit", (code, signal) => {
       handleProcessExit(code, signal);
