@@ -72,6 +72,10 @@ const mockRoutineService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => [] as Array<{ status: string }>),
+}));
+const mockIssueApprovalService = vi.hoisted(() => ({
+  listApprovalsForIssue: vi.fn(async () => [] as Array<{ status: string }>),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
@@ -141,7 +145,7 @@ vi.mock("../services/index.js", () => ({
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
-  issueApprovalService: () => ({}),
+  issueApprovalService: () => mockIssueApprovalService,
   issueRecoveryActionService: () => mockIssueRecoveryActionService,
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
@@ -206,7 +210,7 @@ async function normalizePolicy(input: {
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progress") {
+function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progress" | "in_review") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -216,6 +220,9 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
     createdByUserId: "local-board",
     identifier: "PAP-580",
     title: "Comment reopen default",
+    executionState: null,
+    checkoutRunId: null,
+    executionRunId: null,
   };
 }
 
@@ -263,6 +270,10 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockReset();
+    mockIssueApprovalService.listApprovalsForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockExternalObjectService.syncCommentSafely.mockReset();
     mockExternalObjectService.syncIssueSafely.mockReset();
@@ -535,6 +546,89 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("resumes an in_review issue to in_progress on a board POST comment when no review path is live", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_review"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("in_review"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Please tweak the copy and continue." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "in_progress" },
+    );
+    // Resume feedback wakes the assignee as a normal comment (not a reopen).
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_commented" }),
+    ));
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({ status: "in_progress", resumedFromReview: true }),
+      }),
+    );
+  });
+
+  it("leaves an in_review issue in review when a pending interaction owns the next action", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_review"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("in_review"),
+      ...patch,
+    }));
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{ status: "pending" }]);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "One more thought while you review." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    // The live review path owns the issue; the comment must not flip the status.
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "in_progress" },
+    );
+  });
+
+  it("leaves an in_review issue in review when a pending approval owns the next action", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_review"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("in_review"),
+      ...patch,
+    }));
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([{ status: "revision_requested" }]);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Adding context for the approver." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "in_progress" },
+    );
+  });
+
+  it("does not resume an in_review issue when the assignee agent comments on its own review", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_review"));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Log line from the assignee." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "in_progress" },
+    );
   });
 
   it("rejects non-assignee agent POST comments on closed issues", async () => {
