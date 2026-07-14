@@ -547,7 +547,69 @@ export async function createApp(
       );
     }
   };
+  // Reconcile DB-registered plugin versions against what is actually on disk.
+  // A cutover/upgrade that swaps the on-disk package (e.g. bumping the bundled
+  // Discord plugin from 0.7.3 -> 0.9.4) rewrites the files but NOT the `plugins`
+  // row, which stays pinned to the old version. If that old version had failed
+  // activation it is wedged in `error`, and loadAll() — which only loads `ready`
+  // plugins — never retries it, even though the newer on-disk code would now
+  // succeed. This fail-safe pass detects the drift, syncs the registry row to
+  // the on-disk manifest, and re-arms an errored plugin so loadAll() activates
+  // it with the current code in the same startup pass.
+  //
+  // SAFETY (invariant B): fully fail-safe. Any failure is caught, logged, and
+  // swallowed; a degraded boot (plugins keep their existing registered version)
+  // is strictly preferable to a crash loop.
+  const reconcileInstalledPluginVersions = async (): Promise<void> => {
+    try {
+      const { discovered } = await loader.discoverAll();
+      for (const disk of discovered) {
+        if (!disk.manifest) continue;
+        const row = await pluginRegistry.getByKey(disk.manifest.id);
+        // Not installed → leave it to the normal install path, not this sync.
+        if (!row) continue;
+        // Respect soft-delete; never resurrect an uninstalled plugin here.
+        if (row.status === "uninstalled") continue;
+        // Already in sync with disk.
+        if (row.version === disk.version) continue;
+
+        // Version drift: sync the registry row to the on-disk manifest.
+        await pluginRegistry.update(row.id, {
+          version: disk.version,
+          manifest: disk.manifest,
+          packageName: disk.packageName,
+        });
+
+        // Only re-arm a plugin that was wedged in `error` by the stale version.
+        // Gating on a real version change avoids hot-looping a genuinely broken
+        // build, and we leave operator-`disabled` plugins disabled.
+        if (row.status === "error") {
+          await pluginRegistry.updateStatus(row.id, {
+            status: "ready",
+            lastError: null,
+          });
+        }
+
+        logger.info(
+          {
+            pluginKey: row.pluginKey,
+            from: row.version,
+            to: disk.version,
+            previousStatus: row.status,
+            reArmed: row.status === "error",
+          },
+          "reconciled installed plugin version to on-disk manifest",
+        );
+      }
+    } catch (err) {
+      logger.error(
+        { err },
+        "Failed to reconcile installed plugin versions; continuing boot (plugins keep their existing registered versions)",
+      );
+    }
+  };
   void ensureBundledKubernetesPlugin()
+    .then(() => reconcileInstalledPluginVersions())
     .then(() => loader.loadAll())
     .then((result) => {
     if (!result) return;
