@@ -33,7 +33,12 @@ jobs:
       ref: ${{ github.sha }}
 
   publish_canary:
-    if: github.event_name == 'push'
+    # Only publish from the canonical upstream repo. Forks (e.g. review/staging
+    # forks) lack npm publishing credentials, so npm publish fails with ENEEDAUTH
+    # and reddens master push CI. Skipping here keeps the fork's Release workflow
+    # green without attempting to publish. Mirrors the fork-secret skip pattern in
+    # commitperclip-review.yml.
+    if: github.event_name == 'push' && github.repository_owner == 'paperclipai'
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
