@@ -182,6 +182,36 @@ describe("agent memory routes", () => {
     ]);
   });
 
+  it("sets hasMemories when only project-scoped memory exists (COM-135)", async () => {
+    // Top-level per-agent memory is empty (e.g. adapterConfig.cwd unset), so
+    // getOverview reports hasMemories=false — but real memory lives under the
+    // project workspace. The route must fold projectMemories back into
+    // hasMemories so the Memory tab renders instead of "No memories yet".
+    mockMemoryService.getOverview.mockResolvedValue({
+      agentId: AGENT_ID,
+      companyId: "company-1",
+      memorySource: "harness",
+      hasMemories: false,
+      tacit: null,
+      index: null,
+      dailyNotes: [],
+      paraEntities: [],
+      harnessFacts: [],
+      projectMemories: [],
+      truncated: false,
+    });
+    mockProjectService.list.mockResolvedValue([
+      { id: "proj-1", name: "Paperclip", codebase: { effectiveLocalFolder: "/work/proj-1" } },
+    ]);
+    mockMemoryService.getProjectHarnessOverviews.mockResolvedValue([
+      { projectId: "proj-1", projectName: "Paperclip", tacit: null, harnessFacts: [], truncated: false },
+    ]);
+    const res = await request(await createApp(boardActor)).get(`/api/agents/${AGENT_ID}/memories?companyId=company-1`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.hasMemories).toBe(true);
+    expect(res.body.projectMemories).toHaveLength(1);
+  });
+
   it("reads a project memory file when projectId is supplied", async () => {
     mockProjectService.list.mockResolvedValue([
       { id: "proj-1", name: "Paperclip", codebase: { effectiveLocalFolder: "/work/proj-1" } },
