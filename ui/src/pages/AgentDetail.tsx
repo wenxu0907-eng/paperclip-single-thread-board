@@ -2922,7 +2922,7 @@ function MemoriesTab({ agent, companyId }: { agent: Agent; companyId?: string })
     );
   }
 
-  if (!overview?.hasMemories) {
+  if (!overview?.hasMemories && !(overview?.projectMemories?.length)) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border py-16 text-center">
         <BrainCircuit className="h-8 w-8 text-muted-foreground" />

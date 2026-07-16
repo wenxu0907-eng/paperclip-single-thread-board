@@ -2926,6 +2926,12 @@ export function agentRoutes(
     overview.projectMemories = await memories.getProjectHarnessOverviews(
       await resolveCompanyProjectDirs(agent.companyId),
     );
+    // Project-scoped memory is populated after getOverview computed hasMemories,
+    // so fold it back in — otherwise an agent whose top-level (per-agent) memory
+    // dir is empty (e.g. its adapterConfig.cwd is unset and the harness keyed
+    // memory by the project workspace instead) reads as "No memories yet" even
+    // though real project memory was found. (COM-135)
+    overview.hasMemories = overview.hasMemories || overview.projectMemories.length > 0;
     res.json(overview);
   });
 
