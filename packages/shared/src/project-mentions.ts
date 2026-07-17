@@ -11,6 +11,7 @@ const HEX_COLOR_WITH_HASH_RE = /^#[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_WITH_HASH_RE = /^#[0-9a-f]{3}$/i;
 const PROJECT_MENTION_LINK_RE = /\[[^\]]*]\((project:\/\/[^)\s]+)\)/gi;
 const AGENT_MENTION_LINK_RE = /\[[^\]]*]\((agent:\/\/[^)\s]+)\)/gi;
+const AGENT_PLAIN_MENTION_RE = /@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
 const USER_MENTION_LINK_RE = /\[[^\]]*]\((user:\/\/[^)\s]+)\)/gi;
 const SKILL_MENTION_LINK_RE = /\[[^\]]*]\((skill:\/\/[^)\s]+)\)/gi;
 const ROUTINE_MENTION_LINK_RE = /\[[^\]]*]\((routine:\/\/[^)\s]+)\)/gi;
@@ -250,6 +251,11 @@ export function extractAgentMentionIds(markdown: string): string[] {
   while ((match = re.exec(markdown)) !== null) {
     const parsed = parseAgentMentionHref(match[1]);
     if (parsed) ids.add(parsed.agentId);
+  }
+  // Also detect plain-text @<uuid> mentions written by agents that don't use the link format
+  const plainRe = new RegExp(AGENT_PLAIN_MENTION_RE);
+  while ((match = plainRe.exec(markdown)) !== null) {
+    ids.add(match[1]);
   }
   return [...ids];
 }
