@@ -9855,6 +9855,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         details: Record<string, unknown>;
       };
 
+  // COM-145: Distinguish a run that was *killed mid-flight* from one that
+  // *gracefully parked*. A `process_lost` failure means the host process died
+  // under the executor (e.g. a self-triggered `tsx watch` restart during a
+  // plugin-dist deploy) — the executor had already resumed and was actively
+  // working, so any "wait for review" continuation summary left over from
+  // before it resumed is stale and must NOT suppress re-execution. Returns true
+  // only when the single most-recent terminal run for the issue is `process_lost`.
+  async function latestTerminalRunWasProcessLost(
+    companyId: string,
+    issueId: string,
+    excludeRunId: string,
+  ): Promise<boolean> {
+    const latestTerminal = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          sql`${heartbeatRuns.id} <> ${excludeRunId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return readNonEmptyString(latestTerminal?.errorCode) === "process_lost";
+  }
+
   async function evaluateQueuedRunStaleness(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
@@ -9901,18 +9933,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : await getIssueContinuationSummaryDocument(db, issueId);
       const continuationSummaryBody = queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
       if (continuationSummaryParksExecutor(continuationSummaryBody)) {
-        return {
-          stale: true,
-          errorCode: "issue_continuation_waiting_on_review",
-          reason:
-            "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
-          details: {
-            issueId,
-            wakeReason,
-            retryReason,
-            nextAction: continuationSummaryBody,
-          },
-        };
+        // COM-145: Only honor the park when the prior execution ended
+        // gracefully. If the most recent terminal run was killed `process_lost`
+        // (host process died mid-flight — e.g. a self-triggered server restart
+        // during a deploy), the executor had already resumed post-accept and was
+        // actively working; the park summary is stale and cancelling here would
+        // silently drop the interrupted work (the COM-144 failure mode). Fall
+        // through so the continuation re-executes instead of being skipped.
+        const priorRunKilledMidFlight = await latestTerminalRunWasProcessLost(
+          run.companyId,
+          issueId,
+          run.id,
+        );
+        if (!priorRunKilledMidFlight) {
+          return {
+            stale: true,
+            errorCode: "issue_continuation_waiting_on_review",
+            reason:
+              "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
+            details: {
+              issueId,
+              wakeReason,
+              retryReason,
+              nextAction: continuationSummaryBody,
+            },
+          };
+        }
       }
     }
 

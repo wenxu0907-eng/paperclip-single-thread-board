@@ -39,4 +39,16 @@ describe("resolveServerDevWatchIgnorePaths", () => {
     expect(ignorePaths).toContain("**/{node_modules,bower_components,vendor}/**");
     expect(ignorePaths).toContain("**/.vite-temp/**");
   });
+
+  it("excludes the managed runtime plugins dir so a plugin dist install does not restart the server (COM-145)", () => {
+    const home = process.env.HOME;
+    expect(home, "HOME must be set for this test").toBeTruthy();
+
+    const serverRoot = path.join(os.tmpdir(), "paperclip-dev-watch-server-root");
+    const ignorePaths = resolveServerDevWatchIgnorePaths(serverRoot);
+
+    const runtimePluginsDir = `${home}/.paperclip/plugins`;
+    expect(ignorePaths).toContain(runtimePluginsDir);
+    expect(ignorePaths).toContain(`${runtimePluginsDir.replaceAll(path.sep, "/")}/**`);
+  });
 });
