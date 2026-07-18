@@ -31,6 +31,13 @@ export function resolveServerDevWatchIgnorePaths(serverRoot: string): string[] {
     // npm install during reinstall would trigger a restart mid-request
     // if tsx watch sees the new files. Exclude the managed plugins dir.
     process.env.HOME + "/.paperclip/adapter-plugins",
+    // COM-145: installing/upgrading a reviewed plugin writes into
+    // `~/.paperclip/plugins/node_modules/**/dist`. If tsx watch sees those
+    // files it restarts the core server mid-deploy and kills the very run
+    // performing the install (`error_code=process_lost`). Plugin dist changes
+    // must hot-reload via `plugin-dev-watcher`, never restart the host process,
+    // so exclude the managed runtime plugins dir (mirrors DEFAULT_LOCAL_PLUGIN_DIR).
+    process.env.HOME + "/.paperclip/plugins",
   ]) {
     addIgnorePath(ignorePaths, path.resolve(serverRoot, relativePath));
   }
