@@ -1304,6 +1304,83 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  it("queues one retry when a local run is lost with no recorded pid (server restarted mid-flight, COM-151)", async () => {
+    // A host restart (e.g. tsx-watch) can kill the child and reap the run with
+    // neither processPid nor processGroupId persisted -> buildProcessLossMessage
+    // falls through to "server may have restarted". Previously this case was
+    // excluded from the eager retry and the issue was left in in_review awaiting
+    // the next continuation wake. It must now still get exactly one retry.
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRuns = runs.filter((row) => row.retryOfRunId === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("server may have restarted");
+    expect(retryRuns).toHaveLength(1);
+    const retryRun = retryRuns[0];
+    expect(["queued", "running"]).toContain(retryRun?.status);
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+
+    // The retry takes over the issue execution lock and the dead run's checkout
+    // is released, so the issue is not stranded in in_review.
+    const issue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.checkoutRunId === null ? row : null;
+        })
+    );
+    expect([retryRun?.id ?? null, null]).toContain(issue?.executionRunId ?? null);
+  });
+
+  it("does not retry a second time once a no-pid process_lost run has already been retried (COM-151)", async () => {
+    // The single-retry cap must still hold when the pid is absent, so a run that
+    // keeps dying can't loop forever.
+    // includeIssue:false isolates the process-loss retry path from the separate
+    // issue-continuation recovery that runs when an execution lock is released.
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      processLossRetryCount: 1,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const retryRuns = runs.filter((row) => row.retryOfRunId === runId);
+    expect(retryRuns).toHaveLength(0);
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+  });
+
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",

@@ -10431,7 +10431,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      // COM-151: Do NOT gate the eager process_lost retry on a recorded
+      // pid/pgid. The most damaging process_lost is a host restart (tsx-watch
+      // during self-inflicted plugin/server work) that kills the child AND
+      // leaves no durable pid on the run row — buildProcessLossMessage falls
+      // through to "server may have restarted". The old `(processPid ||
+      // processGroupId)` clause excluded exactly that recoverable case, so the
+      // issue was released and left sitting in in_review until the next natural
+      // continuation wake (observed ~11 min later on COM-45), with no error
+      // surfaced. The graceful-shutdown path (drainRunningRunsForShutdown)
+      // already retries unconditionally; align the reap path with it. A tracked
+      // local-child run that ended process_lost and has not yet been retried
+      // gets exactly one eager retry (processLossRetryCount cap). pid/pgid are
+      // still used above solely for liveness detection and descendant cleanup.
+      const shouldRetry = tracksLocalChild && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
