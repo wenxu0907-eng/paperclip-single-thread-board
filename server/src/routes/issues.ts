@@ -9163,6 +9163,8 @@ export function issueRoutes(
         interactionKind: interaction.kind,
         interactionStatus: interaction.status,
         continuationPolicy: interaction.continuationPolicy,
+        interactionTitle: interaction.title ?? null,
+        interactionSummary: interaction.summary ?? null,
       },
     });
 
