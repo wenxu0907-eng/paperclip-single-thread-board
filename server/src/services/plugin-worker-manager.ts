@@ -395,6 +395,19 @@ export function createPluginWorkerHandle(
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
 
+  // Whether this worker receives inbound interactions over its OWN transport
+  // (e.g. the Discord gateway WebSocket) rather than via a host→worker dispatch.
+  // Gateway-ingress interactions are worker-originated: no host dispatch runs,
+  // so no invocation is registered and nested host calls (agents.list,
+  // issues.create, …) carry no invocation id. `contextForWorkerMessage` would
+  // otherwise flag them as an invalid scope whenever any other invocation is
+  // concurrently in flight — making `/clip assign` and its `agent:` autocomplete
+  // fail intermittently under the worker's own notification/job load. For these
+  // workers we resolve no-id worker→host calls to a GLOBAL scope, mirroring the
+  // handleWebhook global invocation (see resolveInvocationRegistration). Matches
+  // the plugin's own default (gateway enabled unless config.enableGateway===false).
+  const gatewayIngress = (options.config as { enableGateway?: unknown })?.enableGateway !== false;
+
   // Optional methods reported by the worker during initialization
   let supportedMethods: string[] = [];
 
@@ -587,6 +600,13 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      // Gateway-ingress workers handle inbound interactions outside any host
+      // dispatch, so their nested calls legitimately carry no invocation id.
+      // Resolve them to a global (null) scope — the same context the
+      // handleWebhook global invocation produces — instead of rejecting under
+      // concurrent load. Non-gateway workers keep strict no-id rejection so a
+      // scoped invocation that loses its id cannot silently escape its company.
+      if (gatewayIngress) return { invocationScope: null };
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
