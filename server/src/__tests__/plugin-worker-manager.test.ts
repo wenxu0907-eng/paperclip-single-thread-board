@@ -275,6 +275,61 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("registers a global invocation for handleWebhook so nested host calls resolve for any company", async () => {
+    // handleWebhook dispatches carry no companyId — the worker resolves the
+    // company from the inbound payload (e.g. a Discord interaction's channel).
+    // The host must still register a GLOBAL invocation so the worker has an id
+    // to echo on nested host calls. Without it the nested call carries no
+    // invocation id, and whenever another scoped invocation is concurrently
+    // active contextForWorkerMessage() flags it as an invalid scope — making
+    // inbound commands like `/clip assign` fail intermittently.
+    //
+    // A resolved context of `{ invocationScope: null }` proves a global
+    // invocation was registered and echoed; the pre-fix behaviour resolves to
+    // `{}` (no id registered), which only survives while nothing else is in
+    // flight.
+    const companiesGet = vi.fn(async (
+      params: { companyId: string },
+      context?: { invocationScope?: { companyId?: string | null } | null },
+    ) => ({
+      id: params.companyId,
+      scopedCompanyId: context?.invocationScope?.companyId ?? null,
+    }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet as never,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("handleWebhook" as keyof HostToWorkerMethods, {
+        endpointKey: "discord-interactions",
+        mode: "echo",
+        requestedCompanyId: "company-from-channel",
+      } as HostToWorkerMethods[keyof HostToWorkerMethods][0])).resolves.toEqual({
+        id: "company-from-channel",
+        scopedCompanyId: null,
+      });
+
+      expect(companiesGet).toHaveBeenCalledWith(
+        { companyId: "company-from-channel" },
+        { invocationScope: null },
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects performAction nested host calls that omit the invocation id", async () => {
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",
