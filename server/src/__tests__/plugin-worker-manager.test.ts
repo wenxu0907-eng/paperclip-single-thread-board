@@ -330,6 +330,62 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("resolves handleWebhook nested host calls that lose the invocation id to global scope", async () => {
+    // Regression for COM-154: the Discord `/clip assign` `agent:` autocomplete
+    // path loses the SDK's AsyncLocalStorage invocation context across the
+    // plugin's gateway async boundary, so its nested agents.list/state.get
+    // (here companies.get) calls arrive with NO invocation id while the
+    // webhook's own GLOBAL invocation is still active. The pre-fix behaviour
+    // flagged those unlabeled calls as an invalid scope, making the agent
+    // dropdown fail deterministically ("No options match your search").
+    //
+    // Because only a global (`scope: null`) invocation is active — nothing
+    // company-scoped that the call could wrongly ride — the nested call must
+    // resolve to global scope and succeed.
+    const companiesGet = vi.fn(async (
+      params: { companyId: string },
+      context?: { invocationScope?: { companyId?: string | null } | null },
+    ) => ({
+      id: params.companyId,
+      scopedCompanyId: context?.invocationScope?.companyId ?? null,
+    }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet as never,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      // `mode: "drop"` makes the fixture worker omit the invocation id on its
+      // nested call, simulating the lost async context.
+      await expect(handle.call("handleWebhook" as keyof HostToWorkerMethods, {
+        endpointKey: "discord-interactions",
+        mode: "drop",
+        requestedCompanyId: "company-from-channel",
+      } as HostToWorkerMethods[keyof HostToWorkerMethods][0])).resolves.toEqual({
+        id: "company-from-channel",
+        scopedCompanyId: null,
+      });
+
+      expect(companiesGet).toHaveBeenCalledWith(
+        { companyId: "company-from-channel" },
+        { invocationScope: null },
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects performAction nested host calls that omit the invocation id", async () => {
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",

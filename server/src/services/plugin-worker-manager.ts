@@ -586,14 +586,36 @@ export function createPluginWorkerHandle(
     const invocationId = readNonEmptyString(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
+    // A company-SCOPED invocation being concurrently active is the only thing
+    // that makes an unidentified nested call unsafe: we cannot tell whether the
+    // call is trying to ride that company's scope. A GLOBAL invocation
+    // (`scope: null`, registered for `handleWebhook`) grants no company-specific
+    // privilege, so an unidentified call running under global scope leaks
+    // nothing. Every live invocation — including those attached to in-flight
+    // host→worker calls — is tracked in `activeInvocations` until it settles,
+    // so this set is authoritative.
+    const scopedInvocationActive = Array.from(activeInvocations.values()).some(
+      (entry) => entry.scope !== null,
+    );
+
     if (!invocationId) {
-      const hasActiveInvocation = activeInvocations.size > 0 ||
-        Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
-      return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+      // The Discord autocomplete path loses the SDK's AsyncLocalStorage
+      // invocation context across its gateway async boundary, so nested
+      // `agents.list`/`state.get` calls arrive unlabeled while the webhook's
+      // own global invocation is still active. Rejecting those made
+      // `/clip assign`'s `agent:` autocomplete fail deterministically. Only
+      // reject when a company-scoped invocation is concurrently active;
+      // otherwise resolve to global scope (or no restriction when nothing is
+      // active).
+      if (scopedInvocationActive) return { invalidInvocationScope: true };
+      return activeInvocations.size > 0 ? { invocationScope: null } : {};
     }
     const entry = activeInvocations.get(invocationId);
-    if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope };
+    if (entry) return { invocationScope: entry.scope };
+    // The referenced invocation already settled (expired). If a company-scoped
+    // invocation is concurrently active we cannot safely guess this stale
+    // call's scope, so reject; otherwise fall back to global scope.
+    return scopedInvocationActive ? { invalidInvocationScope: true } : { invocationScope: null };
   }
 
   /**
