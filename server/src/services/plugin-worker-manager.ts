@@ -209,7 +209,9 @@ interface PendingRequest {
 }
 
 interface ActiveInvocation {
-  scope: PluginInvocationScope;
+  // `null` = global (instance-wide) invocation; nested worker→host calls made
+  // under it are not confined to a single company.
+  scope: PluginInvocationScope | null;
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -531,7 +533,33 @@ export function createPluginWorkerHandle(
     return null;
   }
 
-  function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
+  /**
+   * Decide whether a host→worker dispatch should register an invocation, and
+   * with what scope. Returns `null` to register nothing.
+   *
+   * `handleWebhook` dispatches carry no companyId — the company is resolved by
+   * the worker from the inbound payload (e.g. a Discord interaction's channel).
+   * They must still register a GLOBAL invocation so the worker has an id to
+   * echo on nested host calls (projects.list, issues.create, …). Without it,
+   * those calls carry no invocation id, and whenever any other scoped
+   * invocation is concurrently active `contextForWorkerMessage` flags them as
+   * an invalid scope — making inbound commands like `/clip assign` fail
+   * intermittently under load.
+   */
+  function resolveInvocationRegistration(
+    method: HostToWorkerMethodName | string,
+    params: unknown,
+  ): { scope: PluginInvocationScope | null } | null {
+    const scope = deriveInvocationScope(method, params);
+    if (scope) return { scope };
+    if (method === "handleWebhook") return { scope: null };
+    return null;
+  }
+
+  function registerInvocation(
+    scope: PluginInvocationScope | null,
+    ttlMs?: number,
+  ): PluginInvocationContext {
     const invocation: PluginInvocationContext = {
       id: randomUUID(),
       scope,
@@ -1156,8 +1184,8 @@ export function createPluginWorkerHandle(
 
       const id = nextRequestId++;
       const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
-      const invocationScope = deriveInvocationScope(method, params);
-      const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      const registration = resolveInvocationRegistration(method, params);
+      const invocation = registration ? registerInvocation(registration.scope) : null;
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1279,8 +1307,10 @@ export function createPluginWorkerHandle(
 
     notify(method: string, params: unknown) {
       if (status !== "running") return;
-      const invocationScope = deriveInvocationScope(method, params);
-      const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
+      const registration = resolveInvocationRegistration(method, params);
+      const invocation = registration
+        ? registerInvocation(registration.scope, MAX_RPC_TIMEOUT_MS)
+        : null;
       try {
         sendMessage({
           jsonrpc: JSONRPC_VERSION,
