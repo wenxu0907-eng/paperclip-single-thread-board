@@ -195,6 +195,8 @@ describe.sequential("issue thread interaction routes", () => {
       idempotencyKey: null,
       sourceCommentId: null,
       sourceRunId: "run-1",
+      title: "Proposed follow-up tasks",
+      summary: "Two tasks to review",
       payload: {
         version: 1,
         tasks: [{ clientKey: "task-1", title: "One" }],
@@ -391,6 +393,10 @@ describe.sequential("issue thread interaction routes", () => {
         details: expect.objectContaining({
           interactionId: "interaction-1",
           interactionKind: "suggest_tasks",
+          // COM-152: title/summary are forwarded so the Discord plugin can render
+          // a "board input requested" card.
+          interactionTitle: "Proposed follow-up tasks",
+          interactionSummary: "Two tasks to review",
         }),
       }),
     );
