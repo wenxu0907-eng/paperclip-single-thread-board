@@ -344,7 +344,9 @@ describe("plugin-worker-manager stderr failure context", () => {
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
-      config: {},
+      // Non-gateway (scoped-execution) worker: a scoped invocation that loses
+      // its id must still be rejected, never silently globalized.
+      config: { enableGateway: false },
       instanceInfo: {
         instanceId: "instance-1",
         hostVersion: "1.0.0",
@@ -373,6 +375,61 @@ describe("plugin-worker-manager stderr failure context", () => {
         code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
         message: expect.stringContaining("unknown invocation scope"),
       });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("resolves no-id nested host calls to a global scope for gateway-ingress workers", async () => {
+    // A gateway-ingress worker (Discord gateway enabled — the default) handles
+    // inbound interactions outside any host dispatch, so its nested host calls
+    // carry no invocation id. Even while another invocation is concurrently
+    // active (the performAction dispatch itself registers a scoped invocation),
+    // the no-id nested call must resolve to a GLOBAL scope rather than being
+    // rejected — this is what makes `/clip assign` and its `agent:` autocomplete
+    // work under the worker's own notification/job load. Same setup as the
+    // no-id rejection test above, but with gateway ingress → resolves instead
+    // of throwing INVOCATION_SCOPE_DENIED.
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: {
+        companies: {
+          list: vi.fn(async () => []),
+          get: vi.fn(async (params: { companyId: string }) => ({ id: params.companyId })),
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      // Gateway enabled (default): enableGateway is not false → gateway ingress.
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: handlers,
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("performAction", {
+        key: "probe",
+        params: {
+          requestedCompanyId: "company-b",
+        },
+        actorContext: {
+          type: "agent",
+          userId: null,
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-a",
+        },
+        renderEnvironment: null,
+      })).resolves.toEqual({ id: "company-b" });
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -442,7 +499,9 @@ describe("plugin-worker-manager stderr failure context", () => {
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
-      config: {},
+      // Non-gateway (scoped-execution) worker: a scoped invocation that loses or
+      // forges its id must be rejected, never silently globalized.
+      config: { enableGateway: false },
       instanceInfo: {
         instanceId: "instance-1",
         hostVersion: "1.0.0",
