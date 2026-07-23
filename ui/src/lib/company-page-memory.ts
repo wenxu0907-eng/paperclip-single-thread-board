@@ -56,6 +56,21 @@ export function findCompanyForUnprefixedIssuePath<T extends { id: string; issueP
   return findCompanyByPrefix({ companies: params.companies, companyPrefix: identifierPrefix });
 }
 
+const ISSUE_UUID_PATH = /^\/issues\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:$|[/?#])/i;
+
+/**
+ * When an unprefixed path targets an issue by its UUID (e.g. `/issues/<uuid>`),
+ * the owning company can't be derived from the path — the company prefix lives
+ * in the issue's identifier, not its id. Return the UUID so callers can look the
+ * issue up and route to its company. The Discord plugin's notification buttons
+ * link to `/issues/<uuid>` (the button only carries the entity id), so without
+ * this every such link lands on whatever company the viewer last had open
+ * (COM-171).
+ */
+export function extractUnprefixedIssueUuid(pathname: string): string | null {
+  return ISSUE_UUID_PATH.exec(pathname)?.[1] ?? null;
+}
+
 export function sanitizeRememberedPathForCompany(params: {
   path: string | null | undefined;
   companyPrefix: string;
