@@ -100,6 +100,9 @@ export const queryKeys = {
     instructionsBundle: (id: string) => ["agents", "instructions-bundle", id] as const,
     instructionsFile: (id: string, relativePath: string) =>
       ["agents", "instructions-bundle", id, "file", relativePath] as const,
+    memories: (id: string) => ["agents", "memories", id] as const,
+    memoryFile: (id: string, relativePath: string, projectId?: string) =>
+      ["agents", "memories", id, "file", relativePath, projectId ?? null] as const,
     keys: (agentId: string) => ["agents", "keys", agentId] as const,
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (companyId: string, adapterType: string, environmentId?: string | null) =>
@@ -144,6 +147,8 @@ export const queryKeys = {
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     commentsList: (issueId: string) => ["issues", "comments", issueId, "list"] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
+    decisionQueue: (issueId: string) => ["issues", "decision-queue", issueId] as const,
+    digest: (issueId: string) => ["issues", "digest", issueId] as const,
     acceptedPlanDecompositions: (issueId: string) =>
       ["issues", "accepted-plan-decompositions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,

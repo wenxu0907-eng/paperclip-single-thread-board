@@ -677,7 +677,7 @@ describe("Inbox toolbar", () => {
       expect(container.textContent).toContain("Archived inbox row");
     });
 
-    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Mark reviewed"]');
     expect(archiveButton).not.toBeNull();
 
     await act(async () => {
@@ -729,7 +729,7 @@ describe("Inbox toolbar", () => {
         expect(container.textContent).toContain("Undoable inbox row");
       });
 
-      const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Mark reviewed"]');
       expect(archiveButton).not.toBeNull();
       await act(async () => {
         archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));

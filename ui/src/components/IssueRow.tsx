@@ -99,7 +99,6 @@ export function IssueRow({
   // Three-state inbox legibility (COM-6): `unopened` reads strong, `opened`
   // (clicked/viewed but still actionable) reads subtly de-emphasised but stays
   // in the list. Only applies in inbox contexts where the unread slot renders.
-  const showUnreadSlot = unreadState !== null;
   const isUnopened = unreadState === "visible";
   const isOpened = showUnreadSlot && unreadState === "hidden";
   const inboxStateTitleClass = isUnopened
