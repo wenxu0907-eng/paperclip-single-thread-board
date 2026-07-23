@@ -892,6 +892,230 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.idempotencyKey).toBe("run-1:questionnaire");
   });
 
+  it("collapses re-emitted identical pending confirmations instead of stacking duplicate cards", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Duplicate confirmation guard");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    for (const [id, startedAt] of [
+      [firstRunId, "2026-04-20T12:00:00.000Z"],
+      [secondRunId, "2026-04-20T13:00:00.000Z"],
+    ] as const) {
+      await db.insert(heartbeatRuns).values({
+        id,
+        companyId,
+        agentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(startedAt),
+      });
+    }
+
+    const payload = {
+      version: 1 as const,
+      prompt: "Apply this plan?",
+      acceptLabel: "Apply",
+      rejectLabel: "Keep editing",
+    };
+
+    // Re-emitted across heartbeats without a stable idempotencyKey, with the
+    // per-run sourceRunId changing each time — this is the COM-180 pattern.
+    const first = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      sourceRunId: firstRunId,
+      payload,
+    }, { agentId });
+
+    const second = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      sourceRunId: secondRunId,
+      payload,
+    }, { agentId });
+
+    expect(second.id).toBe(first.id);
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(1);
+
+    // A genuinely different decision still creates a new card.
+    const different = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      sourceRunId: secondRunId,
+      payload: { ...payload, prompt: "Apply a different plan?" },
+    }, { agentId });
+    expect(different.id).not.toBe(first.id);
+
+    const afterDifferent = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(afterDifferent).toHaveLength(2);
+  });
+
+  it("supersedes the old plan confirmation card when a new document revision re-keys it", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Plan revision supersede");
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const nextRevisionId = randomUUID();
+
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "v1",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+    });
+    await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "plan" });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "v1",
+    });
+
+    const first = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      // Volatile per-revision idempotency key — the exact COM-180 anti-pattern.
+      idempotencyKey: `confirmation:${issueId}:plan:${revisionId}`,
+      payload: {
+        version: 1,
+        prompt: "Apply the plan?",
+        target: { type: "issue_document", issueId, documentId, key: "plan", revisionId, revisionNumber: 1 },
+      },
+    }, { userId: "local-board" });
+
+    // Author a new revision and repoint the document at it.
+    await db.insert(documentRevisions).values({
+      id: nextRevisionId,
+      companyId,
+      documentId,
+      revisionNumber: 2,
+      title: "Plan",
+      format: "markdown",
+      body: "v2",
+    });
+    await db.update(documents).set({
+      latestBody: "v2",
+      latestRevisionId: nextRevisionId,
+      latestRevisionNumber: 2,
+    }).where(eq(documents.id, documentId));
+
+    const second = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: `confirmation:${issueId}:plan:${nextRevisionId}`,
+      payload: {
+        version: 1,
+        prompt: "Apply the plan?",
+        target: { type: "issue_document", issueId, documentId, key: "plan", revisionId: nextRevisionId, revisionNumber: 2 },
+      },
+    }, { userId: "local-board" });
+
+    expect(second.id).not.toBe(first.id);
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    const pending = rows.filter((row) => row.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.id).toBe(second.id);
+
+    const superseded = rows.find((row) => row.id === first.id);
+    expect(superseded).toMatchObject({
+      status: "expired",
+      result: { outcome: "stale_target" },
+    });
+  });
+
+  it("collapses a re-keyed free-form confirmation onto the newest card", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Free-form re-key supersede");
+
+    const makePayload = (revisionId: string) => ({
+      version: 1 as const,
+      prompt: "Ship the release?",
+      // Same stable custom key across revisions; only revisionId churns.
+      target: { type: "custom" as const, key: "release-approval", revisionId },
+    });
+
+    const first = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: makePayload(randomUUID()),
+    }, { userId: "local-board" });
+
+    const second = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: makePayload(randomUUID()),
+    }, { userId: "local-board" });
+
+    expect(second.id).not.toBe(first.id);
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    const pending = rows.filter((row) => row.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.id).toBe(second.id);
+  });
+
+  it("leaves confirmations for unrelated logical targets untouched", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Unrelated confirmations");
+
+    const alpha = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve alpha?",
+        target: { type: "custom", key: "alpha", revisionId: randomUUID() },
+      },
+    }, { userId: "local-board" });
+
+    const beta = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve beta?",
+        target: { type: "custom", key: "beta", revisionId: randomUUID() },
+      },
+    }, { userId: "local-board" });
+
+    expect(beta.id).not.toBe(alpha.id);
+
+    const pending = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(pending.filter((row) => row.status === "pending")).toHaveLength(2);
+  });
+
   it("accepts request_confirmation interactions without creating child issues", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

@@ -759,6 +759,100 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("renders only the newest pending confirmation for a shared logical target", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      interactions: [
+        createRequestConfirmation({
+          id: "confirmation-old",
+          createdAt: new Date("2026-04-06T12:00:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+          payload: {
+            version: 1,
+            prompt: "Approve the plan?",
+            target: { type: "issue_document", documentId: "doc-1", key: "plan", revisionId: "rev-1" },
+          },
+        }),
+        createRequestConfirmation({
+          id: "confirmation-new",
+          createdAt: new Date("2026-04-06T12:05:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+          payload: {
+            version: 1,
+            prompt: "Approve the plan?",
+            target: { type: "issue_document", documentId: "doc-1", key: "plan", revisionId: "rev-2" },
+          },
+        }),
+        // Unrelated confirmation on a different logical target — must survive.
+        createRequestConfirmation({
+          id: "confirmation-other",
+          createdAt: new Date("2026-04-06T12:06:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:06:00.000Z"),
+          payload: {
+            version: 1,
+            prompt: "Approve the budget?",
+            target: { type: "custom", key: "budget", revisionId: "rev-9" },
+          },
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const interactionIds = messages
+      .filter((message) => message.id.startsWith("interaction:"))
+      .map((message) => message.id);
+    expect(interactionIds).toEqual([
+      "interaction:confirmation-new",
+      "interaction:confirmation-other",
+    ]);
+  });
+
+  it("keeps a resolved confirmation visible even when a newer pending card shares its target", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      interactions: [
+        createRequestConfirmation({
+          id: "confirmation-resolved",
+          status: "expired",
+          createdAt: new Date("2026-04-06T12:00:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+          resolvedAt: new Date("2026-04-06T12:01:00.000Z"),
+          payload: {
+            version: 1,
+            prompt: "Approve the plan?",
+            target: { type: "issue_document", documentId: "doc-1", key: "plan", revisionId: "rev-1" },
+          },
+          result: { version: 1, outcome: "stale_target" },
+        }),
+        createRequestConfirmation({
+          id: "confirmation-pending",
+          createdAt: new Date("2026-04-06T12:05:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+          payload: {
+            version: 1,
+            prompt: "Approve the plan?",
+            target: { type: "issue_document", documentId: "doc-1", key: "plan", revisionId: "rev-2" },
+          },
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const interactionIds = messages
+      .filter((message) => message.id.startsWith("interaction:"))
+      .map((message) => message.id);
+    expect(interactionIds).toEqual([
+      "interaction:confirmation-resolved",
+      "interaction:confirmation-pending",
+    ]);
+  });
+
   it("preserves ephemeral active-run status metadata for rendering", () => {
     const activeRun: ActiveRunForIssue = {
       id: "run-active-1",

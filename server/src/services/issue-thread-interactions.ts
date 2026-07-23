@@ -19,7 +19,9 @@ import type {
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
   RequestCheckboxConfirmationInteraction,
+  RequestCheckboxConfirmationPayload,
   RequestConfirmationInteraction,
+  RequestConfirmationPayload,
   RequestConfirmationTarget,
   RequestItemVerdictsInteraction,
   RequestItemVerdictsResult,
@@ -154,6 +156,66 @@ function isEquivalentCreateRequest(
     && (row.createdByUserId ?? null) === (actor.userId ?? null)
     && isDeepStrictEqual(row.payload, input.payload)
   );
+}
+
+// Whether an incoming confirmation-like create request is a re-emit of an
+// already-pending card. Deliberately ignores idempotencyKey, sourceRunId and
+// sourceCommentId: those legitimately change every heartbeat, so comparing them
+// would defeat the purpose. We collapse only when the decision presented to the
+// board is identical (same kind, continuation, labels, and payload) and was
+// raised by the same actor.
+function isEquivalentPendingConfirmation(
+  row: IssueThreadInteractionRow,
+  input: CreateIssueThreadInteraction,
+  actor: InteractionActor,
+) {
+  return (
+    row.kind === input.kind
+    && row.continuationPolicy === input.continuationPolicy
+    && (row.title ?? null) === (input.title ?? null)
+    && (row.summary ?? null) === (input.summary ?? null)
+    && (row.createdByAgentId ?? null) === (actor.agentId ?? null)
+    && (row.createdByUserId ?? null) === (actor.userId ?? null)
+    && isDeepStrictEqual(row.payload, input.payload)
+  );
+}
+
+// A stable "logical decision" key for a confirmation-like interaction, used to
+// enforce "at most one pending confirmation per decision per issue" (COM-180).
+// Two pending cards that resolve to the same key are the same board decision and
+// the newer one supersedes the older, even when their idempotencyKey / target
+// revisionId / created-by-run differ.
+//
+// Crucially this IGNORES the target revisionId: agents re-key plan confirmations
+// per revision (e.g. `confirmation:{issueId}:plan:{revisionId}`), which used to
+// stack a fresh pending card on every revision. The (documentId, key) pair — or,
+// for free-form cards, the custom target key — identifies the decision; the
+// revision is merely which snapshot it currently points at.
+//
+// Returns null when there is no stable target to key on. In that case we fall
+// back to the exact-equivalence collapse (isEquivalentPendingConfirmation) rather
+// than superseding, so genuinely-distinct target-less confirmations raised in the
+// same turn are never collapsed into each other.
+function confirmationLogicalTargetKey(
+  target: RequestConfirmationTarget | null | undefined,
+): string | null {
+  if (!target) return null;
+  if (target.type === "issue_document") {
+    const docId = target.documentId ?? "";
+    return `issue_document:${docId}:${target.key}`;
+  }
+  if (target.type === "custom") {
+    return `custom:${target.key}`;
+  }
+  return null;
+}
+
+function rowConfirmationTarget(
+  row: IssueThreadInteractionRow,
+): RequestConfirmationTarget | null {
+  if (!isRequestConfirmationLikeKind(row.kind)) return null;
+  const payload = row.payload as RequestConfirmationPayload | RequestCheckboxConfirmationPayload;
+  return payload?.target ?? null;
 }
 
 function hydrateInteraction(
@@ -902,6 +964,60 @@ export function issueThreadInteractionService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // All pending confirmation-like cards on an issue. Used to enforce the
+  // "at most one pending confirmation per logical decision per issue" invariant
+  // at create time (COM-180): agents frequently re-emit the same decision across
+  // heartbeats with a fresh idempotencyKey / target revisionId, which used to
+  // stack duplicate pending cards for the board to confirm.
+  async function findPendingConfirmationLikeRows(args: {
+    issueId: string;
+    companyId: string;
+  }) {
+    return db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, args.companyId),
+        eq(issueThreadInteractions.issueId, args.issueId),
+        eq(issueThreadInteractions.status, "pending"),
+        inArray(issueThreadInteractions.kind, [...REQUEST_CONFIRMATION_INTERACTION_KINDS]),
+      ));
+  }
+
+  // Expire a pending confirmation card that a newer confirmation for the same
+  // logical decision has superseded. Reuses the "stale_target" outcome (already
+  // rendered as an expired/superseded card in the UI) so no new result variant
+  // has to propagate across the client. Guarded on status = pending so it is a
+  // no-op under a concurrent resolution.
+  async function supersedePendingConfirmation(args: {
+    row: IssueThreadInteractionRow;
+    actor: InteractionActor;
+  }): Promise<void> {
+    const now = new Date();
+    const [updated] = await db
+      .update(issueThreadInteractions)
+      .set({
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "stale_target",
+          staleTarget: rowConfirmationTarget(args.row),
+        },
+        resolvedByAgentId: args.actor.agentId ?? null,
+        resolvedByUserId: args.actor.userId ?? null,
+        resolvedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(issueThreadInteractions.id, args.row.id),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .returning();
+    if (!updated) return;
+    await touchIssue(db, args.row.issueId);
+    await emitInteractionResolvedTelemetry(db, hydrateInteraction(updated));
+  }
+
   async function assertIssueWorkspaceFinalizedForAccept(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
@@ -1318,6 +1434,30 @@ export function issueThreadInteractionService(db: Db) {
           issueId: issue.id,
           target: data.payload.target ?? null,
         });
+
+        // COM-180: enforce "at most one pending confirmation per logical decision
+        // per issue" at create time.
+        //  1. An exact re-emit collapses into the existing pending card (no churn).
+        //  2. A changed re-emit for the same logical target (e.g. a new plan
+        //     revision, or a card re-keyed per revision) supersedes the stale
+        //     pending card(s) so only the newest remains for the board.
+        const pending = await findPendingConfirmationLikeRows({
+          issueId: issue.id,
+          companyId: issue.companyId,
+        });
+        const exact = pending.find((row) => isEquivalentPendingConfirmation(row, data, actor));
+        if (exact) {
+          return hydrateInteraction(exact);
+        }
+        const incomingKey = confirmationLogicalTargetKey(data.payload.target ?? null);
+        if (incomingKey) {
+          const superseded = pending.filter(
+            (row) => confirmationLogicalTargetKey(rowConfirmationTarget(row)) === incomingKey,
+          );
+          for (const row of superseded) {
+            await supersedePendingConfirmation({ row, actor });
+          }
+        }
       }
 
       let created: IssueThreadInteractionRow;

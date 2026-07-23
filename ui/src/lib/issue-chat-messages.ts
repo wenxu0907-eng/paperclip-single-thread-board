@@ -304,6 +304,59 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
   });
 }
 
+// A stable "logical decision" key for a confirmation-like interaction, mirroring
+// the server invariant (COM-180). Deliberately ignores the target revisionId so a
+// plan card re-keyed per revision resolves to one decision. Returns null when
+// there is no stable target to key on.
+function confirmationLogicalTargetKey(interaction: IssueThreadInteraction): string | null {
+  if (interaction.kind !== "request_confirmation" && interaction.kind !== "request_checkbox_confirmation") {
+    return null;
+  }
+  const target = interaction.payload?.target ?? null;
+  if (!target) return null;
+  if (target.type === "issue_document") {
+    return `issue_document:${target.documentId ?? ""}:${target.key}`;
+  }
+  if (target.type === "custom") {
+    return `custom:${target.key}`;
+  }
+  return null;
+}
+
+// Belt-and-suspenders de-dup for the chat timeline: the server now supersedes
+// stale pending confirmation cards on create, but historical data (or an
+// in-flight race) can still surface multiple pending cards for one logical
+// decision. Render only the newest pending card per logical target; older
+// pending duplicates are dropped so the board sees one card, not a stack.
+function dropSupersededPendingConfirmations(
+  interactions: readonly IssueThreadInteraction[],
+): IssueThreadInteraction[] {
+  const newestByKey = new Map<string, IssueThreadInteraction>();
+  for (const interaction of interactions) {
+    if (interaction.status !== "pending") continue;
+    const key = confirmationLogicalTargetKey(interaction);
+    if (!key) continue;
+    const existing = newestByKey.get(key);
+    if (!existing || toTimestamp(interaction.createdAt) >= toTimestamp(existing.createdAt)) {
+      newestByKey.set(key, interaction);
+    }
+  }
+  if (newestByKey.size === 0) return [...interactions];
+  const superseded = new Set<string>();
+  for (const [key, newest] of newestByKey) {
+    for (const interaction of interactions) {
+      if (
+        interaction.status === "pending"
+        && interaction.id !== newest.id
+        && confirmationLogicalTargetKey(interaction) === key
+      ) {
+        superseded.add(interaction.id);
+      }
+    }
+  }
+  return interactions.filter((interaction) => !superseded.has(interaction.id));
+}
+
 function latestSameRunHandoffTimestamp(args: {
   interactionCreatedAtMs: number;
   sourceRunId: string;
@@ -1150,7 +1203,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const interaction of sortByCreated(interactions)) {
+  for (const interaction of sortByCreated(dropSupersededPendingConfirmations(interactions))) {
     const createdAtMs = toTimestamp(interaction.createdAt);
     const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
       ? latestSameRunHandoffTimestamp({
