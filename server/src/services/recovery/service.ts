@@ -2540,7 +2540,54 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (input.recoveryCause === "configuration_incomplete") return;
-    if (!input.action.ownerAgentId) return;
+    if (!input.action.ownerAgentId) {
+      // COM-179: no recovery manager — auto-retry once by waking the original assignee directly.
+      // On the second failure (attemptCount > 1) the board must intervene; we stop retrying.
+      const returnOwnerAgentId = input.action.returnOwnerAgentId;
+      if (input.action.attemptCount !== 1 || !returnOwnerAgentId) return;
+      try {
+        await deps.enqueueWakeup(returnOwnerAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "source_scoped_recovery_action",
+          idempotencyKey: `source_scoped_recovery_action:${input.action.id}:${input.action.attemptCount}:auto_retry`,
+          payload: withRecoveryModelProfileHint({
+            issueId: input.issue.id,
+            sourceIssueId: input.issue.id,
+            recoveryActionId: input.action.id,
+            strandedRunId: input.latestRun?.id ?? null,
+            recoveryCause: input.recoveryCause,
+            autoRetry: true,
+          }, "normal_model"),
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          contextSnapshot: withRecoveryModelProfileHint({
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            wakeReason: "source_scoped_recovery_action",
+            skipIssueComment: true,
+            source: "issue_recovery_action",
+            recoveryActionId: input.action.id,
+            sourceIssueId: input.issue.id,
+            strandedRunId: input.latestRun?.id ?? null,
+            recoveryCause: input.recoveryCause,
+            autoRetry: true,
+          }, "normal_model"),
+        });
+      } catch (err) {
+        // COM-179: the original assignee may be paused / archived / otherwise not invokable,
+        // in which case enqueueWakeup throws (e.g. 409 "Agent is not invokable in its current
+        // state"). Auto-retry is impossible then, so this best-effort wake must never crash the
+        // recovery/reap sweep. We swallow the error and fall through: the no-owner recovery
+        // action already stands as a board escalation that surfaces to the user as "needs your
+        // action" — exactly the notify-me fallback this feature promises.
+        logger.warn(
+          { err, issueId: input.issue.id, recoveryActionId: input.action.id, returnOwnerAgentId },
+          "COM-179 auto-retry wake failed (assignee not invokable); leaving board escalation for user action",
+        );
+      }
+      return;
+    }
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
