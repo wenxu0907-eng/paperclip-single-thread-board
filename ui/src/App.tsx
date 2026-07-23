@@ -75,7 +75,12 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
-import { findCompanyForUnprefixedIssuePath } from "./lib/company-page-memory";
+import {
+  extractUnprefixedIssueUuid,
+  findCompanyForUnprefixedIssuePath,
+} from "./lib/company-page-memory";
+import { useQuery } from "@tanstack/react-query";
+import { issuesApi } from "./api/issues";
 
 function boardRoutes() {
   return (
@@ -385,7 +390,29 @@ function UnprefixedBoardRedirect() {
     pathname: location.pathname,
   });
 
-  const targetCompany = companyForIssue ?? selectedCompany ?? companies[0] ?? null;
+  // Discord notification buttons link to `/issues/<uuid>` — the issue's id, not
+  // its identifier — so the owning company can't be read off the path. Fetch the
+  // issue and route to its company. Only runs when the cheap prefix match above
+  // fails and the path really is a bare issue UUID (COM-171).
+  const issueUuid = companyForIssue ? null : extractUnprefixedIssueUuid(location.pathname);
+  const issueQuery = useQuery({
+    queryKey: ["deep-link-issue-company", issueUuid],
+    queryFn: () => issuesApi.get(issueUuid as string),
+    enabled: Boolean(issueUuid) && !loading,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  if (issueUuid && issueQuery.isLoading) {
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+  }
+
+  const companyForIssueUuid =
+    issueUuid && issueQuery.data
+      ? companies.find((company) => company.id === issueQuery.data.companyId) ?? null
+      : null;
+
+  const targetCompany = companyForIssue ?? companyForIssueUuid ?? selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
     if (
       shouldRedirectCompanylessRouteToOnboarding({
