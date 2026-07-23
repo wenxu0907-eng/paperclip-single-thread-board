@@ -75,6 +75,7 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { findCompanyForUnprefixedIssuePath } from "./lib/company-page-memory";
 
 function boardRoutes() {
   return (
@@ -374,7 +375,17 @@ function UnprefixedBoardRedirect() {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  const targetCompany = selectedCompany ?? companies[0] ?? null;
+  // When an unprefixed path targets a specific issue (e.g. `/issues/COM-171`),
+  // prefer the company that actually owns that issue — matched by the issue
+  // identifier's prefix — over the last-selected company. Notification "Review
+  // issue" deep links (Discord, etc.) are unprefixed; without this every such
+  // link lands on whatever company the viewer last had open (COM-171).
+  const companyForIssue = findCompanyForUnprefixedIssuePath({
+    companies,
+    pathname: location.pathname,
+  });
+
+  const targetCompany = companyForIssue ?? selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
     if (
       shouldRedirectCompanylessRouteToOnboarding({

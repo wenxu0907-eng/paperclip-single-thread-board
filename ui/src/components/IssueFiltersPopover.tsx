@@ -392,6 +392,13 @@ export function IssueFiltersPopover({
                   />
                   <span className="text-sm">Live runs only</span>
                 </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.parentOnly === true}
+                    onCheckedChange={(checked) => onChange({ parentOnly: checked === true })}
+                  />
+                  <span className="text-sm">Parent issues only</span>
+                </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox

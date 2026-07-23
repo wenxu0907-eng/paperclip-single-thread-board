@@ -39,6 +39,23 @@ export function getRememberedPathOwnerCompanyId<T extends { id: string; issuePre
   })?.id ?? null;
 }
 
+/**
+ * When an unprefixed path targets a specific issue (e.g. `/issues/COM-171`),
+ * return the company that owns that issue, matched by the issue identifier's
+ * prefix. Returns null when the path is not an issue path or no company matches,
+ * so callers can apply their own fallback. Keeps notification "Review issue"
+ * deep links (Discord, etc.) on the owning company instead of the last-selected
+ * one (COM-171).
+ */
+export function findCompanyForUnprefixedIssuePath<T extends { id: string; issuePrefix: string }>(params: {
+  companies: T[];
+  pathname: string;
+}): T | null {
+  const identifierPrefix = /^\/issues\/([A-Za-z]+)-\d+/.exec(params.pathname)?.[1];
+  if (!identifierPrefix) return null;
+  return findCompanyByPrefix({ companies: params.companies, companyPrefix: identifierPrefix });
+}
+
 export function sanitizeRememberedPathForCompany(params: {
   path: string | null | undefined;
   companyPrefix: string;
