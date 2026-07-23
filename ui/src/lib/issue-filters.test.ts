@@ -113,6 +113,27 @@ describe("issue filters", () => {
     })).toBe(1);
   });
 
+  it("filters to top-level parent issues when parent-only is enabled", () => {
+    const issues = [
+      makeIssue({ id: "parent", parentId: null }),
+      makeIssue({ id: "child", parentId: "parent" }),
+    ];
+
+    const filtered = applyIssueFilters(
+      issues,
+      { ...defaultIssueFilterState, parentOnly: true },
+    );
+
+    expect(filtered.map((issue) => issue.id)).toEqual(["parent"]);
+  });
+
+  it("counts the parent-only filter as an active filter group", () => {
+    expect(countActiveIssueFilters({
+      ...defaultIssueFilterState,
+      parentOnly: true,
+    })).toBe(1);
+  });
+
   it("does not treat default project workspaces as workspace filter matches", () => {
     const issue = makeIssue({
       id: "default-workspace-issue",

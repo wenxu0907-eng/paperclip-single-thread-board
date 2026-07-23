@@ -22,6 +22,12 @@ export type IssueFilterState = {
   workspaces: string[];
   liveOnly?: boolean;
   /**
+   * When true, only show top-level parent issues (issues with no parent). Lets
+   * the board follow leadership-level outcomes on parent issues without wading
+   * through every sub-issue.
+   */
+  parentOnly?: boolean;
+  /**
    * External object status filter. Values are special tokens that map to
    * properties of the issue's external-object summary (rather than to a
    * single category) so the filter UI can describe intent rather than every
@@ -48,6 +54,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   projects: [],
   workspaces: [],
   liveOnly: false,
+  parentOnly: false,
   externalObjectStatuses: [],
   hideRoutineExecutions: false,
 };
@@ -114,6 +121,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     projects: normalizeIssueFilterValueArray(candidate.projects),
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
     liveOnly: candidate.liveOnly === true,
+    parentOnly: candidate.parentOnly === true,
     externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
     hideRoutineExecutions: candidate.hideRoutineExecutions === true,
   };
@@ -206,6 +214,9 @@ export function applyIssueFilters(
   if (state.liveOnly) {
     result = result.filter((issue) => liveIssueIds?.has(issue.id) === true);
   }
+  if (state.parentOnly) {
+    result = result.filter((issue) => issue.parentId == null);
+  }
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) {
     result = result.filter((issue) => issue.originKind !== "routine_execution");
   }
@@ -268,6 +279,7 @@ export function countActiveIssueFilters(
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
+  if (state.parentOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
   return count;
