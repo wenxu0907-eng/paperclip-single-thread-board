@@ -2370,8 +2370,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
+    // COM-184 upstream-merge reconciliation: our fork's COM-111 run-start invariant
+    // (heartbeat.ts:10965-11015) moves the issue from `in_review` to `in_progress` once the
+    // scheduled infra-retry run starts executing with no active review path. Upstream authored
+    // this test before that invariant existed and expected the issue to stay `in_review`.
+    // The bounded scheduled_retry (asserted above) is unchanged — only the status transition
+    // reflects our shipped COM-111 behavior.
     expect(issue).toEqual({
-      status: "in_review",
+      status: "in_progress",
       executionRunId: retryRun?.id ?? null,
     });
 
@@ -2516,7 +2522,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   // ("queues exactly one retry when the recorded local pid is dead"): here no pid was ever
   // recorded (the process died before producing output), so the reaper falls through to the
   // accepted-interaction infra-retry path. Pre-P1 `process_lost` was not retry-eligible there.
-  it("retries a plan-approval continuation lost as process_lost before agent start as an infrastructure failure", async () => {
+  // COM-184 upstream-merge reconciliation: SKIPPED — this upstream test asserts the pre-fork
+  // recovery model where a no-pid process_lost interaction continuation is scheduled as a bounded
+  // `scheduled_retry`. Our fork's COM-151 fix (heartbeat.ts:11762) instead EAGERLY re-executes a
+  // no-pid process_lost run exactly once (→ a live `running` retry) to close the ~11-minute
+  // "stuck in_review" latency gap. That eager behavior is intentional, shipped, and already covered
+  // by our fork's dedicated COM-151 tests: "queues one retry when a local run is lost with no
+  // recorded pid (server restarted mid-flight, COM-151)" (this file) and its no-double-retry pair.
+  // Kept as skip (not deleted) to preserve the upstream scenario for a future re-evaluation.
+  it.skip("retries a plan-approval continuation lost as process_lost before agent start as an infrastructure failure", async () => {
     const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
 
