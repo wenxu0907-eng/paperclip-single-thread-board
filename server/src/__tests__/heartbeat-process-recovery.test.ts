@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, or, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, or, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -5980,7 +5980,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(nestedRecoveries).toHaveLength(0);
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    // Order by createdAt: the two escalation comments are stamped at distinct wall-clock times,
+    // but their row insertion order can race (COM-179 timing shift exposed this), so index-based
+    // assertions must sort by logical creation time rather than rely on rowid order.
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
     expect(comments).toHaveLength(2);
     expect(comments[1]?.body).toContain("Latest failure: `adapter_failed`. Inspect the linked run for the full error detail.");
   });
