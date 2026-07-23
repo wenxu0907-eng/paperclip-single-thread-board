@@ -251,6 +251,7 @@ function isTerminalIssueRun(latestRun: LatestIssueRun) {
 }
 
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
+  "acpx_turn_failed",
   "adapter_failed",
   "codex_transient_upstream",
   "claude_transient_upstream",
@@ -4494,6 +4495,142 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  // COM-178 Gap B: re-enqueue failed source-scoped recovery-action wakes with exponential
+  // backoff. When a `wake_owner` recovery wake fires and the owner's run fails (transient
+  // or other), nothing currently re-queues it — the action silently goes dormant. This
+  // sweeper finds those stalled actions and retries them up to a cap, then leaves the
+  // board-visible blocked state in place for manual intervention.
+  const RECOVERY_WAKE_RETRY_MAX_ATTEMPTS = 3;
+  const RECOVERY_WAKE_RETRY_BASE_BACKOFF_MS = 60_000;
+
+  async function reconcileStrandedSourceScopedRecoveryWakes() {
+    const result = {
+      retried: 0,
+      skipped: 0,
+      exhausted: 0,
+      issueIds: [] as string[],
+    };
+
+    const activeActions = await db
+      .select({
+        id: issueRecoveryActions.id,
+        companyId: issueRecoveryActions.companyId,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        ownerAgentId: issueRecoveryActions.ownerAgentId,
+        kind: issueRecoveryActions.kind,
+        cause: issueRecoveryActions.cause,
+        fingerprint: issueRecoveryActions.fingerprint,
+        nextAction: issueRecoveryActions.nextAction,
+        evidence: issueRecoveryActions.evidence,
+        wakePolicy: issueRecoveryActions.wakePolicy,
+        attemptCount: issueRecoveryActions.attemptCount,
+        maxAttempts: issueRecoveryActions.maxAttempts,
+        lastAttemptAt: issueRecoveryActions.lastAttemptAt,
+        returnOwnerAgentId: issueRecoveryActions.returnOwnerAgentId,
+        previousOwnerAgentId: issueRecoveryActions.previousOwnerAgentId,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.wakePolicy} ->> 'type' = 'wake_owner'`,
+        ),
+      )
+      .orderBy(asc(issueRecoveryActions.lastAttemptAt));
+
+    for (const action of activeActions) {
+      if (!action.ownerAgentId) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const latestOwnerRun = await getLatestIssueRunForAgent(
+        action.companyId,
+        action.sourceIssueId,
+        action.ownerAgentId,
+      );
+
+      if (!latestOwnerRun || !isUnsuccessfulTerminalIssueRun(latestOwnerRun)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const maxAttempts = action.maxAttempts ?? RECOVERY_WAKE_RETRY_MAX_ATTEMPTS;
+      if (action.attemptCount >= maxAttempts) {
+        result.exhausted += 1;
+        result.skipped += 1;
+        continue;
+      }
+
+      if (action.lastAttemptAt) {
+        const elapsed = Date.now() - action.lastAttemptAt.getTime();
+        const requiredDelay = RECOVERY_WAKE_RETRY_BASE_BACKOFF_MS *
+          Math.pow(2, Math.max(0, action.attemptCount - 1));
+        if (elapsed < requiredDelay) {
+          result.skipped += 1;
+          continue;
+        }
+      }
+
+      const ownerAgent = await getAgent(action.ownerAgentId);
+      if (!ownerAgent || ownerAgent.companyId !== action.companyId || !(await isAgentInvokable(ownerAgent))) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const updatedAction = await recoveryActionsSvc.upsertSourceScoped({
+        companyId: action.companyId,
+        sourceIssueId: action.sourceIssueId,
+        kind: action.kind as Parameters<typeof recoveryActionsSvc.upsertSourceScoped>[0]["kind"],
+        ownerAgentId: action.ownerAgentId,
+        cause: action.cause,
+        fingerprint: action.fingerprint,
+        evidence: action.evidence ?? {},
+        nextAction: action.nextAction,
+        wakePolicy: action.wakePolicy,
+        returnOwnerAgentId: action.returnOwnerAgentId,
+        previousOwnerAgentId: action.previousOwnerAgentId,
+        lastAttemptAt: new Date(),
+      });
+
+      await deps.enqueueWakeup(action.ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "source_scoped_recovery_action",
+        idempotencyKey: `source_scoped_recovery_action:${action.id}:${updatedAction.attemptCount}:wake_retry`,
+        payload: withRecoveryModelProfileHint({
+          issueId: action.sourceIssueId,
+          sourceIssueId: action.sourceIssueId,
+          recoveryActionId: action.id,
+          strandedRunId: latestOwnerRun.id,
+          recoveryCause: action.cause,
+          wakeRetry: true,
+          wakeRetryAttempt: updatedAction.attemptCount,
+        }, "status_only"),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: action.sourceIssueId,
+          taskId: action.sourceIssueId,
+          wakeReason: "source_scoped_recovery_action",
+          skipIssueComment: true,
+          source: "issue_recovery_action",
+          recoveryActionId: action.id,
+          sourceIssueId: action.sourceIssueId,
+          strandedRunId: latestOwnerRun.id,
+          recoveryCause: action.cause,
+          wakeRetry: true,
+          wakeRetryAttempt: updatedAction.attemptCount,
+        }, "status_only"),
+      });
+
+      result.retried += 1;
+      result.issueIds.push(action.sourceIssueId);
+    }
+
+    return result;
+  }
+
   // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
   // or executionRunId points at a heartbeat_runs row that is either missing or
   // in a terminal status. Provides self-heal for stale locks that fell outside
@@ -4664,6 +4801,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileStrandedSourceScopedRecoveryWakes,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileResolvedDependencyWakeBackstop,

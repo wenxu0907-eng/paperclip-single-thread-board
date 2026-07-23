@@ -10535,6 +10535,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues();
   }
 
+  async function reconcileStrandedSourceScopedRecoveryWakes() {
+    return recovery.reconcileStrandedSourceScopedRecoveryWakes();
+  }
+
   async function sweepStaleIssueLocks() {
     return recovery.sweepStaleIssueLocks();
   }
@@ -15674,6 +15678,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    reconcileStrandedSourceScopedRecoveryWakes,
 
     sweepStaleIssueLocks,
 
