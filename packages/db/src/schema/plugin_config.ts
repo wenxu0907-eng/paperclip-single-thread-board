@@ -3,9 +3,8 @@ import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
 
 /**
- * `plugin_config` table — stores operator-provided instance configuration
- * for each plugin (one row per plugin, enforced by a unique index on
- * `plugin_id`).
+ * `plugin_config` table — stores operator-provided configuration for each
+ * plugin within a company (one row per plugin/company pair).
  *
  * The `config_json` column holds the values that the operator enters in the
  * plugin settings UI. These values are validated at runtime against the

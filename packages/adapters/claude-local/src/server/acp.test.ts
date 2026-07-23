@@ -3,14 +3,45 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,
   nodeVersionMeetsClaudeAcpMinimum,
+  resolveClaudeAcpBillingIdentity,
   resolveClaudeExecutionEngine,
   resolveClaudeExecutionEngineForRun,
   testClaudeAcpEnvironment,
 } from "./acp.js";
+
+// A local stand-in for a sandbox runner: runs the managed-runtime staging
+// scripts (mkdir/tar/find) as real child processes so the remote ACP lane can
+// be exercised end-to-end against the host filesystem.
+function createLocalSandboxRunner() {
+  let counter = 0;
+  return {
+    execute: async (input: {
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string;
+      timeoutMs?: number;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    }) => {
+      counter += 1;
+      const command = input.command === "bash" ? "/bin/bash" : input.command;
+      return await runChildProcess(`claude-acp-sandbox-run-${counter}`, command, input.args ?? [], {
+        cwd: input.cwd ?? process.cwd(),
+        env: input.env ?? {},
+        stdin: input.stdin,
+        timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+        graceSec: 5,
+        onLog: input.onLog ?? (async () => {}),
+      });
+    },
+  };
+}
 
 type FakeRuntimeOptions = Record<string, unknown>;
 type FakeRuntimeEvent = { type: string; text?: string; stream?: string; tag?: string };
@@ -258,6 +289,114 @@ describe("claude_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("spawn-level confinement"),
+    });
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { engine: "acp", filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow("ACP confinement is not supported");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { networkScope: "deny" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("network scope"),
+    });
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { networkScope: "public" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow('networkScope must be "deny" or "allowlist"');
+  });
+
+  it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { agentCommand: "claude-agent-acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            }),
+          },
+        },
+      }),
+    ).resolves.toEqual({ engine: "acp", explicit: false });
+  });
+
+  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
+  });
+
+  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd: "/work",
+          spec: {
+            host: "127.0.0.1",
+            port: 22,
+            username: "fixture",
+            remoteCwd: "/work",
+            remoteWorkspacePath: "/work",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+    });
+  });
+
   it("reports ACP prerequisites for the ACP lane", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-env-");
     const commandPath = path.join(root, "bin", "claude-agent-acp");
@@ -347,6 +486,75 @@ describe("claude_local ACP lane", () => {
     expect(settings.permissions.allow).toEqual(expect.arrayContaining(["Bash(curl:*)", "Bash(env)"]));
   });
 
+  it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-remote-cwd-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+
+    const runtimes: FakeRuntime[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          // Throwaway ACP command so the process-session bridge does not require
+          // a real claude-agent-acp binary in the local sandbox stand-in.
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: "Task context",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.readFile(path.join(remoteCwd, "hello.txt"), "utf8")).resolves.toBe("hi");
+    expect(runtimes[0]?.ensureInputs[0]?.cwd).toBe(remoteCwd);
+    expect(runtimes[0]?.ensureInputs[0]?.cwd).not.toBe(localCwd);
+  });
+
+  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+    setNodeVersion("v22.13.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { agentCommand: "claude-agent-acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
+  });
+
   it("resumes compatible ACP sessions on later Claude ACP runs", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-resume-");
     const runtimes: FakeRuntime[] = [];
@@ -371,5 +579,53 @@ describe("claude_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+});
+
+describe("resolveClaudeAcpBillingIdentity", () => {
+  const originalApiKey = process.env.ANTHROPIC_API_KEY;
+  const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
+  const originalBedrockBase = process.env.ANTHROPIC_BEDROCK_BASE_URL;
+
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalApiKey;
+    if (originalBedrock === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    else process.env.CLAUDE_CODE_USE_BEDROCK = originalBedrock;
+    if (originalBedrockBase === undefined) delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    else process.env.ANTHROPIC_BEDROCK_BASE_URL = originalBedrockBase;
+  });
+
+  it("classifies an adapter-config API key as api billing", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { ANTHROPIC_API_KEY: "sk-ant-test" } } }),
+    ).toEqual({ provider: "anthropic", biller: "anthropic", billingType: "api" });
+  });
+
+  it("classifies Bedrock auth as metered_api billed to aws_bedrock", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } }),
+    ).toEqual({ provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" });
+  });
+
+  it("falls back to subscription without API-key or Bedrock auth", () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    expect(resolveClaudeAcpBillingIdentity({ config: {} })).toEqual({
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "subscription",
+    });
+  });
+
+  it("ignores host env for remote execution targets", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-host-only";
+    expect(
+      resolveClaudeAcpBillingIdentity({
+        config: {},
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
+      } as never).billingType,
+    ).toBe("subscription");
   });
 });

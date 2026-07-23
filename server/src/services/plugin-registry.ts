@@ -280,20 +280,17 @@ export function pluginRegistryService(db: Db) {
 
     // ----- Config ---------------------------------------------------------
 
-    /** Retrieve a plugin's company-scoped instance configuration. */
+    /** Retrieve a plugin's company-scoped configuration. */
     getConfig: (pluginId: string, companyId: string) =>
       db
         .select()
         .from(pluginConfig)
-        .where(and(
-          eq(pluginConfig.pluginId, pluginId),
-          eq(pluginConfig.companyId, companyId),
-        ))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .then((rows) => rows[0] ?? null),
 
     /**
-     * Create or fully replace a plugin's company-scoped instance configuration.
-     * If a config row already exists for the plugin/company it is replaced;
+     * Create or fully replace a plugin's company-scoped configuration.
+     * If a config row already exists for the plugin/company pair it is replaced;
      * otherwise a new row is inserted.
      */
     upsertConfig: async (pluginId: string, companyId: string, input: UpsertPluginConfig) => {
@@ -303,10 +300,7 @@ export function pluginRegistryService(db: Db) {
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(and(
-          eq(pluginConfig.pluginId, pluginId),
-          eq(pluginConfig.companyId, companyId),
-        ))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -317,7 +311,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.id, existing.id))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -334,7 +328,7 @@ export function pluginRegistryService(db: Db) {
     },
 
     /**
-     * Partially update a plugin's instance configuration via shallow merge.
+     * Partially update a plugin's company-scoped configuration via shallow merge.
      * If no config row exists yet one is created with the supplied values.
      */
     patchConfig: async (pluginId: string, companyId: string, input: PatchPluginConfig) => {
@@ -344,10 +338,7 @@ export function pluginRegistryService(db: Db) {
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(and(
-          eq(pluginConfig.pluginId, pluginId),
-          eq(pluginConfig.companyId, companyId),
-        ))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -359,7 +350,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.id, existing.id))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -383,10 +374,7 @@ export function pluginRegistryService(db: Db) {
       const rows = await db
         .update(pluginConfig)
         .set({ lastError, updatedAt: new Date() })
-        .where(and(
-          eq(pluginConfig.pluginId, pluginId),
-          eq(pluginConfig.companyId, companyId),
-        ))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .returning();
 
       if (rows.length === 0) throw notFound("Plugin config not found");
@@ -397,10 +385,7 @@ export function pluginRegistryService(db: Db) {
     deleteConfig: async (pluginId: string, companyId: string) => {
       const rows = await db
         .delete(pluginConfig)
-        .where(and(
-          eq(pluginConfig.pluginId, pluginId),
-          eq(pluginConfig.companyId, companyId),
-        ))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .returning();
 
       return rows[0] ?? null;

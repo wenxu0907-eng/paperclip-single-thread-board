@@ -359,7 +359,7 @@ export const pluginsApi = {
    * @param pluginId - UUID of the plugin.
    */
   getConfig: (pluginId: string, companyId: string) =>
-    api.get<PluginConfig | null>(`/plugins/${pluginId}/companies/${companyId}/config`),
+    api.get<PluginConfig | null>(`/plugins/${pluginId}/config?companyId=${encodeURIComponent(companyId)}`),
 
   /**
    * Save (create or update) the configuration for a plugin.
@@ -371,7 +371,7 @@ export const pluginsApi = {
    * @param configJson - Configuration values matching the plugin's `instanceConfigSchema`.
    */
   saveConfig: (pluginId: string, companyId: string, configJson: Record<string, unknown>) =>
-    api.post<PluginConfig>(`/plugins/${pluginId}/companies/${companyId}/config`, { configJson }),
+    api.post<PluginConfig>(`/plugins/${pluginId}/config`, { companyId, configJson }),
 
   /**
    * Call the plugin's `validateConfig` RPC method to test the configuration
@@ -386,10 +386,7 @@ export const pluginsApi = {
    * @param configJson - Configuration values to validate.
    */
   testConfig: (pluginId: string, companyId: string, configJson: Record<string, unknown>) =>
-    api.post<{ valid: boolean; message?: string }>(
-      `/plugins/${pluginId}/companies/${companyId}/config/test`,
-      { configJson },
-    ),
+    api.post<{ valid: boolean; message?: string }>(`/plugins/${pluginId}/config/test`, { companyId, configJson }),
 
   /**
    * List manifest-declared and stored company-scoped local folders for a plugin.

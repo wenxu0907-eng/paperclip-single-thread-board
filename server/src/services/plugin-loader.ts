@@ -2133,10 +2133,10 @@ export function pluginLoader(
       const hostHandlers = buildHostHandlers(pluginId, manifest);
 
       // ------------------------------------------------------------------
-      // 4. Worker bootstrap config
+      // 4. Bootstrap worker config
       // ------------------------------------------------------------------
-      // Plugin config is company-scoped. Workers receive an empty bootstrap
-      // config and must call ctx.config.get({ companyId }) for scoped values.
+      // Plugin configuration is company-scoped. Workers receive an empty
+      // bootstrap config and must use ctx.config.get(companyId) at runtime.
       const config: Record<string, unknown> = {};
 
       // ------------------------------------------------------------------
