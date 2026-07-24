@@ -893,6 +893,15 @@ describe.sequential("agent skill routes", () => {
       expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
         expect.any(Object),
         expect.objectContaining({
+          // COM-180: prescribed plan-confirmation key is the STABLE form, never the
+          // volatile `:{revisionId}` suffix (which stacked a duplicate card per revision).
+          "AGENTS.md": expect.stringMatching(/confirmation:\{issueId\}:plan(?!:\{revisionId\})/),
+        }),
+        expect.any(Object),
+      );
+      expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
           "AGENTS.md": expect.stringContaining("confirmation:{issueId}:plan:{revisionId}"),
         }),
         expect.any(Object),

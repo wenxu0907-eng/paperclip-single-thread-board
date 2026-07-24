@@ -756,6 +756,7 @@ describe("import selection catalog", () => {
           feedbackDataSharingConsentAt: null,
           feedbackDataSharingConsentByUserId: null,
           feedbackDataSharingTermsVersion: null,
+          boardOnlyOnParents: false,
         },
         sidebar: {
           agents: [],
