@@ -84,6 +84,7 @@ const PENDING_INTERACTION_ACTION: Record<PendingInteractionKind, string> = {
   request_checkbox_confirmation: "waiting on your confirmation",
   ask_user_questions: "waiting on your answers",
   suggest_tasks: "waiting on your review of suggested tasks",
+  request_item_verdicts: "waiting on your review",
 };
 
 // Priority order for picking the single pending interaction action.
@@ -92,6 +93,7 @@ const PENDING_INTERACTION_PRIORITY: PendingInteractionKind[] = [
   "request_checkbox_confirmation",
   "ask_user_questions",
   "suggest_tasks",
+  "request_item_verdicts",
 ];
 
 export function buildInboxThreadSummary(

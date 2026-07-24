@@ -13,9 +13,9 @@ export type ToastTone = "info" | "success" | "warn" | "error";
 
 export interface ToastAction {
   label: string;
-  /** Navigation target. Omit when using `onClick` for an in-place action (e.g. Undo). */
+  /** Navigate on click (mutually exclusive with `onClick`). */
   href?: string;
-  /** In-place action handler (e.g. Undo). Takes precedence over `href` when both are set. */
+  /** Run a callback on click, e.g. an undo (mutually exclusive with `href`). */
   onClick?: () => void;
 }
 

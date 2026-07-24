@@ -56,26 +56,27 @@ function AnimatedToast({
               {toast.body}
             </p>
           )}
-          {toast.action?.onClick ? (
-            <button
-              type="button"
-              onClick={() => {
-                toast.action?.onClick?.();
-                onDismiss(toast.id);
-              }}
-              className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
-            >
-              {toast.action.label}
-            </button>
-          ) : toast.action?.href ? (
-            <Link
-              to={toast.action.href}
-              onClick={() => onDismiss(toast.id)}
-              className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
-            >
-              {toast.action.label}
-            </Link>
-          ) : null}
+          {toast.action &&
+            (toast.action.onClick ? (
+              <button
+                type="button"
+                onClick={() => {
+                  toast.action?.onClick?.();
+                  onDismiss(toast.id);
+                }}
+                className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
+              >
+                {toast.action.label}
+              </button>
+            ) : toast.action.href ? (
+              <Link
+                to={toast.action.href}
+                onClick={() => onDismiss(toast.id)}
+                className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
+              >
+                {toast.action.label}
+              </Link>
+            ) : null)}
         </div>
         <button
           type="button"

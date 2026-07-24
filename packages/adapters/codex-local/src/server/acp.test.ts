@@ -3,14 +3,45 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import {
   buildCodexAcpConfig,
   createCodexAcpExecutor,
   nodeVersionMeetsCodexAcpMinimum,
+  resolveCodexAcpBillingIdentity,
   resolveCodexExecutionEngine,
   resolveCodexExecutionEngineForRun,
   testCodexAcpEnvironment,
 } from "./acp.js";
+
+// A local stand-in for a sandbox runner: runs the managed-runtime staging
+// scripts (mkdir/tar/find) as real child processes so the remote ACP lane can
+// be exercised end-to-end against the host filesystem.
+function createLocalSandboxRunner() {
+  let counter = 0;
+  return {
+    execute: async (input: {
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string;
+      timeoutMs?: number;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    }) => {
+      counter += 1;
+      const command = input.command === "bash" ? "/bin/bash" : input.command;
+      return await runChildProcess(`codex-acp-sandbox-run-${counter}`, command, input.args ?? [], {
+        cwd: input.cwd ?? process.cwd(),
+        env: input.env ?? {},
+        stdin: input.stdin,
+        timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+        graceSec: 5,
+        onLog: input.onLog ?? (async () => {}),
+      });
+    },
+  };
+}
 
 type FakeRuntimeOptions = Record<string, unknown>;
 type FakeRuntimeEvent = { type: string; text?: string; stream?: string; tag?: string };
@@ -245,6 +276,114 @@ describe("codex_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("spawn-level confinement"),
+    });
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { engine: "acp", filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow("ACP confinement is not supported");
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { networkScope: "allowlist" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("network scope"),
+    });
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { filesystemScope: "workpace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow('filesystemScope must be "workspace"');
+  });
+
+  it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
+    setNodeVersion("v22.13.0");
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { agentCommand: "codex-acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            }),
+          },
+        },
+      }),
+    ).resolves.toEqual({ engine: "acp", explicit: false });
+  });
+
+  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+    setNodeVersion("v22.13.0");
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
+  });
+
+  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+    setNodeVersion("v22.13.0");
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd: "/work",
+          spec: {
+            host: "127.0.0.1",
+            port: 22,
+            username: "fixture",
+            remoteCwd: "/work",
+            remoteWorkspacePath: "/work",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+    });
+  });
+
   it("maps Codex config to the ACPX Codex target", () => {
     expect(buildCodexAcpConfig({
       engine: "acp",
@@ -368,14 +507,112 @@ describe("codex_local ACP lane", () => {
       mode: "persistent",
       cwd: root,
     });
-    expect(runtimes[0]?.setConfigInputs.map((input) => [input.key, input.value])).toEqual([
-      ["model", "gpt-5.5"],
-      ["reasoning_effort", "high"],
-      ["service_tier", "fast"],
-      ["features.fast_mode", "true"],
-    ]);
+    expect(runtimes[0]?.setConfigInputs).toEqual([]);
     expect(meta[0]?.commandNotes?.join("\n")).toContain("Prepared ACPX Codex skill home");
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
+    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toEqual({
+      model: "gpt-5.5",
+      model_reasoning_effort: "high",
+      service_tier: "fast",
+      features: { fast_mode: true },
+    });
+  });
+
+  it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-remote-cwd-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          // Use a throwaway ACP command so the process-session bridge does not
+          // require a real codex-acp binary in the local sandbox stand-in.
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          env: { CODEX_HOME: path.join(root, "codex-home") },
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: "Task context",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    // The workspace was shipped into the sandbox and session/new was created on
+    // the in-sandbox workspace dir — not the HOST worktree path.
+    await expect(fs.readFile(path.join(remoteCwd, "hello.txt"), "utf8")).resolves.toBe("hi");
+    expect(runtimes[0]?.ensureInputs[0]?.cwd).toBe(remoteCwd);
+    expect(runtimes[0]?.ensureInputs[0]?.cwd).not.toBe(localCwd);
+  });
+
+  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+    setNodeVersion("v22.13.0");
+    // Isolate the missing bidirectional runner as the sole fallback cause:
+    // provide a valid ACP command and Node version so the only difference from
+    // the runner-backed ACP case is the absent `runner`.
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { agentCommand: "codex-acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
+  });
+
+  it("classifies ACP refresh-token auth failures", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-refresh-token-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [],
+        {
+          status: "failed",
+          error: { message: "OAuth failed: refresh_token_invalidated" },
+        } as unknown as FakeRuntimeTurnResult,
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("refresh_token_invalidated");
+    expect(result.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson?.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
   });
 
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {
@@ -402,5 +639,52 @@ describe("codex_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+});
+
+describe("resolveCodexAcpBillingIdentity", () => {
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
+  const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
+
+  afterEach(() => {
+    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiKey;
+    if (originalOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalOpenRouterKey;
+  });
+
+  it("classifies an adapter-config API key as api billing to openai", () => {
+    delete process.env.OPENROUTER_API_KEY;
+    expect(
+      resolveCodexAcpBillingIdentity({ config: { env: { OPENAI_API_KEY: "sk-test" } } }),
+    ).toEqual({ provider: "openai", biller: "openai", billingType: "api" });
+  });
+
+  it("falls back to chatgpt subscription without an API key", () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    expect(resolveCodexAcpBillingIdentity({ config: {} })).toEqual({
+      provider: "openai",
+      biller: "chatgpt",
+      billingType: "subscription",
+    });
+  });
+
+  it("bills OpenRouter-backed runs to openrouter", () => {
+    expect(
+      resolveCodexAcpBillingIdentity({
+        config: { env: { OPENAI_API_KEY: "sk-test", OPENROUTER_API_KEY: "or-test" } },
+      }),
+    ).toEqual({ provider: "openai", biller: "openrouter", billingType: "api" });
+  });
+
+  it("ignores host env for remote execution targets", () => {
+    process.env.OPENAI_API_KEY = "sk-host-only";
+    expect(
+      resolveCodexAcpBillingIdentity({
+        config: {},
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
+      } as never).billingType,
+    ).toBe("subscription");
   });
 });

@@ -25,12 +25,11 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   companies,
-  companySecrets,
   heartbeatRuns,
   pluginLogs,
   pluginWebhookDeliveries,
@@ -62,6 +61,7 @@ import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import type { PluginPerformActionActorContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import {
@@ -82,9 +82,13 @@ import {
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
 import {
-  extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+  extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
+import {
+  canonicalizeLocalPluginPath,
+  isCloudManagedInstance,
+  isWithinBundledPluginRoot,
+} from "../services/plugin-install-guard.js";
 import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
@@ -424,6 +428,10 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+export interface PluginRouteToolGatewayDeps {
+  toolGateway: ToolGatewayService;
+}
+
 interface PluginScopedApiRequest {
   routeKey: string;
   method: string;
@@ -509,6 +517,7 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  toolGatewayDeps?: PluginRouteToolGatewayDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
@@ -693,6 +702,7 @@ export function pluginRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action,
         entityType: "plugin",
         entityId,
@@ -710,6 +720,35 @@ export function pluginRoutes(
     }
     assertCompanyAccess(req, companyId);
     return companyId;
+  }
+
+  function requirePluginConfigCompanyId(req: Request, companyId: unknown): string {
+    if (typeof companyId !== "string" || companyId.trim().length === 0) {
+      throw badRequest('"companyId" is required and must be a non-empty string');
+    }
+    const scopedCompanyId = companyId.trim();
+    assertCompanyAccess(req, scopedCompanyId);
+    return scopedCompanyId;
+  }
+
+  async function validatePluginSecretRefsForCompany(
+    companyId: string,
+    refs: ReturnType<typeof extractSecretRefBindingsFromConfig>,
+  ): Promise<void> {
+    if (refs.length === 0) return;
+    const secretsSvc = secretService(db);
+    const checked = new Set<string>();
+    for (const ref of refs) {
+      if (checked.has(ref.secretId)) continue;
+      checked.add(ref.secretId);
+      const secret = await secretsSvc.getById(ref.secretId);
+      if (!secret || secret.companyId !== companyId) {
+        throw unprocessable("Plugin config references a secret outside the selected company");
+      }
+      if (secret.status === "deleted") {
+        throw unprocessable("Plugin config references a deleted secret");
+      }
+    }
   }
 
   function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
@@ -917,6 +956,19 @@ export function pluginRoutes(
     }
 
     const pluginId = req.query.pluginId as string | undefined;
+    if (req.actor.type === "agent" && toolGatewayDeps) {
+      if (!req.actor.companyId || !req.actor.agentId) {
+        res.status(401).json({ error: "Agent identity is required" });
+        return;
+      }
+      const tools = await toolGatewayDeps.toolGateway.listPluginToolsForAgent({
+        companyId: req.actor.companyId,
+        agentId: req.actor.agentId,
+      });
+      res.json(pluginId ? tools.filter((tool) => tool.pluginId === pluginId || tool.name.startsWith(`${pluginId}:`)) : tools);
+      return;
+    }
+
     const filter = pluginId ? { pluginId } : undefined;
     const tools = toolDeps.toolDispatcher.listToolsForAgent(filter);
     res.json(tools);
@@ -983,6 +1035,35 @@ export function pluginRoutes(
       return;
     }
 
+    if (req.actor.type === "agent" && toolGatewayDeps) {
+      try {
+        const result = await toolGatewayDeps.toolGateway.executePluginTool({
+          actor: {
+            type: "agent",
+            agentId: req.actor.agentId,
+            companyId: req.actor.companyId,
+            runId: req.actor.runId ?? null,
+          },
+          tool,
+          parameters: parameters ?? {},
+          runContext,
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof ToolGatewayHttpError) {
+          res.status(err.status).json({ error: err.message, reasonCode: err.reasonCode, ...err.details });
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("not running") || message.includes("worker")) {
+          res.status(502).json({ error: message });
+        } else {
+          res.status(500).json({ error: message });
+        }
+      }
+      return;
+    }
+
     // Verify the tool exists
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
     if (!registeredTool) {
@@ -1028,10 +1109,18 @@ export function pluginRoutes(
    * 3. Registers in the database
    * 4. Transitions to `ready` state if no new capability approval is needed
    *
+   * Cloud-managed instances (identified by the harness-injected
+   * `PAPERCLIP_MANAGED_CONFIG` environment variable) enforce a positive
+   * allowlist: only local paths that canonicalize to a directory inside the
+   * bundled plugin catalog root may be installed. npm/registry installs and
+   * arbitrary local paths are rejected with `403`. Local paths are
+   * canonicalized and validated on every instance.
+   *
    * Response: `PluginRecord`
    *
    * Errors:
    * - `400` — validation failure or install error (package not found, bad manifest, etc.)
+   * - `403` — install source not permitted on a cloud-managed instance
    * - `500` — installation succeeded but manifest is missing (indicates a loader bug)
    */
   router.post("/plugins/install", async (req, res) => {
@@ -1067,9 +1156,39 @@ export function pluginRoutes(
       return;
     }
 
+    // Cloud install floor: on harness-managed instances only bundled-catalog
+    // sources are installable, regardless of actor privileges or flag state.
+    const cloudManaged = isCloudManagedInstance();
+    if (cloudManaged && !isLocalPath) {
+      res.status(403).json({
+        error:
+          "npm installs are disabled on cloud-managed instances; only plugins bundled with the application may be installed",
+      });
+      return;
+    }
+
+    // Canonicalize local install paths on every instance so traversal
+    // segments and symlinks cannot smuggle an aliased path past validation.
+    let canonicalLocalPath: string | undefined;
+    if (isLocalPath) {
+      const validated = await canonicalizeLocalPluginPath(trimmedPackage);
+      if (!validated.ok) {
+        res.status(400).json({ error: `Invalid localPath: ${validated.reason}` });
+        return;
+      }
+      if (cloudManaged && !(await isWithinBundledPluginRoot(validated.canonicalPath))) {
+        res.status(403).json({
+          error:
+            "cloud-managed instances may only install plugins from the bundled plugin catalog",
+        });
+        return;
+      }
+      canonicalLocalPath = validated.canonicalPath;
+    }
+
     try {
-      const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
+      const installOptions = canonicalLocalPath !== undefined
+        ? { localPath: canonicalLocalPath }
         : { packageName: trimmedPackage, version: version?.trim() };
 
       const discovered = await loader.installPlugin(installOptions);
@@ -2121,117 +2240,10 @@ export function pluginRoutes(
   // Plugin configuration routes
   // ===========================================================================
 
-  async function saveCompanyScopedPluginConfig(input: {
-    req: Request;
-    res: Response;
-    pluginIdOrKey: string;
-    companyId: string;
-    configJson: Record<string, unknown>;
-  }) {
-    assertBoardOrgAccess(input.req);
-    assertCompanyAccess(input.req, input.companyId);
-
-    const plugin = await resolvePlugin(registry, input.pluginIdOrKey);
-    if (!plugin) {
-      input.res.status(404).json({ error: "Plugin not found" });
-      return;
-    }
-
-    const schema = plugin.manifestJson?.instanceConfigSchema;
-    if (schema && Object.keys(schema).length > 0) {
-      const validation = validateInstanceConfig(input.configJson, schema);
-      if (!validation.valid) {
-        input.res.status(400).json({
-          error: "Configuration does not match the plugin's instanceConfigSchema",
-          fieldErrors: validation.errors,
-        });
-        return;
-      }
-    }
-
-    const secretRefsByPath = extractSecretRefPathsFromConfig(input.configJson, schema);
-    const secretRefs = [...secretRefsByPath.entries()].flatMap(([secretId, paths]) =>
-      [...paths].map((configPath) => ({
-        secretId,
-        configPath,
-        versionSelector: "latest" as const,
-      })),
-    );
-    const secrets = secretService(db);
-    const secretIds = [...new Set(secretRefs.map((ref) => ref.secretId))];
-
-    try {
-      if (secretIds.length > 0) {
-        const rows = await db
-          .select({
-            id: companySecrets.id,
-            companyId: companySecrets.companyId,
-            status: companySecrets.status,
-          })
-          .from(companySecrets)
-          .where(inArray(companySecrets.id, secretIds));
-        const byId = new Map(rows.map((row) => [row.id, row]));
-        for (const secretId of secretIds) {
-          const secret = byId.get(secretId);
-          if (!secret || secret.status === "deleted") {
-            input.res.status(404).json({ error: "Secret not found" });
-            return;
-          }
-          if (secret.companyId !== input.companyId) {
-            input.res.status(422).json({ error: "Secret must belong to same company" });
-            return;
-          }
-        }
-      }
-
-      const result = await registry.upsertConfig(plugin.id, input.companyId, {
-        configJson: input.configJson,
-      });
-      await secrets.syncSecretRefsForTarget(
-        input.companyId,
-        { targetType: "plugin", targetId: plugin.id },
-        secretRefs,
-      );
-      await logPluginMutationActivity(input.req, "plugin.config.updated", plugin.id, {
-        pluginId: plugin.id,
-        pluginKey: plugin.pluginKey,
-        companyId: input.companyId,
-        configKeyCount: Object.keys(input.configJson).length,
-        secretRefCount: secretRefs.length,
-      });
-
-      if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
-        try {
-          await bridgeDeps.workerManager.call(
-            plugin.id,
-            "configChanged",
-            { config: input.configJson, companyId: input.companyId },
-          );
-        } catch (rpcErr) {
-          if (
-            rpcErr instanceof JsonRpcCallError &&
-            rpcErr.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
-          ) {
-            try {
-              await lifecycle.restartWorker(plugin.id);
-            } catch {
-              // Restart failure is non-fatal for the config save response.
-            }
-          }
-        }
-      }
-
-      input.res.json(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      input.res.status(400).json({ error: message });
-    }
-  }
-
   /**
    * GET /api/plugins/:pluginId/config
    *
-   * Retrieve the current instance configuration for a plugin.
+   * Retrieve the current company-scoped configuration for a plugin.
    *
    * Returns the `PluginConfig` record if one exists, or `null` if the plugin
    * has not yet been configured.
@@ -2242,22 +2254,7 @@ export function pluginRoutes(
   router.get("/plugins/:pluginId/config", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId } = req.params;
-
-    const plugin = await resolvePlugin(registry, pluginId);
-    if (!plugin) {
-      res.status(404).json({ error: "Plugin not found" });
-      return;
-    }
-
-    res.status(400).json({
-      error: "Plugin config is company-scoped. Use /api/plugins/:pluginId/companies/:companyId/config.",
-    });
-  });
-
-  router.get("/plugins/:pluginId/companies/:companyId/config", async (req, res) => {
-    assertBoardOrgAccess(req);
-    const { pluginId, companyId } = req.params;
-    assertCompanyAccess(req, companyId);
+    const companyId = requirePluginConfigCompanyId(req, req.query.companyId);
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2272,12 +2269,13 @@ export function pluginRoutes(
   /**
    * POST /api/plugins/:pluginId/config
    *
-   * Save (create or replace) the instance configuration for a plugin.
+   * Save (create or replace) the company-scoped configuration for a plugin.
    *
    * The caller provides the full `configJson` object. The server persists it
    * via `registry.upsertConfig()`.
    *
    * Request body:
+   * - `companyId`: Company that owns this plugin config row
    * - `configJson`: Configuration values matching the plugin's `instanceConfigSchema`
    *
    * Response: `PluginConfig`
@@ -2295,8 +2293,9 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
+    const body = req.body as { companyId?: unknown; configJson?: Record<string, unknown> } | undefined;
+    const companyId = requirePluginConfigCompanyId(req, body?.companyId);
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
@@ -2326,74 +2325,118 @@ export function pluginRoutes(
     }
 
     try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
-        return;
+      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
+      await validatePluginSecretRefsForCompany(companyId, secretRefs);
+      await secretService(db).syncSecretRefsForTarget(
+        companyId,
+        { targetType: "plugin", targetId: plugin.id },
+        secretRefs,
+        { replaceAll: true },
+      );
+
+      const result = await registry.upsertConfig(plugin.id, companyId, {
+        companyId,
+        configJson: body.configJson,
+      });
+      await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        companyId,
+        secretRefCount: secretRefs.length,
+        configKeyCount: Object.keys(body.configJson).length,
+      });
+
+      // Notify the running worker about the config change (PLUGIN_SPEC §25.4.4).
+      // If the worker implements onConfigChanged, send the new config via RPC.
+      // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
+      // up the new config on re-initialize. If no worker is running, skip.
+      if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+        try {
+          await bridgeDeps.workerManager.call(
+            plugin.id,
+            "configChanged",
+            { config: body.configJson, companyId },
+          );
+        } catch (rpcErr) {
+          if (
+            rpcErr instanceof JsonRpcCallError &&
+            rpcErr.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
+          ) {
+            // Worker doesn't handle live config — restart it.
+            try {
+              await lifecycle.restartWorker(plugin.id);
+            } catch {
+              // Restart failure is non-fatal for the config save response.
+            }
+          }
+          // Other RPC errors (timeout, unavailable) are non-fatal — config is
+          // already persisted and will take effect on next worker restart.
+        }
       }
 
-      res.status(400).json({
-        error: "Plugin config is company-scoped. Use /api/plugins/:pluginId/companies/:companyId/config.",
-      });
-      return;
-
+      res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
   });
 
-  router.post("/plugins/:pluginId/companies/:companyId/config", async (req, res) => {
-    const { pluginId, companyId } = req.params;
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
-      res.status(400).json({ error: '"configJson" is required and must be an object' });
-      return;
-    }
-
-    await saveCompanyScopedPluginConfig({
-      req,
-      res,
-      pluginIdOrKey: pluginId,
-      companyId,
-      configJson: body.configJson,
-    });
-  });
-
-  async function testPluginConfig(input: {
-    req: Request;
-    res: Response;
-    pluginIdOrKey: string;
-    companyId?: string;
-    configJson: Record<string, unknown>;
-  }) {
-    assertBoardOrgAccess(input.req);
-    if (input.companyId) assertCompanyAccess(input.req, input.companyId);
+  /**
+   * POST /api/plugins/:pluginId/config/test
+   *
+   * Test a plugin configuration without persisting it by calling the plugin
+   * worker's `validateConfig` RPC method.
+   *
+   * Only works when the plugin's worker implements `onValidateConfig`.
+   * If the worker does not implement the method, returns
+   * `{ valid: false, supported: false, message: "..." }` with HTTP 200.
+   *
+   * Request body:
+   * - `configJson`: Configuration values to validate
+   *
+   * Response: `{ valid: boolean; message?: string; supported?: boolean }`
+   * Errors:
+   * - 400 if request validation fails
+   * - 404 if plugin not found
+   * - 501 if bridge deps (worker manager) are not configured
+   * - 502 if the worker is unavailable
+   */
+  router.post("/plugins/:pluginId/config/test", async (req, res) => {
+    assertBoardOrgAccess(req);
 
     if (!bridgeDeps) {
-      input.res.status(501).json({ error: "Plugin bridge is not enabled" });
+      res.status(501).json({ error: "Plugin bridge is not enabled" });
       return;
     }
 
-    const plugin = await resolvePlugin(registry, input.pluginIdOrKey);
+    const { pluginId } = req.params;
+
+    const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
-      input.res.status(404).json({ error: "Plugin not found" });
+      res.status(404).json({ error: "Plugin not found" });
       return;
     }
 
     if (plugin.status !== "ready") {
-      input.res.status(400).json({
+      res.status(400).json({
         error: `Plugin is not ready (current status: ${plugin.status})`,
       });
+      return;
+    }
+
+    const body = req.body as { companyId?: unknown; configJson?: Record<string, unknown> } | undefined;
+    const companyId = requirePluginConfigCompanyId(req, body?.companyId);
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
+      res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
 
     // Fast schema-level rejection before hitting the worker RPC.
     const schema = plugin.manifestJson?.instanceConfigSchema;
     if (schema && Object.keys(schema).length > 0) {
-      const validation = validateInstanceConfig(input.configJson, schema);
+      const validation = validateInstanceConfig(body.configJson, schema);
       if (!validation.valid) {
-        input.res.status(400).json({
+        res.status(400).json({
           error: "Configuration does not match the plugin's instanceConfigSchema",
           fieldErrors: validation.errors,
         });
@@ -2402,10 +2445,13 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
+      await validatePluginSecretRefsForCompany(companyId, secretRefs);
+
       const result = await bridgeDeps.workerManager.call(
         plugin.id,
         "validateConfig",
-        { config: input.configJson, companyId: input.companyId },
+        { config: body.configJson },
       );
 
       // The worker returns PluginConfigValidationResult { ok, warnings?, errors? }
@@ -2414,12 +2460,12 @@ export function pluginRoutes(
         const warningText = result.warnings?.length
           ? `Warnings: ${result.warnings.join("; ")}`
           : undefined;
-        input.res.json({ valid: true, message: warningText });
+        res.json({ valid: true, message: warningText });
       } else {
         const errorText = result.errors?.length
           ? result.errors.join("; ")
           : "Configuration validation failed.";
-        input.res.json({ valid: false, message: errorText });
+        res.json({ valid: false, message: errorText });
       }
     } catch (err) {
       // If the worker does not implement validateConfig, return a structured response
@@ -2427,7 +2473,7 @@ export function pluginRoutes(
         err instanceof JsonRpcCallError &&
         err.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
       ) {
-        input.res.json({
+        res.json({
           valid: false,
           supported: false,
           message: "This plugin does not support configuration testing.",
@@ -2437,45 +2483,8 @@ export function pluginRoutes(
 
       // Worker unavailable or other RPC errors
       const bridgeError = mapRpcErrorToBridgeError(err);
-      input.res.status(502).json(bridgeError);
+      res.status(502).json(bridgeError);
     }
-  }
-
-  /**
-   * POST /api/plugins/:pluginId/config/test
-   *
-   * Legacy instance-scoped config test. Prefer the company-scoped endpoint
-   * below so plugins can resolve company-scoped secret refs.
-   */
-  router.post("/plugins/:pluginId/config/test", async (req, res) => {
-    const { pluginId } = req.params;
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
-      res.status(400).json({ error: '"configJson" is required and must be an object' });
-      return;
-    }
-    await testPluginConfig({
-      req,
-      res,
-      pluginIdOrKey: pluginId,
-      configJson: body.configJson,
-    });
-  });
-
-  router.post("/plugins/:pluginId/companies/:companyId/config/test", async (req, res) => {
-    const { pluginId, companyId } = req.params;
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
-      res.status(400).json({ error: '"configJson" is required and must be an object' });
-      return;
-    }
-    await testPluginConfig({
-      req,
-      res,
-      pluginIdOrKey: pluginId,
-      companyId,
-      configJson: body.configJson,
-    });
   });
 
   // ===========================================================================
