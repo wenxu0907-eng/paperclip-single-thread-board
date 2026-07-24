@@ -970,6 +970,14 @@ export async function startServer(): Promise<StartedServer> {
           );
         }
 
+        const recoveryWakesReconciled = await heartbeat.reconcileStrandedSourceScopedRecoveryWakes();
+        if (recoveryWakesReconciled.retried > 0) {
+          logger.warn(
+            { ...recoveryWakesReconciled },
+            "startup recovery-wake reconciliation retried stalled source-scoped recovery wakes",
+          );
+        }
+
         const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
         if (issueGraphReconciled.escalationsCreated > 0 || issueGraphReconciled.dependencyWakesHealed > 0) {
           logger.warn(
@@ -1101,6 +1109,13 @@ export async function startServer(): Promise<StartedServer> {
                 logger.warn(
                   { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
                   "periodic heartbeat recovery changed assigned issue state",
+                );
+              }
+              const recoveryWakesReconciled = await heartbeat.reconcileStrandedSourceScopedRecoveryWakes();
+              if (recoveryWakesReconciled.retried > 0) {
+                logger.warn(
+                  { ...recoveryWakesReconciled },
+                  "periodic recovery-wake reconciliation retried stalled source-scoped recovery wakes",
                 );
               }
             })
