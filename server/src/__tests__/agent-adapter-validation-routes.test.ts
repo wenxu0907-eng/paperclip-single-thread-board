@@ -335,7 +335,7 @@ describe("agent routes adapter validation", () => {
     const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
     const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
-    expect(adapterConfig.model).toBe("gpt-5.5");
+    expect(adapterConfig.model).toBe("gpt-5.6");
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.CODEX_HOME).toBeUndefined();
   });
@@ -377,7 +377,7 @@ describe("agent routes adapter validation", () => {
     const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = patch.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
-    expect(adapterConfig.model).toBe("gpt-5.5");
+    expect(adapterConfig.model).toBe("gpt-5.6");
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
     const authPath = path.join(String(env.CODEX_HOME), "auth.json");
