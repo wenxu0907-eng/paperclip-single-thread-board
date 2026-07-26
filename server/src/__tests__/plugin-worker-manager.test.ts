@@ -330,6 +330,59 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("registers a global invocation for runJob so scheduled-job host calls resolve (COM-163)", async () => {
+    // Scheduled-job dispatches (plugin-job-scheduler.ts → workerManager.call(pluginId,
+    // "runJob", { job })) carry no companyId in their params. Before the fix
+    // resolveInvocationRegistration returned null for "runJob", so when a job
+    // handler (e.g. the Discord plugin's check-escalation-timeouts) made nested
+    // host calls (agents.list, state.get, …) the echoed invocation id resolved to
+    // no registered invocation and contextForWorkerMessage flagged it as an invalid
+    // scope — the InvocationScopeDenied flood every ~50s.
+    //
+    // As with handleWebhook, a resolved context of `{ invocationScope: null }`
+    // proves a GLOBAL invocation was registered and echoed; the pre-fix behaviour
+    // resolves to `{}` (no id registered).
+    const companiesGet = vi.fn(async (
+      params: { companyId: string },
+      context?: { invocationScope?: { companyId?: string | null } | null },
+    ) => ({
+      id: params.companyId,
+      scopedCompanyId: context?.invocationScope?.companyId ?? null,
+    }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet as never,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("runJob" as keyof HostToWorkerMethods, {
+        mode: "echo",
+        requestedCompanyId: "company-from-job",
+      } as HostToWorkerMethods[keyof HostToWorkerMethods][0])).resolves.toEqual({
+        id: "company-from-job",
+        scopedCompanyId: null,
+      });
+
+      expect(companiesGet).toHaveBeenCalledWith(
+        { companyId: "company-from-job" },
+        { invocationScope: null },
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects performAction nested host calls that omit the invocation id", async () => {
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",

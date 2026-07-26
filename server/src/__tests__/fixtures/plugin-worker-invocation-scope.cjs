@@ -9,10 +9,12 @@ function send(message) {
 
 function sendNestedHostRequest(originalRequest, invocationId) {
   const nestedId = `nested-${nextRequestId++}`;
-  // handleWebhook carries its probe params at the top level (mirroring the real
-  // webhook dispatch shape); getData/performAction nest them under `params`.
+  // handleWebhook and runJob carry their probe params at the top level (mirroring
+  // the real webhook/scheduled-job dispatch shapes, neither of which threads a
+  // companyId through); getData/performAction nest them under `params`.
   const params =
-    originalRequest.method === "handleWebhook"
+    originalRequest.method === "handleWebhook" ||
+    originalRequest.method === "runJob"
       ? originalRequest.params ?? {}
       : originalRequest.params?.params ?? {};
   const mode = params.mode;
@@ -84,13 +86,18 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction", "handleWebhook"],
+        supportedMethods: ["getData", "performAction", "handleWebhook", "runJob"],
       },
     });
     return;
   }
 
-  if (method === "getData" || method === "performAction" || method === "handleWebhook") {
+  if (
+    method === "getData" ||
+    method === "performAction" ||
+    method === "handleWebhook" ||
+    method === "runJob"
+  ) {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }
