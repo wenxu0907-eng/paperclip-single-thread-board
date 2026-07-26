@@ -1306,32 +1306,35 @@ describe.sequential("issue thread interaction routes", () => {
 
   it("wakes with decline instructions when a tool-action confirmation is rejected", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
-      id: "interaction-tool-action-rejected",
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "request_confirmation",
-      status: "rejected",
-      continuationPolicy: "wake_assignee",
-      idempotencyKey: null,
-      sourceCommentId: null,
-      sourceRunId: "run-tool-action-rejected",
-      payload: {
-        version: 1,
-        prompt: "Approve the action?",
-        toolAction: {
+      interaction: {
+        id: "interaction-tool-action-rejected",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-tool-action-rejected",
+        payload: {
           version: 1,
-          actionRequestId: "action-request-3",
-          toolName: "google_sheets_add_row",
+          prompt: "Approve the action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "action-request-3",
+            toolName: "google_sheets_add_row",
+          },
         },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Use the sandbox sheet instead",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
       },
-      result: {
-        version: 1,
-        outcome: "rejected",
-        reason: "Use the sandbox sheet instead",
-      },
-      createdAt: "2026-04-20T12:00:00.000Z",
-      updatedAt: "2026-04-20T12:05:00.000Z",
-      resolvedAt: "2026-04-20T12:05:00.000Z",
+      continuationIssue: null,
     });
     const app = await createApp();
 
