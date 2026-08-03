@@ -595,6 +595,17 @@ export function createHostClientHandlers(
       );
     }
 
+    // A gateway-ingress worker resolves its no-id nested calls to an EXPLICIT
+    // global (null) invocation scope (see plugin-worker-manager
+    // `contextForWorkerMessage`). Unlike an absent/lost scope — which upstream
+    // hardening rejects below — an explicit global scope is trusted to reach any
+    // company, mirroring the handleWebhook global invocation (COM-154). This is
+    // reachable only for gateway-ingress workers; scoped dispatches always carry
+    // an invocation id and never produce a null scope. Capability gating still
+    // applies. (`=== null` is true only when the key is present and null;
+    // undefined/absent scopes fall through to the strict checks.)
+    if (context?.invocationScope === null) return;
+
     const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
 
     if (requested.kind === "all") {
@@ -636,6 +647,16 @@ export function createHostClientHandlers(
     }
 
     const requested = requestedCompanyScope(method, params);
+
+    // Explicit global (null) scope from a gateway-ingress worker: trusted to
+    // reach any company (COM-154). A company-scoped method still needs a target,
+    // so honor the request's own companyId; without one there is nothing to
+    // resolve. See the matching note in requireInvocationCompanyScope.
+    if (context?.invocationScope === null) {
+      if (requested.kind === "single") return requested.companyId;
+      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+    }
+
     const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
     if (requested.kind === "single") {
       if (!scopedCompanyId) {

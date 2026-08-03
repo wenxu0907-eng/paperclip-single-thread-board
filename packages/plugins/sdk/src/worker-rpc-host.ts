@@ -1580,7 +1580,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED },
       );
     }
-    return plugin.definition.onValidateConfig(params.config);
+    return plugin.definition.onValidateConfig(
+      params.config,
+      params.companyId ? { companyId: params.companyId } : undefined,
+    );
   }
 
   async function handleConfigChanged(params: ConfigChangedParams): Promise<void> {

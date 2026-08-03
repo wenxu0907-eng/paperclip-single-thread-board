@@ -354,6 +354,8 @@ export interface ConfigChangedParams {
 export interface ValidateConfigParams {
   /** The configuration to validate. */
   config: Record<string, unknown>;
+  /** Company scope for resolving company-scoped config secrets. */
+  companyId?: string;
 }
 
 /**
