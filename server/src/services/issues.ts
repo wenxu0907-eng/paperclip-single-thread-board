@@ -7605,7 +7605,7 @@ export function issueService(db: Db) {
       // the UI mis-attributes to the board ("Board" bubble). Store the agent id at
       // the source so new rows attribute correctly. (COM-57)
       let resolvedAuthorAgentId = actor.agentId ?? null;
-      if (!resolvedAuthorAgentId && !options?.authorType && actor.runId) {
+      if (!resolvedAuthorAgentId && !options?.authorType && actor.runId && isUuidLike(actor.runId)) {
         const run = await dbOrTx
           .select({ agentId: heartbeatRuns.agentId })
           .from(heartbeatRuns)
