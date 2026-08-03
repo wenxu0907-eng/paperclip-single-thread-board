@@ -20,8 +20,14 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: "InterVariable", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  /* CJK fallbacks (COM-296): InterVariable/Inter carry no Chinese glyphs, so CJK
+     text used to fall through to an arbitrary generic sans-serif with mismatched
+     metrics — noisy, uneven strokes ("看得眼睛很花"). Appending a per-platform CJK
+     stack (PingFang SC macOS · Microsoft YaHei Windows · Noto Sans SC Linux/web,
+     with Hiragino Sans GB · WenQuanYi Micro Hei olders) keeps Latin on Inter while
+     rendering Han glyphs in a proper, weight-matched CJK face. */
+  --font-sans: "InterVariable", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "WenQuanYi Micro Hei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -1072,10 +1078,13 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 /* Inline code background (not inside a code block) */
 .prose :not(pre) > code {
-  background-color: color-mix(in oklab, var(--accent) 60%, transparent);
-  padding: 0.15em 0.35em;
-  border-radius: 3px;
-  font-weight: 500;
+  /* COM-296: softer, lighter chips so the constant code spans in agent
+     messages stop chopping CJK prose into a busy patchwork. */
+  background-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  font-weight: 400;
+  font-size: 0.92em;
 }
 
 .dark .prose :not(pre) > code {
@@ -1089,8 +1098,14 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown {
   color: var(--foreground);
-  font-size: 0.9375rem;
-  line-height: 1.6;
+  /* CJK clarity (COM-296, Mac feedback): on macOS the sans stack already
+     cascades Han glyphs to PingFang, so the earlier family fallback barely
+     helped — the eye-strain ("看得眼睛很花") comes from DENSITY, not the face.
+     A touch more size, noticeably more leading, and a hair of tracking give
+     Chinese glyphs room to breathe without changing Latin metrics. */
+  font-size: 0.95rem;
+  line-height: 1.78;
+  letter-spacing: 0.01em;
 }
 
 .paperclip-markdown.paperclip-markdown-on-accent {
