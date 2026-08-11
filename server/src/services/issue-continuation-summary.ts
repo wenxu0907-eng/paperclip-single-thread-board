@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
+import { stripManagedGoalBlock, syncManagedGoalBlockInDescription } from "./managed-goal-block.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
@@ -150,7 +151,8 @@ export function buildContinuationSummaryMarkdown(input: {
   }
 
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
-  const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
+  const humanDescription = stripManagedGoalBlock(issue.description) || null;
+  const objective = extractMarkdownSection(humanDescription, "Objective") ?? humanDescription?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
   const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
@@ -263,6 +265,15 @@ export async function refreshIssueContinuationSummary(input: {
   ]);
 
   if (!issue) return null;
+
+  // COM-294 Option C: keep a platform-managed "Current Goal & Decisions" block at
+  // the top of the human-visible description so the goal survives fresh sessions.
+  // Deterministic + change-gated: only write when the block actually changed.
+  const nextDescription = syncManagedGoalBlockInDescription(issue.description);
+  if (nextDescription !== (issue.description ?? "")) {
+    await db.update(issues).set({ description: nextDescription }).where(eq(issues.id, issueId));
+  }
+
   const body = buildContinuationSummaryMarkdown({
     issue,
     run,

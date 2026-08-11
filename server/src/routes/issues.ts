@@ -202,6 +202,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { preserveManagedGoalBlockOnWrite } from "../services/managed-goal-block.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -7811,6 +7812,16 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    // COM-294: the platform owns a "Current Goal & Decisions" block inside the
+    // human-visible description (Option C). If a write omits that block, re-attach
+    // the existing one so an edit can never silently wipe the managed goal. Writes
+    // that carry their own block (platform regeneration) are respected as-is.
+    if (updateFields.description !== undefined) {
+      updateFields.description = preserveManagedGoalBlockOnWrite(
+        existing.description as string | null,
+        updateFields.description as string | null,
+      );
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
