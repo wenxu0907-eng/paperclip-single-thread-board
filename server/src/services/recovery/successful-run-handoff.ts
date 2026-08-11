@@ -355,6 +355,8 @@ export function buildSuccessfulRunHandoffInstruction(input: {
     "",
     "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
     "",
+    "Do NOT reply to, answer, or re-address any comment in this issue's thread — including older or previously-unanswered questions. Answering a stale thread comment here is the exact failure this retry guards against (COM-319). Your only output is a valid disposition on THIS issue; the platform will block substantive comment writes from this run.",
+    "",
     "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
     "",
     "**Is the issue finished?**",

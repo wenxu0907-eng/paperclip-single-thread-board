@@ -1125,6 +1125,43 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueApprovalService.unlink).not.toHaveBeenCalled();
   });
 
+  // COM-319: the regression was a cheap status-only recovery run that "lost track and
+  // answered a very old comment" — it posted a substantive reply to a ~10h-old thread
+  // question. Comment writes were the one recovery-guarded mutation with no status-only
+  // gate (documents, approvals, and downstream assignment were already gated). Hard-gate
+  // comment writes from these runs so a recovery retry can only record a disposition.
+  it("blocks cheap status-only recovery runs from posting issue comments", async () => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    );
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "answering a stale thread question" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot post issue comments");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("still allows the owner agent to post issue comments outside status-only recovery", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "normal progress update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  });
+
   it.each([
     [
       "issue create",
