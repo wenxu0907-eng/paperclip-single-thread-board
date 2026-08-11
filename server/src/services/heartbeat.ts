@@ -4188,11 +4188,19 @@ export function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
-function shouldQueueFollowupForRunningIssueWake(input: {
+export function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
 }) {
   if (input.wakeCommentId) return true;
+  // A resolved-interaction continuation wake (e.g. an accepted confirmation
+  // card) carries no wakeCommentId, so without this it would coalesce into an
+  // already-running same-issue run — and if that run is past the point of
+  // reading the acceptance, the single wake is silently dropped and only the
+  // periodic recovery sweep revives it minutes later (COM-178: "confirmed 之后
+  // 很久没有行动"). Route it to the deferred-followup path so a fresh run is
+  // guaranteed once the active run finishes.
+  if (isResolvedInteractionContinuationWakeContext(input.contextSnapshot)) return true;
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   return Boolean(wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason));
 }

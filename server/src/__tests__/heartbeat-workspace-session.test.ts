@@ -34,6 +34,7 @@ import {
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
   shouldDeferFollowupWakeForSameIssue,
+  shouldQueueFollowupForRunningIssueWake,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
@@ -1644,6 +1645,58 @@ describe("shouldDeferFollowupWakeForSameIssue", () => {
         isSameExecutionAgent: true,
         wakeCommentId: null,
         forceFreshSession: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldQueueFollowupForRunningIssueWake", () => {
+  // COM-178: an accepted confirmation card wakes the assignee via reason
+  // `issue_commented` + mutation `interaction` and carries NO wakeCommentId.
+  // While a same-issue run is active it must queue a deferred follow-up run
+  // instead of coalescing into (and being dropped by) the in-flight run.
+  it("queues a follow-up for a resolved-interaction (accepted confirmation) wake with no comment id", () => {
+    expect(
+      shouldQueueFollowupForRunningIssueWake({
+        contextSnapshot: {
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId: "int-1",
+          interactionStatus: "accepted",
+        },
+        wakeCommentId: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("queues a follow-up for an answered ask_user_questions interaction wake", () => {
+    expect(
+      shouldQueueFollowupForRunningIssueWake({
+        contextSnapshot: {
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId: "int-2",
+          interactionStatus: "answered",
+        },
+        wakeCommentId: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("still queues a follow-up when a wakeCommentId is present", () => {
+    expect(
+      shouldQueueFollowupForRunningIssueWake({
+        contextSnapshot: { wakeReason: "issue_commented" },
+        wakeCommentId: "comment-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not queue a follow-up for a plain non-interaction issue_commented wake", () => {
+    expect(
+      shouldQueueFollowupForRunningIssueWake({
+        contextSnapshot: { wakeReason: "issue_commented" },
+        wakeCommentId: null,
       }),
     ).toBe(false);
   });
