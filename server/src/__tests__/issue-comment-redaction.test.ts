@@ -188,6 +188,77 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(JSON.stringify(wakePayload)).not.toContain("secret metadata");
   });
 
+  it("forces a thread re-fetch and exposes the interaction id for a resolved-interaction wake with no comment anchor (COM-319)", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const interactionId = randomUUID();
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        interactionId,
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    // Without a comment anchor the run would otherwise be told "fallback fetch needed: no" and
+    // drift to answering a stale old comment. It must instead re-read the thread and know which
+    // interaction was resolved.
+    expect(wakePayload?.comments).toEqual([]);
+    expect(wakePayload?.interactionId).toBe(interactionId);
+    expect(wakePayload?.fallbackFetchNeeded).toBe(true);
+  });
+
+  it("does not force a re-fetch for a resolved-interaction wake that already carries a comment anchor", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "board-user-1",
+      body: "current board answer",
+    });
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        interactionId: randomUUID(),
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        wakeReason: "issue_commented",
+        commentId,
+        wakeCommentIds: [commentId],
+      },
+    });
+
+    expect(wakePayload?.comments).toHaveLength(1);
+    expect(wakePayload?.fallbackFetchNeeded).toBe(false);
+  });
+
+  it("does not force a re-fetch for an unresolved interaction wake with no comment anchor", async () => {
+    const { companyId, issueId } = await seedIssue();
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        interactionId: randomUUID(),
+        interactionKind: "ask_user_questions",
+        interactionStatus: "pending",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(wakePayload?.fallbackFetchNeeded).toBe(false);
+  });
+
   it("excludes deleted comment bodies from company search", async () => {
     const { companyId, issueId } = await seedIssue();
     await db.insert(issueComments).values({
