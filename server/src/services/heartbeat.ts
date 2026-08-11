@@ -4488,27 +4488,29 @@ export async function buildPaperclipWakePayload(input: {
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
+  const inlineCommentColumns = {
+    id: issueComments.id,
+    issueId: issueComments.issueId,
+    body: issueComments.body,
+    authorType: issueComments.authorType,
+    authorAgentId: issueComments.authorAgentId,
+    authorUserId: issueComments.authorUserId,
+    presentation: issueComments.presentation,
+    metadata: issueComments.metadata,
+    deletedAt: issueComments.deletedAt,
+    deletedByType: issueComments.deletedByType,
+    deletedByAgentId: issueComments.deletedByAgentId,
+    deletedByUserId: issueComments.deletedByUserId,
+    deletedByRunId: issueComments.deletedByRunId,
+    sourceTrust: issueComments.sourceTrust,
+    createdAt: issueComments.createdAt,
+  } as const;
+
   const commentRows =
     commentIds.length === 0
       ? []
       : await input.db
-          .select({
-            id: issueComments.id,
-            issueId: issueComments.issueId,
-            body: issueComments.body,
-            authorType: issueComments.authorType,
-            authorAgentId: issueComments.authorAgentId,
-            authorUserId: issueComments.authorUserId,
-            presentation: issueComments.presentation,
-            metadata: issueComments.metadata,
-            deletedAt: issueComments.deletedAt,
-            deletedByType: issueComments.deletedByType,
-            deletedByAgentId: issueComments.deletedByAgentId,
-            deletedByUserId: issueComments.deletedByUserId,
-            deletedByRunId: issueComments.deletedByRunId,
-            sourceTrust: issueComments.sourceTrust,
-            createdAt: issueComments.createdAt,
-          })
+          .select(inlineCommentColumns)
           .from(issueComments)
           .where(
             and(
@@ -4516,6 +4518,7 @@ export async function buildPaperclipWakePayload(input: {
               inArray(issueComments.id, commentIds),
             ),
           );
+  type InlineCommentRow = (typeof commentRows)[number];
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];
@@ -4527,16 +4530,14 @@ export async function buildPaperclipWakePayload(input: {
       ? redactQuarantinedBodyForHigherTrust(continuationSummary)
       : continuationSummary;
 
-  for (const commentId of commentIds) {
-    const row = commentsById.get(commentId);
-    if (!row) {
-      truncated = true;
-      missingCommentCount += 1;
-      continue;
-    }
+  // Render one comment row into the inline `comments` window, honoring the shared count/body-char
+  // budgets. Returns "stop" when a budget is exhausted (caller should stop feeding rows) so the
+  // trigger-comment loop and the resolved-interaction anchor path below share identical formatting,
+  // sanitization, and truncation semantics (one source of truth).
+  const pushInlineComment = (row: InlineCommentRow): "pushed" | "stop" => {
     if (comments.length >= MAX_INLINE_WAKE_COMMENTS) {
       truncated = true;
-      break;
+      return "stop";
     }
 
     const deletedAt = row.deletedAt ?? null;
@@ -4545,7 +4546,7 @@ export async function buildPaperclipWakePayload(input: {
     const allowedBodyChars = Math.min(MAX_INLINE_WAKE_COMMENT_BODY_CHARS, remainingBodyChars);
     if (allowedBodyChars <= 0) {
       truncated = true;
-      break;
+      return "stop";
     }
 
     const body = fullBody.length > allowedBodyChars ? fullBody.slice(0, allowedBodyChars) : fullBody;
@@ -4574,6 +4575,17 @@ export async function buildPaperclipWakePayload(input: {
           ? { type: "user", id: row.authorUserId }
           : { type: "system", id: null },
     });
+    return "pushed";
+  };
+
+  for (const commentId of commentIds) {
+    const row = commentsById.get(commentId);
+    if (!row) {
+      truncated = true;
+      missingCommentCount += 1;
+      continue;
+    }
+    if (pushInlineComment(row) === "stop") break;
   }
 
   const annotationDeltas = annotationCommentId && issueId
@@ -4643,6 +4655,30 @@ export async function buildPaperclipWakePayload(input: {
     !!interactionStatus &&
     RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus);
   const needsInteractionThreadRefetch = isResolvedInteractionContinuation && commentIds.length === 0;
+  // Forcing a re-read (above) is a weak anchor: it hands the run the whole thread and hopes it
+  // self-selects the newest item — the exact step that fails when a stale continuation summary is
+  // in front of it. So also HYDRATE the newest real comments inline and set latestCommentId to the
+  // true newest, giving an explicit "this is the current input" anchor instead of only a hint.
+  let interactionAnchorLatestCommentId: string | null = null;
+  if (needsInteractionThreadRefetch && issueId && comments.length === 0) {
+    const latestRows = await input.db
+      .select(inlineCommentColumns)
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, issueId),
+          isNull(issueComments.deletedAt),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(MAX_INLINE_WAKE_COMMENTS);
+    interactionAnchorLatestCommentId = latestRows[0]?.id ?? null;
+    // latestRows is newest-first; render oldest-first so the window reads chronologically.
+    for (const row of latestRows.slice().reverse()) {
+      if (pushInlineComment(row) === "stop") break;
+    }
+  }
   const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
   const planReviewContext = issueId
     ? await buildPlanReviewContext({
@@ -4753,7 +4789,7 @@ export async function buildPaperclipWakePayload(input: {
         }
       : null,
     commentIds,
-    latestCommentId: commentIds[commentIds.length - 1] ?? null,
+    latestCommentId: commentIds[commentIds.length - 1] ?? interactionAnchorLatestCommentId ?? null,
     comments,
     annotationDeltas,
     planReviewContext,

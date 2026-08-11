@@ -212,6 +212,40 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(wakePayload?.fallbackFetchNeeded).toBe(true);
   });
 
+  it("hydrates the newest comments inline and anchors latestCommentId for a resolved-interaction wake with no comment anchor (COM-319)", async () => {
+    const { companyId, issueId } = await seedIssue();
+    // Three comments oldest -> newest. A re-read alone would leave the run to self-select from the
+    // full thread (and drift to the oldest). The wake must instead surface the newest as the anchor.
+    const oldId = randomUUID();
+    const midId = randomUUID();
+    const newId = randomUUID();
+    await db.insert(issueComments).values([
+      { id: oldId, companyId, issueId, authorUserId: "board-user-1", body: "oldest stale comment", createdAt: new Date("2026-08-01T00:00:00.000Z") },
+      { id: midId, companyId, issueId, authorUserId: "board-user-1", body: "middle comment", createdAt: new Date("2026-08-05T00:00:00.000Z") },
+      { id: newId, companyId, issueId, authorUserId: "board-user-1", body: "the current board answer", createdAt: new Date("2026-08-11T00:00:00.000Z") },
+    ]);
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        interactionId: randomUUID(),
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    // Newest comment is the explicit anchor, not merely re-fetched.
+    expect(wakePayload?.latestCommentId).toBe(newId);
+    expect(wakePayload?.fallbackFetchNeeded).toBe(true);
+    const ids = (wakePayload?.comments ?? []).map((c: any) => c.id);
+    expect(ids).toContain(newId);
+    // Rendered oldest -> newest so the window reads chronologically and ends on the current input.
+    expect(ids[ids.length - 1]).toBe(newId);
+  });
+
   it("does not force a re-fetch for a resolved-interaction wake that already carries a comment anchor", async () => {
     const { companyId, issueId } = await seedIssue();
     const commentId = randomUUID();
