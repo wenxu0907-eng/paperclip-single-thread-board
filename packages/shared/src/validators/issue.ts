@@ -443,6 +443,12 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
+    // COM-322: child issues must share the root issue's duplicate guard. Without this,
+    // `allowDuplicate` never defaults to `false` on child creates, so createIssue's
+    // recent-open-title dedup (which only fires when `allowDuplicate === false`) is
+    // skipped and agents produce identical duplicate child issues (e.g. two POSTs
+    // tens of ms apart). Reuse the same guard object the root schema uses.
+    ...createIssueDuplicateGuardSchema,
   }));
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
