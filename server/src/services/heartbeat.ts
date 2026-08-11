@@ -4632,6 +4632,17 @@ export async function buildPaperclipWakePayload(input: {
   const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
   const interactionKind = readNonEmptyString(input.contextSnapshot.interactionKind);
   const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
+  // When an agent is resumed purely because an interaction was resolved (answered/accepted/
+  // rejected), the wake carries no comment ids, so the payload below would ship an empty comment
+  // window with fallbackFetchNeeded=false — leaving the run with no recent-thread anchor and only
+  // a prior continuation summary. That context-starved state is what makes runs drift into
+  // answering a very old comment (COM-319 / COM-294). Force a thread re-read in that case so the
+  // run re-anchors on the just-resolved interaction and current comments rather than a stale one.
+  const isResolvedInteractionContinuation =
+    !!interactionId &&
+    !!interactionStatus &&
+    RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus);
+  const needsInteractionThreadRefetch = isResolvedInteractionContinuation && commentIds.length === 0;
   const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
   const planReviewContext = issueId
     ? await buildPlanReviewContext({
@@ -4711,6 +4722,7 @@ export async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
+    interactionId,
     interactionKind,
     interactionStatus,
     checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
@@ -4751,7 +4763,7 @@ export async function buildPaperclipWakePayload(input: {
       missingCount: missingCommentCount,
     },
     truncated: payloadTruncated,
-    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
+    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0 || needsInteractionThreadRefetch,
   };
 }
 
