@@ -4101,6 +4101,37 @@ export function issueRoutes(
     return false;
   }
 
+  // COM-319: a status-only cheap recovery run's sole job is to record a valid issue
+  // disposition (status/state). It must NOT post substantive thread comments — the run
+  // that regressed answered a ~10h-old thread question ("lost track and answered very old
+  // comments") because nothing gated the comment write-path the way documents/approvals
+  // are gated. Hard-gate agent comment writes from these runs here. Server-generated
+  // system disposition notices are posted by the recovery service directly, not through
+  // this HTTP route, so they are unaffected; board/user comments carry no recovery run
+  // context and pass through untouched.
+  async function assertIssueCommentMutationAllowedByRunContext(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run) return true;
+    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    res.status(403).json({
+      error:
+        "Cheap status-only recovery runs cannot post issue comments; record a disposition (status/state) instead of replying in the thread",
+      details: {
+        issueId: issue.id,
+        runId: run.id,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        resumeRequiresNormalModel: true,
+      },
+    });
+    return false;
+  }
+
   async function loadWorkProductRunAttribution(runId: string) {
     return await db
       .select({
@@ -9899,6 +9930,7 @@ export function issueRoutes(
     if (!issue) return;
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
+    if (!(await assertIssueCommentMutationAllowedByRunContext(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
