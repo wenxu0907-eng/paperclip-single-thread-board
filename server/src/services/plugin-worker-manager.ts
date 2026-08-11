@@ -566,6 +566,12 @@ export function createPluginWorkerHandle(
     const scope = deriveInvocationScope(method, params);
     if (scope) return { scope };
     if (method === "handleWebhook") return { scope: null };
+    // Scheduled-job dispatches carry no companyId in params (the job record
+    // is company-scoped via the plugin, but that context is not threaded
+    // through the RPC params). Register a global invocation so nested host
+    // calls (agents.list, state.get, …) made by the job handler can resolve
+    // their invocation id and are not flagged as an invalid scope.
+    if (method === "runJob") return { scope: null };
     return null;
   }
 
