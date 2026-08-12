@@ -116,6 +116,7 @@ import {
   IssueMonitorComposerStrip,
   hasVisibleMonitorSurface,
 } from "../components/IssueMonitorBanner";
+import { IssueLiveStatusBadge } from "../components/IssueLiveStatusBadge";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
@@ -4561,6 +4562,19 @@ export function IssueDetail() {
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
           className="text-xl font-bold"
+        />
+
+        <IssueLiveStatusBadge
+          issueId={issue.id}
+          issueStatus={issue.status}
+          issueUpdatedAt={issue.updatedAt}
+          blockerCount={issue.blockedBy?.length ?? 0}
+          onOpenRunDetails={() => setDetailTab("activity")}
+          onOpenWaiting={() => setDetailTab("chat")}
+          onResume={() => {
+            setDetailTab("chat");
+            setPendingCommentComposerFocusKey((current) => current + 1);
+          }}
         />
 
         <IssueMonitorBanner
