@@ -1971,6 +1971,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
   const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
   const interactionResult = readConfirmationResultForWake(input.interaction.result);
   const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
+  const questionAnswers = readQuestionAnswersForWake(input.interaction);
   const toolAction = readToolActionContinuationContext(input.interaction);
   const newlyResolvedItemIds = input.newlyResolvedItemIds?.filter((value) => value.length > 0) ?? [];
   const itemVerdicts = newlyResolvedItemIds.length > 0
@@ -2003,6 +2004,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
       ...(checkboxSelection ? { checkboxSelection } : {}),
+      ...(questionAnswers ? { questionAnswers } : {}),
       ...(toolAction ? { toolAction } : {}),
       ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
       mutation: "interaction",
@@ -2020,6 +2022,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       sourceRunId: input.interaction.sourceRunId ?? null,
       ...(planReviewInteraction ? { planReviewInteraction } : {}),
       ...(checkboxSelection ? { checkboxSelection } : {}),
+      ...(questionAnswers ? { questionAnswers } : {}),
       ...(toolAction ? { toolAction } : {}),
       ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
       wakeReason: "issue_commented",
@@ -2067,6 +2070,76 @@ function readCheckboxSelectionForWake(input: {
     prompt: readNonEmptyString(payload.prompt),
     selectedOptionIds,
     selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
+  };
+}
+
+// Answering an `ask_user_questions` interaction writes the selected option ids to
+// `result.answers` but creates NO thread comment, and — unlike checkbox/confirmation
+// resolutions — nothing used to carry those answers into the resume wake. The agent
+// therefore resumed seeing `interactionStatus: "answered"` with zero answer text and
+// reported "No new CEO input" (COM-331). Mirror `readCheckboxSelectionForWake`: join the
+// stored option ids back to their human-readable prompts/labels so the wake payload can
+// ship the board's actual answers to the agent.
+function readQuestionAnswersForWake(input: {
+  kind: string;
+  payload?: unknown;
+  result?: unknown;
+}) {
+  if (input.kind !== "ask_user_questions") return null;
+  const result = readObject(input.result);
+  const rawAnswers = Array.isArray(result.answers) ? result.answers : [];
+  if (rawAnswers.length === 0) return null;
+  const payload = readObject(input.payload);
+  const questions = Array.isArray(payload.questions) ? payload.questions.map(readObject) : [];
+  const questionById = new Map(
+    questions
+      .map((question) => {
+        const id = readNonEmptyString(question.id);
+        if (!id) return null;
+        const options = Array.isArray(question.options)
+          ? question.options
+              .map((value) => {
+                const option = readObject(value);
+                const optionId = readNonEmptyString(option.id);
+                if (!optionId) return null;
+                return {
+                  id: optionId,
+                  label: readNonEmptyString(option.label) ?? optionId,
+                  description: readNonEmptyString(option.description),
+                };
+              })
+              .filter((value): value is { id: string; label: string; description: string | null } => Boolean(value))
+          : [];
+        return [id, { prompt: readNonEmptyString(question.prompt), options }] as const;
+      })
+      .filter((entry): entry is readonly [string, { prompt: string | null; options: { id: string; label: string; description: string | null }[] }] => Boolean(entry)),
+  );
+
+  const answers = rawAnswers
+    .map((value) => {
+      const answer = readObject(value);
+      const questionId = readNonEmptyString(answer.questionId);
+      if (!questionId) return null;
+      const question = questionById.get(questionId);
+      const optionById = new Map((question?.options ?? []).map((option) => [option.id, option]));
+      const selectedOptionIds = Array.isArray(answer.optionIds)
+        ? answer.optionIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
+      return {
+        questionId,
+        prompt: question?.prompt ?? null,
+        selectedOptionIds,
+        selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
+        otherText: readNonEmptyString(answer.otherText),
+      };
+    })
+    .filter((value): value is NonNullable<typeof value> => Boolean(value));
+  if (answers.length === 0) return null;
+
+  return {
+    title: readNonEmptyString(payload.title),
+    answers,
+    summaryMarkdown: readNonEmptyString(result.summaryMarkdown),
   };
 }
 

@@ -500,6 +500,22 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockInteractionService.answerQuestions).toHaveBeenCalled();
+    // COM-331: the resolved answers must ride the wake (payload + contextSnapshot) with
+    // option ids/labels resolved, so the resumed agent sees the CEO's actual input instead
+    // of reporting "No new CEO input".
+    const expectedQuestionAnswers = {
+      title: null,
+      answers: [
+        {
+          questionId: "scope",
+          prompt: "Scope?",
+          selectedOptionIds: ["phase-1"],
+          selectedOptions: [{ id: "phase-1", label: "Phase 1", description: null }],
+          otherText: null,
+        },
+      ],
+      summaryMarkdown: null,
+    };
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
@@ -510,6 +526,13 @@ describe.sequential("issue thread interaction routes", () => {
           interactionStatus: "answered",
           sourceCommentId: "comment-2",
           sourceRunId: "run-2",
+          questionAnswers: expectedQuestionAnswers,
+        }),
+        contextSnapshot: expect.objectContaining({
+          interactionId: "interaction-2",
+          interactionKind: "ask_user_questions",
+          interactionStatus: "answered",
+          questionAnswers: expectedQuestionAnswers,
         }),
       }),
     );
