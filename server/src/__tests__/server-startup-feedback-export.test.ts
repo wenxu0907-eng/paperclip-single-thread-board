@@ -207,6 +207,9 @@ vi.mock("../services/index.js", () => ({
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
+  externalObjectService: vi.fn(() => ({
+    refreshDueObjectsAcrossCompanies: vi.fn(async () => []),
+  })),
   heartbeatService: heartbeatServiceFactoryMock,
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
