@@ -197,6 +197,10 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headRef = asNestedString(body, "head", "ref");
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
+  // COM-333 / L3 Phase 1 (Capture): persist merge-readiness so a later sweep can detect the
+  // "green PR became pickup-able" transition natively instead of a per-repo watchdog routine.
+  const mergeable = asBoolean(body.mergeable);
+  const mergeableState = asString(body.mergeable_state);
 
   let statusKey = state;
   let statusLabel = state === "open" ? "Open" : state === "closed" ? "Closed" : "Unknown";
@@ -254,8 +258,74 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headRef ? { headRef } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
+      ...(mergeable !== null ? { mergeable } : {}),
+      ...(mergeableState ? { mergeableState } : {}),
     },
   };
+}
+
+/**
+ * COM-333 / L3 Phase 1 — pure transition detector.
+ *
+ * Given the previously-stored PR snapshot `data` and the freshly-fetched one, decide whether a
+ * native wake should fire. Returns `null` when nothing pickup-worthy changed. This is intentionally
+ * behavior-free (no I/O, no wake enqueue) so it is fully unit-testable on synthetic PR bodies;
+ * Phase 3 wires the emit path on a non-null result.
+ *
+ * Signals (GitHub `mergeable_state`: clean | dirty | unstable | blocked | behind | unknown | draft):
+ *  - `pr_mergeable`: PR transitioned INTO a mergeable-clean state (mergeable === true &&
+ *    mergeable_state === "clean") — i.e. checks green, no conflicts, review satisfied. This is the
+ *    exact state COM-294 #59 / COM-331 #60 reached while nothing woke to pick them up.
+ *  - `ci_green`: checks went green (`mergeable_state` left a CI-pending/failing state and is now
+ *    "clean" or "unstable") even if review still gates the merge — lets an owner get woken to
+ *    request the merge confirmation.
+ */
+export type PrWakeSignal = "ci_green" | "pr_mergeable";
+
+interface PrMergeReadiness {
+  open: boolean;
+  draft: boolean;
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeableState: string | null;
+}
+
+function readPrMergeReadiness(data: Record<string, unknown> | null | undefined): PrMergeReadiness | null {
+  if (!data) return null;
+  const state = asString(data.state);
+  return {
+    open: state === "open",
+    draft: asBoolean(data.draft) ?? false,
+    merged: asBoolean(data.merged) ?? false,
+    mergeable: asBoolean(data.mergeable),
+    mergeableState: asString(data.mergeableState),
+  };
+}
+
+// mergeable_state values where CI checks are green (may still be blocked on review/other gates).
+const CI_GREEN_STATES = new Set(["clean", "unstable", "has_hooks", "behind"]);
+
+function isMergeReady(r: PrMergeReadiness): boolean {
+  return r.open && !r.draft && !r.merged && r.mergeable === true && r.mergeableState === "clean";
+}
+
+function isCiGreen(r: PrMergeReadiness): boolean {
+  return r.open && !r.draft && !r.merged && r.mergeableState != null && CI_GREEN_STATES.has(r.mergeableState);
+}
+
+export function detectPrWake(
+  prevData: Record<string, unknown> | null | undefined,
+  nextData: Record<string, unknown> | null | undefined,
+): PrWakeSignal | null {
+  const next = readPrMergeReadiness(nextData);
+  if (!next || !next.open || next.draft || next.merged) return null;
+  const prev = readPrMergeReadiness(prevData);
+
+  // Strongest signal first: became fully mergeable (the green-PR-pickup case).
+  if (isMergeReady(next) && !(prev && isMergeReady(prev))) return "pr_mergeable";
+  // Otherwise, CI just went green (still may be review-gated).
+  if (isCiGreen(next) && !(prev && isCiGreen(prev))) return "ci_green";
+  return null;
 }
 
 function issueSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
