@@ -122,3 +122,39 @@ accept path already has. Build the poll-side events to mirror this handler.
   the L2 run-end check, made unnecessary for this class because the event now exists natively.
 - **Enumerate-and-retire:** each remaining watchdog routine in the fleet is a checklist item — it
   names exactly which native event is still missing.
+
+## 8. Retirement record (Phase 4 — shipped & observed)
+
+All four phases are live. Phases 1–3 merged and deployed (capture #62, sweep #64, emit #65; emit at
+`external-objects.ts:972`, reasons `external_object_ci_green` / `external_object_pr_mergeable`). The
+`enableExternalObjects` experimental flag is enabled on the live instance (board confirmation
+`8fb6788b`, 2026-08-12).
+
+**First live native wake observed (2026-08-12).** PR
+`wenxu0907-eng/paperclip-single-thread-board#70` was captured as external object
+`c3e2b544-1a00-4979-ac56-34c02374fbf5` with a real red baseline (`checksState=failure`). When CI
+went green (`checksState=success`, `mergeable=true`), the poll-side transition bridge fired
+end-to-end: `detectPrWake` → resolve mention → `sourceIssueId` (COM-336) → assignee →
+`enqueueWakeup`. The emitted wake, verified in `agent_wakeup_requests`:
+
+- `reason`: `external_object_ci_green`
+- `source`: `automation` · `requested_by_actor_type`: `system` (platform-emitted, not agent-claimed)
+- `idempotency_key`:
+  `pr-wake:5778b05c…(COM-336):c3e2b544…(obj #70):ci_green:2026-08-12T19:26:54Z(remoteVersion)`
+- `coalesced_count`: 0 · claimed by the woken run
+
+This is the accept-path guarantee (§5) now extended to the poll path: the platform *wakes* the
+assignee on a CI-green transition — no in-run watcher, no cron poll.
+
+**Watchdog retired.** With one live native wake observed, the `e9e821c7` green-PR pickup watchdog
+routine (COM-333 safety net) was set to `archived` — the native subsystem is now the sole path.
+
+### Standing rule (codified, in effect)
+
+> **No in-run watchers, no cron watchdog for external-object liveness.** When work must react to an
+> external state transition — PR CI-green, PR-mergeable, or an async job/render completion — do
+> **not** hand-roll an in-run background watcher (it dies when the heartbeat ends) or a polling cron
+> routine. Model the thing being watched as a **registered first-class external object** and let the
+> platform emit the native wake. Each such transition is a platform event to add here and enumerate,
+> not a per-repo watcher to maintain. New scope (COM-367): async job/render completion joins this
+> class as `external_object_async_job_done`.
