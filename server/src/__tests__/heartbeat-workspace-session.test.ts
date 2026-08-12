@@ -1652,15 +1652,21 @@ describe("shouldDeferFollowupWakeForSameIssue", () => {
 
 describe("shouldQueueFollowupForRunningIssueWake", () => {
   // COM-178: an accepted confirmation card wakes the assignee via reason
-  // `issue_commented` + mutation `interaction` and carries NO wakeCommentId.
-  // While a same-issue run is active it must queue a deferred follow-up run
-  // instead of coalescing into (and being dropped by) the in-flight run.
-  it("queues a follow-up for a resolved-interaction (accepted confirmation) wake with no comment id", () => {
+  // `issue_commented` and carries NO wakeCommentId. While a same-issue run is
+  // active it must queue a deferred follow-up run instead of coalescing into
+  // (and being dropped by) the in-flight run.
+  //
+  // NOTE: the contextSnapshot below intentionally has NO `mutation` field.
+  // `enrichWakeContextSnapshot` only copies `mutation` into the wake *payload*,
+  // never the contextSnapshot, so the real production context an accepted card
+  // produces is exactly this shape (verified live on TRA-6 run `f0fc0d09`). An
+  // earlier version of this test wrongly added `mutation: "interaction"`, which
+  // made it pass while the production path stayed broken.
+  it("queues a follow-up for a resolved-interaction (accepted confirmation) wake with no comment id or mutation", () => {
     expect(
       shouldQueueFollowupForRunningIssueWake({
         contextSnapshot: {
           wakeReason: "issue_commented",
-          mutation: "interaction",
           interactionId: "int-1",
           interactionStatus: "accepted",
         },
@@ -1669,12 +1675,11 @@ describe("shouldQueueFollowupForRunningIssueWake", () => {
     ).toBe(true);
   });
 
-  it("queues a follow-up for an answered ask_user_questions interaction wake", () => {
+  it("queues a follow-up for an answered ask_user_questions interaction wake with no mutation", () => {
     expect(
       shouldQueueFollowupForRunningIssueWake({
         contextSnapshot: {
           wakeReason: "issue_commented",
-          mutation: "interaction",
           interactionId: "int-2",
           interactionStatus: "answered",
         },

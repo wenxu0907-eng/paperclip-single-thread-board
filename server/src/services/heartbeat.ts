@@ -472,11 +472,21 @@ function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) 
   if (!interactionId || !interactionStatus) return false;
   if (!RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
 
-  const mutation = readNonEmptyString(context.mutation);
+  // The presence of interactionId + a resolved interactionStatus already
+  // uniquely marks this as an interaction-resolution continuation wake:
+  // `normalizeInteractionContinuationWakeContext` strips those fields from the
+  // context for any wake whose payload is NOT `mutation: "interaction"`. We
+  // must NOT additionally require `context.mutation === "interaction"` here —
+  // `enrichWakeContextSnapshot` only ever copies `mutation` into the wake
+  // *payload*, never into the *contextSnapshot*, so that clause was
+  // unsatisfiable in production. That gap is exactly what let an accepted
+  // confirmation card's wake coalesce into an in-flight same-issue run and get
+  // silently dropped (COM-178: "confirmed 之后很久没有行动"; live-reproduced on
+  // TRA-6). Match on wakeReason alone.
   const wakeReason = readNonEmptyString(context.wakeReason);
   const retryReason = readNonEmptyString(context.retryReason);
   return (
-    (mutation === "interaction" && wakeReason === "issue_commented") ||
+    wakeReason === "issue_commented" ||
     wakeReason === INTERACTION_CONTINUATION_INFRA_WAKE_REASON ||
     retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
   );
