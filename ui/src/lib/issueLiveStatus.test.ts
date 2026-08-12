@@ -39,6 +39,7 @@ describe("deriveIssueLiveStatus", () => {
       runId: "run-42",
       interactionId: null,
       waitingReason: null,
+      parkedReason: null,
     });
   });
 
@@ -129,7 +130,61 @@ describe("deriveIssueLiveStatus", () => {
       liveRuns: [],
       interactions: [],
     });
-    expect(status).toMatchObject({ kind: "parked", runId: null, interactionId: null });
+    expect(status).toMatchObject({
+      kind: "parked",
+      runId: null,
+      interactionId: null,
+      parkedReason: null,
+    });
+  });
+
+  it("attributes the parked reason to the last run and links to it", () => {
+    const status = deriveIssueLiveStatus({
+      issueStatus: "in_progress",
+      liveRuns: [],
+      interactions: [],
+      latestRun: {
+        id: "run-99",
+        errorCode: "issue_continuation_waiting_on_review",
+        finishedAt: "2026-08-12T04:00:00.000Z",
+      },
+    });
+    expect(status).toMatchObject({
+      kind: "parked",
+      runId: "run-99",
+      parkedReason: "issue_continuation_waiting_on_review",
+      since: "2026-08-12T04:00:00.000Z",
+    });
+  });
+
+  it("prefers errorCode, then retryExhaustedReason, then livenessReason for the park reason", () => {
+    expect(
+      deriveIssueLiveStatus({
+        issueStatus: "in_progress",
+        liveRuns: [],
+        interactions: [],
+        latestRun: { id: "r", retryExhaustedReason: "max_attempts", livenessReason: "silent" },
+      })?.parkedReason,
+    ).toBe("max_attempts");
+
+    expect(
+      deriveIssueLiveStatus({
+        issueStatus: "in_progress",
+        liveRuns: [],
+        interactions: [],
+        latestRun: { id: "r", livenessReason: "process_lost" },
+      })?.parkedReason,
+    ).toBe("process_lost");
+  });
+
+  it("falls back to the last run's createdAt for parked 'since' when unfinished", () => {
+    const status = deriveIssueLiveStatus({
+      issueStatus: "in_progress",
+      liveRuns: [],
+      interactions: [],
+      latestRun: { id: "r", createdAt: "2026-08-12T03:00:00.000Z", finishedAt: null },
+    });
+    expect(status?.since).toBe("2026-08-12T03:00:00.000Z");
   });
 
   it("hides the badge for terminal tickets with no live run", () => {

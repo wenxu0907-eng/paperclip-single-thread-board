@@ -4,8 +4,9 @@
 // A stationary ticket is ambiguous: it can be legitimately waiting for a board
 // decision/review, or it can be genuinely stuck with nothing queued. This module
 // collapses the existing signals the UI already loads — live runs, issue status,
-// and pending thread interactions — into one of three states. It is a *read-only*
-// derivation over the single source of truth; it introduces no new stored state.
+// pending thread interactions, and (for the parked case) the newest historical
+// run — into one of three states. It is a *read-only* derivation over the single
+// source of truth; it introduces no new stored state.
 
 export type IssueLiveStatusKind = "running" | "waiting" | "parked";
 
@@ -27,6 +28,23 @@ export interface IssueLiveStatusInteractionInput {
   createdAt: string | Date;
 }
 
+/**
+ * The most recent historical run for the issue. Used only for the "parked"
+ * case, to surface *why* it stopped (the run's error/cancel reason) and to link
+ * the badge to that run's details — the COM-355 "做着做着 cancel 然后没下文"
+ * signal, made visible and traceable. Sourced client-side from the runs the
+ * Activity tab already loads; no new backend surface.
+ */
+export interface IssueLiveStatusLatestRunInput {
+  id: string;
+  errorCode?: string | null;
+  retryExhaustedReason?: string | null;
+  livenessReason?: string | null;
+  nextAction?: string | null;
+  finishedAt?: string | null;
+  createdAt?: string | null;
+}
+
 export interface DeriveIssueLiveStatusInput {
   issueStatus: string;
   /** Fallback "since" for in_review when no pending interaction pins a time. */
@@ -34,18 +52,28 @@ export interface DeriveIssueLiveStatusInput {
   hasBlocker?: boolean;
   liveRuns: readonly IssueLiveStatusRunInput[];
   interactions: readonly IssueLiveStatusInteractionInput[];
+  /** Newest historical run, for parked-reason attribution. */
+  latestRun?: IssueLiveStatusLatestRunInput | null;
 }
 
 export interface IssueLiveStatus {
   kind: IssueLiveStatusKind;
   /** ISO timestamp the current state began, when known. */
   since: string | null;
-  /** Running run to link to run details, when kind === "running". */
+  /**
+   * Run to link to run details. Set for kind === "running" (the live run) and,
+   * when known, for kind === "parked" (the run that stopped without follow-up).
+   */
   runId: string | null;
   /** Pending interaction to jump to, when reason === "pending_interaction". */
   interactionId: string | null;
   /** Only set when kind === "waiting". */
   waitingReason: IssueLiveWaitingReason | null;
+  /**
+   * Raw reason code the last run stopped on, when kind === "parked" and known
+   * (e.g. "issue_continuation_waiting_on_review"). Null when unattributable.
+   */
+  parkedReason: string | null;
 }
 
 // A run occupying the issue right now — actively executing or queued to execute.
@@ -66,6 +94,21 @@ function pickActiveRun(
   return (
     liveRuns.find((run) => run.status === "running") ??
     liveRuns.find((run) => ACTIVE_RUN_STATUSES.has(run.status)) ??
+    null
+  );
+}
+
+// Order of preference for attributing *why* the last run stopped, most-specific
+// first. All are raw internal codes surfaced verbatim; the UI maps them to copy.
+function pickParkedReason(
+  latestRun: IssueLiveStatusLatestRunInput | null | undefined,
+): string | null {
+  if (!latestRun) return null;
+  return (
+    latestRun.retryExhaustedReason ??
+    latestRun.livenessReason ??
+    latestRun.errorCode ??
+    latestRun.nextAction ??
     null
   );
 }
@@ -106,6 +149,7 @@ export function deriveIssueLiveStatus(
       runId: activeRun.id,
       interactionId: null,
       waitingReason: null,
+      parkedReason: null,
     };
   }
 
@@ -121,6 +165,7 @@ export function deriveIssueLiveStatus(
       runId: null,
       interactionId: pending.id,
       waitingReason: "pending_interaction",
+      parkedReason: null,
     };
   }
 
@@ -131,6 +176,7 @@ export function deriveIssueLiveStatus(
       runId: null,
       interactionId: null,
       waitingReason: "in_review",
+      parkedReason: null,
     };
   }
 
@@ -141,14 +187,20 @@ export function deriveIssueLiveStatus(
       runId: null,
       interactionId: null,
       waitingReason: "blocked",
+      parkedReason: null,
     };
   }
 
+  // Parked: nothing running, nothing awaiting a board action. Attribute *why* it
+  // stopped to the newest run, and link to it, so a "做着做着 cancel 然后没下文"
+  // ticket is visible and traceable rather than silently stationary.
+  const latest = input.latestRun ?? null;
   return {
     kind: "parked",
-    since: null,
-    runId: null,
+    since: latest ? toIso(latest.finishedAt ?? latest.createdAt ?? null) : null,
+    runId: latest?.id ?? null,
     interactionId: null,
     waitingReason: null,
+    parkedReason: pickParkedReason(latest),
   };
 }
