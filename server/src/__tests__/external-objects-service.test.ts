@@ -24,7 +24,11 @@ import {
 import { canonicalizeExternalObjectUrl } from "@paperclipai/shared/external-objects-server";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
+import {
+  createGitHubExternalObjectProvider,
+  detectPrWake,
+  summarizeCheckRuns,
+} from "../services/github-external-object-provider.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -347,6 +351,196 @@ describe("GitHub external object provider", () => {
 
     expect(result).toEqual(expect.objectContaining(expected));
     expect(JSON.stringify(result)).not.toContain("http");
+  });
+});
+
+describe("summarizeCheckRuns (COM-336 Phase 1)", () => {
+  it("returns none when there are no check runs", () => {
+    expect(summarizeCheckRuns({ total_count: 0, check_runs: [] })).toEqual({ state: "none", total: 0 });
+    expect(summarizeCheckRuns(null)).toEqual({ state: "none", total: 0 });
+  });
+
+  it("returns success only when every run completed successfully", () => {
+    expect(
+      summarizeCheckRuns({
+        check_runs: [
+          { status: "completed", conclusion: "success" },
+          { status: "completed", conclusion: "neutral" },
+          { status: "completed", conclusion: "skipped" },
+        ],
+      }),
+    ).toEqual({ state: "success", total: 3 });
+  });
+
+  it("returns pending when any run is not yet completed and none failed", () => {
+    expect(
+      summarizeCheckRuns({
+        check_runs: [
+          { status: "completed", conclusion: "success" },
+          { status: "in_progress", conclusion: null },
+        ],
+      }),
+    ).toEqual({ state: "pending", total: 2 });
+  });
+
+  it("returns failure when any completed run did not succeed, even if others are still running", () => {
+    expect(
+      summarizeCheckRuns({
+        check_runs: [
+          { status: "completed", conclusion: "failure" },
+          { status: "in_progress", conclusion: null },
+        ],
+      }),
+    ).toEqual({ state: "failure", total: 2 });
+    expect(
+      summarizeCheckRuns({ check_runs: [{ status: "completed", conclusion: "timed_out" }] }),
+    ).toEqual({ state: "failure", total: 1 });
+  });
+
+  it("accepts a bare array of check runs", () => {
+    expect(summarizeCheckRuns([{ status: "completed", conclusion: "success" }])).toEqual({ state: "success", total: 1 });
+  });
+});
+
+describe("detectPrWake (COM-336 Phase 1)", () => {
+  it("fires ci_green on a real not-green -> green transition", () => {
+    expect(detectPrWake({ checksState: "pending" }, { checksState: "success" })).toBe("ci_green");
+    expect(detectPrWake({ checksState: "failure" }, { checksState: "success" })).toBe("ci_green");
+    expect(detectPrWake({ checksState: "none" }, { checksState: "success" })).toBe("ci_green");
+  });
+
+  it("does not fire ci_green on first capture (unknown prior checks)", () => {
+    expect(detectPrWake(null, { checksState: "success" })).toBeNull();
+    expect(detectPrWake({}, { checksState: "success" })).toBeNull();
+  });
+
+  it("does not fire ci_green when already green", () => {
+    expect(detectPrWake({ checksState: "success" }, { checksState: "success" })).toBeNull();
+  });
+
+  it("fires pr_mergeable on a known not-mergeable -> mergeable transition", () => {
+    expect(detectPrWake({ mergeable: false }, { mergeable: true })).toBe("pr_mergeable");
+  });
+
+  it("does not fire pr_mergeable when prior mergeability was unknown (still computing)", () => {
+    expect(detectPrWake(null, { mergeable: true })).toBeNull();
+    expect(detectPrWake({ mergeable: null }, { mergeable: true })).toBeNull();
+  });
+
+  it("never fires for terminal or draft PRs", () => {
+    expect(detectPrWake({ checksState: "pending" }, { checksState: "success", merged: true })).toBeNull();
+    expect(detectPrWake({ checksState: "pending" }, { checksState: "success", state: "closed" })).toBeNull();
+    expect(detectPrWake({ mergeable: false }, { mergeable: true, draft: true })).toBeNull();
+  });
+
+  it("prefers ci_green when both transitions happen at once", () => {
+    expect(
+      detectPrWake({ checksState: "pending", mergeable: false }, { checksState: "success", mergeable: true }),
+    ).toBe("ci_green");
+  });
+});
+
+describe("GitHub PR provider captures mergeable + check rollup (COM-336 Phase 1)", () => {
+  function jsonResponse(body: Record<string, unknown>) {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json", etag: '"etag-1"' },
+    });
+  }
+
+  function githubPrObject() {
+    const canonical = canonicalizeExternalObjectUrl("https://github.com/acme/app/pull/42");
+    if (!canonical) throw new Error("expected canonical url");
+    return {
+      id: randomUUID(),
+      companyId: "company-1",
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "acme/app#pull/42",
+      sanitizedCanonicalUrl: canonical.sanitizedCanonicalUrl,
+      canonicalIdentityHash: canonical.canonicalIdentityHash,
+      displayTitle: "acme/app#42",
+      statusKey: null,
+      statusLabel: null,
+      statusCategory: "unknown",
+      statusTone: "neutral",
+      liveness: "unknown",
+      isTerminal: false,
+      data: {},
+      remoteVersion: null,
+      etag: null,
+    } as any;
+  }
+
+  it("stores mergeable + checksState from the PR body and a second check-runs fetch", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) {
+        return jsonResponse({ check_runs: [{ status: "completed", conclusion: "success" }] });
+      }
+      return jsonResponse({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        mergeable: true,
+        mergeable_state: "clean",
+        head: { ref: "feature", sha: "abc123" },
+        updated_at: "2026-04-24T01:02:03Z",
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({ companyId: "company-1", object: githubPrObject() });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/abc123/check-runs",
+      expect.any(Object),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.snapshot.data).toEqual(
+      expect.objectContaining({ mergeable: true, mergeableState: "clean", checksState: "success", checksTotal: 1 }),
+    );
+  });
+
+  it("does not fetch check runs when the PR body has no head sha, and resolves without checks", async () => {
+    const fetch = vi.fn(async () =>
+      jsonResponse({ state: "open", draft: false, merged: false, title: "No sha", updated_at: "2026-04-24T01:02:03Z" }),
+    );
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({ companyId: "company-1", object: githubPrObject() });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.snapshot.data).not.toHaveProperty("checksState");
+  });
+
+  it("resolves the PR even when the check-runs fetch fails", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) throw new Error("network down");
+      return jsonResponse({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        mergeable: true,
+        head: { ref: "feature", sha: "abc123" },
+        updated_at: "2026-04-24T01:02:03Z",
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({ companyId: "company-1", object: githubPrObject() });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.snapshot.data).toEqual(expect.objectContaining({ mergeable: true }));
+    expect(result.snapshot.data).not.toHaveProperty("checksState");
   });
 });
 
