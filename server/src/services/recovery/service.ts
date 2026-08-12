@@ -307,6 +307,24 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // issue has a real waiting target we convert it into a normal dependency wait rather
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
+
+// COM-360 (reopen): terminal error codes on a parent tracking issue's own
+// continuation run that mean "the parent has nothing to do itself right now" —
+// its run cancelled because its remaining work is delegated to a still-open
+// child/blocker (`issue_dependencies_blocked`), or its process was lost
+// (`process_lost`) while the only open work is that child. For a parent with
+// open children/blockers these are not genuine failures needing intervention;
+// they are exactly the successful-continuation dependency-wait case (PR #68),
+// just reached via the unsuccessful-terminal branch. We convert to a
+// first-class blocked-on-children dependency wait before the escalate/retry
+// paths run, so the parent stops thrashing runs on comment/child-completion
+// wakes and instead resumes automatically when the child finishes. Gated to
+// these two causes so genuine failures (auth, budget, non-retryable errors)
+// still surface for intervention.
+const PARENT_BLOCK_INHERITANCE_ERROR_CODES = new Set<string>([
+  "issue_dependencies_blocked",
+  "process_lost",
+]);
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
@@ -3635,6 +3653,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       waitingOnReviewResolved: 0,
       productiveContinuationDependencyWaited: 0,
+      terminalFailureDependencyWaited: 0,
       waitingOnReviewSkipped: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
@@ -4213,6 +4232,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
         const classification = classifyContinuationFailure(latestRun);
+
+        // COM-360 (reopen): parent-block inheritance on the run-end failure
+        // paths. PR #68 only converted a parent with open children into a
+        // first-class blocked-on-children dependency wait on the *successful*
+        // continuation branch. When the parent's run instead cancels on
+        // `issue_dependencies_blocked` or its process is lost, this branch left
+        // it `in_progress`, so comment/child-completion wakes kept relaunching
+        // runs that died the same way (LUC-348 thrashed 07:16–07:22). Reuse the
+        // same open-children detection here — `resolveContinuationWaitingOnReview`
+        // returns null when there are no open children/blockers, so a non-parent
+        // issue falls through to the existing escalate/retry logic unchanged.
+        if (
+          classification.errorCode &&
+          PARENT_BLOCK_INHERITANCE_ERROR_CODES.has(classification.errorCode)
+        ) {
+          const dependencyWaited = await resolveContinuationWaitingOnReview(issue);
+          if (dependencyWaited) {
+            result.terminalFailureDependencyWaited += 1;
+            result.issueIds.push(issue.id);
+            continue;
+          }
+        }
 
         if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
           const resolved = await resolveContinuationWaitingOnReview(issue);
