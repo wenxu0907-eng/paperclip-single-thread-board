@@ -927,6 +927,36 @@ export function externalObjectService(
     return results;
   }
 
+  // Phase 2 (Sweep, COM-336): scheduler-facing variant that refreshes due objects
+  // across ALL companies in one pass. The per-company `refreshDueObjects` above is
+  // route-scoped; the background scheduler has no company context, so it needs a
+  // global query. Without this pass, external objects are only refreshed on the next
+  // in-request access — which is exactly why green PRs (COM-294 #59 / COM-331 #60)
+  // reached a mergeable state that no run ever observed.
+  async function refreshDueObjectsAcrossCompanies(limit = 100, now = new Date()) {
+    if (!(await isEnabled())) return [];
+    const due = await db
+      .select({ id: externalObjects.id, companyId: externalObjects.companyId })
+      .from(externalObjects)
+      .where(
+        and(
+          eq(externalObjects.isTerminal, false),
+          lte(externalObjects.nextRefreshAt, now),
+        ),
+      )
+      .orderBy(asc(externalObjects.nextRefreshAt))
+      .limit(limit);
+    const results = [];
+    for (const row of due) {
+      results.push(await refreshObject(row.id, {
+        companyId: row.companyId,
+        actor: { actorType: "system", actorId: "external-object-resolver", agentId: null, runId: null },
+        now,
+      }));
+    }
+    return results;
+  }
+
   return {
     syncIssue,
     syncComment,
@@ -941,5 +971,6 @@ export function externalObjectService(
     refreshObject,
     refreshIssueObjects,
     refreshDueObjects,
+    refreshDueObjectsAcrossCompanies,
   };
 }
