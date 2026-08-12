@@ -3,10 +3,13 @@ import {
   MANAGED_GOAL_BLOCK_END,
   MANAGED_GOAL_BLOCK_MAX_CHARS,
   MANAGED_GOAL_BLOCK_START,
+  MANAGED_GOAL_MAX_DECISIONS,
   deriveGoalObjectiveFromDescription,
+  extractGoalUpdateFromRunResult,
   extractManagedGoalBlock,
   hasManagedGoalBlock,
   preserveManagedGoalBlockOnWrite,
+  readManagedGoalBlockDecisions,
   renderManagedGoalBlock,
   stripManagedGoalBlock,
   syncManagedGoalBlockInDescription,
@@ -135,6 +138,92 @@ describe("managed goal block", () => {
       const resynced = syncManagedGoalBlockInDescription(stale);
       expect(resynced).toContain("**Goal:** Build a different thing.");
       expect(resynced).not.toContain("**Goal:** Build the thing.");
+    });
+  });
+
+  describe("Option B — agent-distilled goal update", () => {
+    it("objectiveOverride wins over the static first-paragraph derivation", () => {
+      const synced = syncManagedGoalBlockInDescription(HUMAN, {
+        objectiveOverride: "Ship the sync mechanism",
+      });
+      expect(synced).toContain("**Goal:** Ship the sync mechanism");
+      expect(synced).not.toContain("**Goal:** Build the thing.");
+    });
+
+    it("renders distilled decisions and is idempotent for identical input", () => {
+      const synced = syncManagedGoalBlockInDescription(HUMAN, {
+        extraDecisions: ["Board chose Option B", "No edits to live server/src"],
+      });
+      expect(synced).toContain("- Board chose Option B");
+      expect(synced).toContain("- No edits to live server/src");
+      expect(
+        syncManagedGoalBlockInDescription(synced, {
+          extraDecisions: ["Board chose Option B", "No edits to live server/src"],
+        }),
+      ).toBe(synced);
+    });
+
+    it("replaces the decision set (does not append) on the next distillation", () => {
+      const v1 = syncManagedGoalBlockInDescription(HUMAN, { extraDecisions: ["Old decision"] });
+      const v2 = syncManagedGoalBlockInDescription(v1, { extraDecisions: ["New decision"] });
+      expect(v2).toContain("- New decision");
+      expect(v2).not.toContain("- Old decision");
+    });
+
+    it("de-dupes and bounds the decision list", () => {
+      const many = Array.from({ length: MANAGED_GOAL_MAX_DECISIONS + 5 }, (_, i) => `decision ${i}`);
+      const synced = syncManagedGoalBlockInDescription(HUMAN, {
+        extraDecisions: ["Dup", "dup", "  Dup  ", ...many],
+      });
+      const rendered = readManagedGoalBlockDecisions(synced);
+      expect(rendered.length).toBeLessThanOrEqual(MANAGED_GOAL_MAX_DECISIONS);
+      // "Dup"/"dup"/"  Dup  " collapse to a single entry.
+      expect(rendered.filter((d) => d.toLowerCase() === "dup")).toHaveLength(1);
+    });
+
+    it("readManagedGoalBlockDecisions round-trips the rendered decisions", () => {
+      const synced = syncManagedGoalBlockInDescription(HUMAN, {
+        extraDecisions: ["First decision", "Second decision"],
+      });
+      expect(readManagedGoalBlockDecisions(synced)).toEqual(["First decision", "Second decision"]);
+      expect(readManagedGoalBlockDecisions(HUMAN)).toEqual([]);
+      expect(readManagedGoalBlockDecisions(null)).toEqual([]);
+    });
+  });
+
+  describe("extractGoalUpdateFromRunResult", () => {
+    it("reads a structured resultJson.goalUpdate object", () => {
+      const update = extractGoalUpdateFromRunResult({
+        goalUpdate: { objective: "Do X", decisions: ["A", "B"] },
+      });
+      expect(update).toEqual({ objective: "Do X", decisions: ["A", "B"] });
+    });
+
+    it("reads a fenced ```paperclip:goal block from the final message text", () => {
+      const result =
+        "Some final message.\n\n```paperclip:goal\n{\"objective\": \"Ship B\", \"decisions\": [\"Board picked B\"]}\n```\n";
+      const update = extractGoalUpdateFromRunResult({ result });
+      expect(update).toEqual({ objective: "Ship B", decisions: ["Board picked B"] });
+    });
+
+    it("returns null when there is no goal update and ignores malformed JSON", () => {
+      expect(extractGoalUpdateFromRunResult(null)).toBeNull();
+      expect(extractGoalUpdateFromRunResult({ result: "no block here" })).toBeNull();
+      expect(
+        extractGoalUpdateFromRunResult({ result: "```paperclip:goal\n{ not json }\n```" }),
+      ).toBeNull();
+      expect(extractGoalUpdateFromRunResult({ goalUpdate: { decisions: [] } })).toBeNull();
+    });
+
+    it("tolerates an objective-only or decisions-only update", () => {
+      expect(extractGoalUpdateFromRunResult({ goalUpdate: { objective: "Only goal" } })).toEqual({
+        objective: "Only goal",
+        decisions: [],
+      });
+      expect(extractGoalUpdateFromRunResult({ goalUpdate: { decisions: ["Only decision"] } })).toEqual({
+        objective: null,
+        decisions: ["Only decision"],
+      });
     });
   });
 

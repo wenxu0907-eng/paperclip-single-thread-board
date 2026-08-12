@@ -166,6 +166,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
+  "- Keep the issue's goal alive across your fresh-session heartbeats: if the objective or the confirmed decisions/constraints have evolved this run, end your final message with a fenced ```paperclip:goal block containing JSON `{\"objective\": \"<one line>\", \"decisions\": [\"<confirmed decision/constraint>\", ...]}`. Paperclip folds it into the platform-managed \"Current Goal & Decisions\" block at the top of the issue description (change-gated; emit only real changes). List the current authoritative set — it replaces the block. Omit the block when nothing changed.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
 

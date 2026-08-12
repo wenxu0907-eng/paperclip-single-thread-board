@@ -3,7 +3,12 @@ import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
-import { stripManagedGoalBlock, syncManagedGoalBlockInDescription } from "./managed-goal-block.js";
+import {
+  extractGoalUpdateFromRunResult,
+  readManagedGoalBlockDecisions,
+  stripManagedGoalBlock,
+  syncManagedGoalBlockInDescription,
+} from "./managed-goal-block.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
@@ -266,10 +271,20 @@ export async function refreshIssueContinuationSummary(input: {
 
   if (!issue) return null;
 
-  // COM-294 Option C: keep a platform-managed "Current Goal & Decisions" block at
+  // COM-294 Option C+B: keep a platform-managed "Current Goal & Decisions" block at
   // the top of the human-visible description so the goal survives fresh sessions.
-  // Deterministic + change-gated: only write when the block actually changed.
-  const nextDescription = syncManagedGoalBlockInDescription(issue.description);
+  // Option B (the sync mechanism the board picked, 2026-08-11): fold the agent's
+  // run-end distillation of the thread — objective + confirmed decisions — into the
+  // block. When a run emits no fresh distillation, preserve the decisions already in
+  // the block so nothing is wiped. Deterministic + change-gated: only write on a
+  // real diff (no churn / notification noise).
+  const goalUpdate = extractGoalUpdateFromRunResult(run.resultJson);
+  const preservedDecisions = readManagedGoalBlockDecisions(issue.description);
+  const nextDescription = syncManagedGoalBlockInDescription(issue.description, {
+    objectiveOverride: goalUpdate?.objective ?? null,
+    extraDecisions:
+      goalUpdate && goalUpdate.decisions.length > 0 ? goalUpdate.decisions : preservedDecisions,
+  });
   if (nextDescription !== (issue.description ?? "")) {
     await db.update(issues).set({ description: nextDescription }).where(eq(issues.id, issueId));
   }

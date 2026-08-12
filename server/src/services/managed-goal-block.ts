@@ -174,27 +174,161 @@ export function deriveGoalObjectiveFromDescription(
   return objective.replace(/\s+/g, " ").trim().slice(0, 400);
 }
 
+/** Upper bounds so an agent-distilled update can never bloat the block. */
+export const MANAGED_GOAL_MAX_DECISIONS = 8;
+export const MANAGED_GOAL_DECISION_MAX_CHARS = 240;
+export const MANAGED_GOAL_OBJECTIVE_MAX_CHARS = 400;
+
+export type SyncManagedGoalBlockOptions = {
+  /**
+   * Objective distilled by the agent for this run. Wins over the static
+   * first-paragraph derivation so evolving goals actually reach the block. Null /
+   * empty falls back to the description-derived objective.
+   */
+  objectiveOverride?: string | null;
+  /**
+   * Confirmed decisions / constraints to render. This is the authoritative set for
+   * the block (the caller preserves prior decisions when the agent emits none), so
+   * it replaces — never appends to — whatever the block currently shows.
+   */
+  extraDecisions?: string[];
+};
+
 /**
  * Run-end sync: returns the description with an up-to-date managed goal block, or
  * the description unchanged when nothing needs to change. Deterministic and
  * idempotent, so callers can compare against the current value and only write on a
  * real diff (avoids churn / notification noise).
  *
- * `extraDecisions` lets a caller fold in decisions distilled elsewhere; omit for
- * the objective-only baseline.
+ * `objectiveOverride` / `extraDecisions` let the caller fold in fields distilled
+ * elsewhere (COM-294 Option B: the agent distills them from the comment thread);
+ * omit both for the objective-only baseline.
  */
 export function syncManagedGoalBlockInDescription(
   description: string | null | undefined,
-  extraDecisions?: string[],
+  opts?: SyncManagedGoalBlockOptions,
 ): string {
   const current = description ? normalizeText(description) : "";
-  const objective = deriveGoalObjectiveFromDescription(current);
+  const override = opts?.objectiveOverride?.trim();
+  const objective =
+    (override ? override.replace(/\s+/g, " ").slice(0, MANAGED_GOAL_OBJECTIVE_MAX_CHARS) : null) ??
+    deriveGoalObjectiveFromDescription(current);
   if (!objective) return current; // nothing to anchor a block on; leave as-is
+  const decisions = sanitizeDecisions(opts?.extraDecisions);
   const next = upsertManagedGoalBlock(current, {
     objective,
-    decisions: extraDecisions,
+    decisions,
   });
   return next === current ? current : next;
+}
+
+/** Normalize / de-dupe / bound a decisions list for rendering into the block. */
+function sanitizeDecisions(decisions: string[] | null | undefined): string[] {
+  if (!decisions || decisions.length === 0) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of decisions) {
+    if (typeof raw !== "string") continue;
+    const cleaned = raw.replace(/\s+/g, " ").trim().slice(0, MANAGED_GOAL_DECISION_MAX_CHARS);
+    if (!cleaned) continue;
+    const dedupeKey = cleaned.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push(cleaned);
+    if (out.length >= MANAGED_GOAL_MAX_DECISIONS) break;
+  }
+  return out;
+}
+
+/**
+ * Reads the confirmed decisions currently rendered in a description's managed
+ * block, so a heartbeat that emits no fresh distillation preserves the existing set
+ * instead of wiping it. Returns [] when there is no block or no decisions.
+ */
+export function readManagedGoalBlockDecisions(
+  description: string | null | undefined,
+): string[] {
+  const inner = extractManagedGoalBlock(description);
+  if (!inner) return [];
+  // Decisions render as `- ` bullets under the "Confirmed decisions" sub-heading,
+  // before the "**Next:**" / trailing italic note. Collect the bullet lines in the
+  // decisions section only.
+  const lines = inner.split("\n");
+  const out: string[] = [];
+  let inDecisions = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^\*\*Confirmed decisions/i.test(trimmed)) {
+      inDecisions = true;
+      continue;
+    }
+    if (inDecisions) {
+      if (trimmed.startsWith("- ")) {
+        out.push(trimmed.slice(2).trim());
+        continue;
+      }
+      // Any non-bullet, non-empty line ends the decisions section.
+      if (trimmed.length > 0) break;
+    }
+  }
+  return sanitizeDecisions(out);
+}
+
+/**
+ * COM-294 Option B — extract an agent-distilled goal update from a finished run's
+ * `resultJson`. The agent emits its current objective + confirmed decisions either
+ * as a structured `resultJson.goalUpdate` object, or as a fenced
+ * ```paperclip:goal { ... }``` JSON block in its final message (which the adapter
+ * surfaces via `resultJson.result` / `summary` / `message`). Returns null when no
+ * well-formed update is present, so callers fall back to preserving prior state.
+ */
+export function extractGoalUpdateFromRunResult(
+  resultJson: Record<string, unknown> | null | undefined,
+): { objective: string | null; decisions: string[] } | null {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) return null;
+
+  // 1) Structured channel: resultJson.goalUpdate = { objective?, decisions?[] }
+  const structured = coerceGoalUpdate((resultJson as Record<string, unknown>).goalUpdate);
+  if (structured) return structured;
+
+  // 2) Fenced channel: a ```paperclip:goal { ... }``` block in the final message.
+  const texts = [
+    (resultJson as Record<string, unknown>).result,
+    (resultJson as Record<string, unknown>).summary,
+    (resultJson as Record<string, unknown>).message,
+  ];
+  for (const text of texts) {
+    if (typeof text !== "string" || text.length === 0) continue;
+    const fenced = parseFencedGoalBlock(text);
+    if (fenced) return fenced;
+  }
+  return null;
+}
+
+const FENCED_GOAL_RE = /```paperclip:goal\s*\n([\s\S]*?)```/i;
+
+function parseFencedGoalBlock(text: string): { objective: string | null; decisions: string[] } | null {
+  const match = FENCED_GOAL_RE.exec(text);
+  if (!match) return null;
+  try {
+    return coerceGoalUpdate(JSON.parse(match[1].trim()));
+  } catch {
+    return null;
+  }
+}
+
+function coerceGoalUpdate(value: unknown): { objective: string | null; decisions: string[] } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const obj = value as Record<string, unknown>;
+  const objective =
+    typeof obj.objective === "string" && obj.objective.trim().length > 0
+      ? obj.objective.replace(/\s+/g, " ").trim().slice(0, MANAGED_GOAL_OBJECTIVE_MAX_CHARS)
+      : null;
+  const rawDecisions = Array.isArray(obj.decisions) ? (obj.decisions as unknown[]) : [];
+  const decisions = sanitizeDecisions(rawDecisions.filter((d): d is string => typeof d === "string"));
+  // A goalUpdate with neither an objective nor any decision carries no signal.
+  if (!objective && decisions.length === 0) return null;
+  return { objective, decisions };
 }
 
 /**
