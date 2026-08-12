@@ -6,7 +6,9 @@ import { documentService } from "./documents.js";
 import {
   extractGoalUpdateFromRunResult,
   isBoardAuthoredDecision,
+  isCompletionClaimObjective,
   readManagedGoalBlockDecisions,
+  readManagedGoalBlockObjective,
   stripManagedGoalBlock,
   syncManagedGoalBlockInDescription,
 } from "./managed-goal-block.js";
@@ -303,8 +305,19 @@ export async function refreshIssueContinuationSummary(input: {
     goalUpdate && goalUpdate.decisions.length > 0
       ? [...preservedBoardDecisions, ...goalUpdate.decisions]
       : preservedDecisions;
+  // COM-361 secondary guard: a standing board direction always outranks an agent's
+  // run-end distillation claiming the work is finished. If the block still carries
+  // board-authored decisions and the agent distilled a "already done / nothing
+  // pending" objective, refuse the overwrite and preserve the current objective —
+  // otherwise a live rework silently collapses into "done" ("agent forgot what we
+  // discussed"). Only preserves; never fabricates.
+  const distilledObjective = goalUpdate?.objective ?? null;
+  const objectiveOverride =
+    preservedBoardDecisions.length > 0 && isCompletionClaimObjective(distilledObjective)
+      ? readManagedGoalBlockObjective(issue.description)
+      : distilledObjective;
   const nextDescription = syncManagedGoalBlockInDescription(issue.description, {
-    objectiveOverride: goalUpdate?.objective ?? null,
+    objectiveOverride,
     extraDecisions,
   });
   if (nextDescription !== (issue.description ?? "")) {

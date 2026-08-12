@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   BOARD_DECISION_ACCEPTED_PREFIX,
   BOARD_DECISION_DECLINED_PREFIX,
+  BOARD_DECISION_SUPERSEDED_SUFFIX,
+  isCompletionClaimObjective,
   MANAGED_GOAL_BLOCK_END,
   MANAGED_GOAL_BLOCK_MAX_CHARS,
   MANAGED_GOAL_BLOCK_START,
@@ -324,6 +326,134 @@ describe("managed goal block", () => {
     it("readManagedGoalBlockObjective returns null without a block", () => {
       expect(readManagedGoalBlockObjective(HUMAN)).toBeNull();
       expect(readManagedGoalBlockObjective(null)).toBeNull();
+    });
+  });
+
+  describe("COM-361 recency-precedence supersession", () => {
+    const DATE_OLD = new Date("2026-08-11T10:00:00Z");
+    const DATE_NEW = new Date("2026-08-12T02:00:00Z");
+    const base = syncManagedGoalBlockInDescription(HUMAN, {
+      objectiveOverride: "Produce the launch video",
+    });
+
+    it("demotes a prior accepted approval when a newer accepted direction arrives", () => {
+      const older = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "Reference-mode 720p/5s paid试镜 with FLF params",
+        date: DATE_OLD,
+      })!;
+      const withOlder = foldBoardDecisionIntoDescription(base, older);
+      expect(readManagedGoalBlockDecisions(withOlder)[0]).toContain("execute this now");
+
+      const newer = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "Rework: 1080p/8s, rename to 糖小豆, drop style, follow reference only",
+        date: DATE_NEW,
+      })!;
+      const withNewer = foldBoardDecisionIntoDescription(withOlder, newer);
+      const decisions = readManagedGoalBlockDecisions(withNewer);
+
+      // Newest direction is first and keeps top authority.
+      expect(decisions[0]).toBe(newer);
+      expect(decisions[0]).toContain("execute this now");
+      // The older approval is demoted: imperative stripped, superseded note added.
+      const demoted = decisions.find((d) => d.includes("720p/5s"))!;
+      expect(demoted).not.toContain("execute this now");
+      expect(demoted).not.toContain("overrides any standing preference");
+      expect(demoted).toContain(BOARD_DECISION_SUPERSEDED_SUFFIX.trim());
+      // Exactly one line still carries the top-authority imperative.
+      expect(decisions.filter((d) => d.includes("execute this now"))).toHaveLength(1);
+    });
+
+    it("still demotes when a long-summary approval was truncated mid-imperative", () => {
+      // A CJK summary at the 150-char cap makes the rendered line exceed the 240-char
+      // decision cap, so sanitizeDecisions clips the imperative tail. Supersession must
+      // still fire off the un-truncatable "— execute this now" marker.
+      const longSummary = "返修方向确认".repeat(30); // > 150 chars, gets capped to 150
+      const older = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: longSummary,
+        date: DATE_OLD,
+      })!;
+      const withOlder = foldBoardDecisionIntoDescription(base, older);
+      const storedOld = readManagedGoalBlockDecisions(withOlder)[0];
+      // Confirm the stored line was truncated (full imperative tail is gone).
+      expect(storedOld).toContain("— execute this now");
+      expect(storedOld.endsWith("to the contrary.")).toBe(false);
+
+      const newer = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "New direction",
+        date: DATE_NEW,
+      })!;
+      const decisions = readManagedGoalBlockDecisions(
+        foldBoardDecisionIntoDescription(withOlder, newer),
+      );
+      const demoted = decisions.find((d) => d.includes("返修方向确认"))!;
+      expect(demoted).not.toContain("execute this now");
+      // The suffix head survives even if this very long summary clips its tail.
+      expect(demoted).toContain("superseded by a newer board decision");
+    });
+
+    it("does NOT demote a prior approval when the incoming decision is a decline", () => {
+      const approval = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "Ship the 1080p rework",
+        date: DATE_OLD,
+      })!;
+      const withApproval = foldBoardDecisionIntoDescription(base, approval);
+      const decline = renderBoardDecisionLine({
+        outcome: "declined",
+        summary: "Add an unrelated intro card",
+        date: DATE_NEW,
+      })!;
+      const decisions = readManagedGoalBlockDecisions(
+        foldBoardDecisionIntoDescription(withApproval, decline),
+      );
+      // The standing approval keeps its authority; a decline of X doesn't retire Y.
+      const kept = decisions.find((d) => d.includes("1080p rework"))!;
+      expect(kept).toContain("execute this now");
+    });
+
+    it("is idempotent — re-folding the newest approval does not double or re-demote", () => {
+      const older = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "Old approval",
+        date: DATE_OLD,
+      })!;
+      const newer = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "New approval",
+        date: DATE_NEW,
+      })!;
+      const once = foldBoardDecisionIntoDescription(
+        foldBoardDecisionIntoDescription(base, older),
+        newer,
+      );
+      const twice = foldBoardDecisionIntoDescription(once, newer);
+      expect(twice).toBe(once);
+      // The newest still carries authority; the older stays demoted (single copy).
+      const decisions = readManagedGoalBlockDecisions(twice);
+      expect(decisions.filter((d) => d.includes("execute this now"))).toHaveLength(1);
+      expect(decisions.filter((d) => d.includes("Old approval"))).toHaveLength(1);
+    });
+  });
+
+  describe("COM-361 completion-claim guard", () => {
+    it("detects English and Chinese completion claims", () => {
+      expect(isCompletionClaimObjective("Reference-mode paid试镜 already executed; nothing pending")).toBe(
+        true,
+      );
+      expect(isCompletionClaimObjective("这个 Reference Mode 我们已经做过了")).toBe(true);
+      expect(isCompletionClaimObjective("无待办事项")).toBe(true);
+      expect(isCompletionClaimObjective("Task is complete")).toBe(true);
+    });
+
+    it("does not fire on a live, in-progress objective", () => {
+      expect(isCompletionClaimObjective("Produce the 1080p/8s rework video (糖小豆)")).toBe(false);
+      expect(isCompletionClaimObjective("Fix the goal-block supersession gap")).toBe(false);
+      expect(isCompletionClaimObjective(null)).toBe(false);
+      expect(isCompletionClaimObjective("")).toBe(false);
     });
   });
 
