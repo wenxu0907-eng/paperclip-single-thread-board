@@ -1827,3 +1827,144 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
     expect(runtimeOptions[0]?.cwd).toBe(localCwd);
   });
 });
+
+describe("ACPX turn reconnect on transient connection drops (COM-364 P1)", () => {
+  type TurnOutcome =
+    | { kind: "completed"; text?: string }
+    | { kind: "failed"; message: string }
+    | { kind: "throw"; message: string };
+
+  // Runtime whose successive turns replay a scripted list of outcomes, so a
+  // test can assert the reconnect loop retries a connection drop and lands on
+  // the following outcome.
+  function scriptedRuntime(outcomes: TurnOutcome[]) {
+    let turnCalls = 0;
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => {
+        const outcome = outcomes[Math.min(turnCalls, outcomes.length - 1)]!;
+        turnCalls += 1;
+        return {
+          events: (async function* () {
+            if (outcome.kind === "throw") throw new Error(outcome.message);
+            if (outcome.kind === "completed" && outcome.text) {
+              yield { type: "text_delta", text: outcome.text, stream: "output" };
+            }
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result:
+            outcome.kind === "completed"
+              ? Promise.resolve({ status: "completed", stopReason: "end_turn" })
+              : // For a `failed` outcome the terminal carries the drop message;
+                // for a `throw` outcome `result` is never awaited (events throw
+                // first), so a resolved value here just avoids a dangling
+                // rejection.
+                Promise.resolve({ status: "failed", error: { message: outcome.message } }),
+          cancel: async () => {},
+        };
+      },
+      close: async () => {},
+    };
+    return { runtime, turnCalls: () => turnCalls };
+  }
+
+  async function runWithOutcomes(
+    outcomes: TurnOutcome[],
+    config: Record<string, unknown> = {},
+  ) {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const scripted = scriptedRuntime(outcomes);
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => scripted.runtime as never,
+      // No real wall-clock backoff, deterministic zero jitter.
+      sleep: async () => {},
+      random: () => 0,
+    });
+    const result = await execute({
+      runId: "run-reconnect-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        cwd,
+        ...config,
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+    return { result, logs, turnCalls: scripted.turnCalls() };
+  }
+
+  it("retries a `Connection closed mid-response` terminal failure and succeeds", async () => {
+    const { result, logs, turnCalls } = await runWithOutcomes([
+      { kind: "failed", message: "Internal error: API Error: Connection closed mid-response." },
+      { kind: "completed", text: "recovered output" },
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+    expect(result.summary).toBe("recovered output");
+    expect(turnCalls).toBe(2);
+    expect(
+      logs.some(
+        (l) => l.stream === "stderr" && l.text.includes("transient connection drop (attempt 1/3)"),
+      ),
+    ).toBe(true);
+    expect(
+      logs.some((l) => l.stream === "stdout" && l.text.includes('"type":"acpx.reconnect"')),
+    ).toBe(true);
+  });
+
+  it("retries a thrown connection-drop error and succeeds", async () => {
+    const { result, turnCalls } = await runWithOutcomes([
+      { kind: "throw", message: "socket hang up" },
+      { kind: "completed", text: "ok" },
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(turnCalls).toBe(2);
+  });
+
+  it("does not retry a non-connection turn failure", async () => {
+    const { result, turnCalls } = await runWithOutcomes([
+      { kind: "failed", message: "model refused: policy violation" },
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    expect(turnCalls).toBe(1);
+  });
+
+  it("gives up after exhausting the retry budget and reports the turn failure", async () => {
+    const { result, logs, turnCalls } = await runWithOutcomes(
+      [{ kind: "failed", message: "Connection closed mid-response" }],
+      { turnReconnectMaxRetries: 2 },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    // 1 initial attempt + 2 retries = 3 startTurn calls.
+    expect(turnCalls).toBe(3);
+    const reconnectLogs = logs.filter(
+      (l) => l.stream === "stderr" && l.text.includes("transient connection drop"),
+    );
+    expect(reconnectLogs).toHaveLength(2);
+  });
+
+  it("does not retry when the reconnect budget is disabled", async () => {
+    const { result, turnCalls } = await runWithOutcomes(
+      [{ kind: "failed", message: "Connection closed mid-response" }],
+      { turnReconnectMaxRetries: 0 },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(turnCalls).toBe(1);
+  });
+});

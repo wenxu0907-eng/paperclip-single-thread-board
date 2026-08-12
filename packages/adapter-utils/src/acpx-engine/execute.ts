@@ -148,6 +148,17 @@ export interface AcpxEngineExecutorOptions {
   moduleDir?: string;
   packageRootDir?: string;
   /**
+   * Sleep primitive used for the turn-reconnect backoff. Injectable so tests
+   * can exercise the retry loop without real wall-clock delays. Defaults to a
+   * real `setTimeout`.
+   */
+  sleep?: (ms: number) => Promise<void>;
+  /**
+   * Jitter source for the reconnect backoff, in [0, 1). Injectable for
+   * deterministic tests. Defaults to `Math.random`.
+   */
+  random?: () => number;
+  /**
    * Adapter-specific billing classification (provider/biller/billingType) for
    * cost-ledger attribution. Without it, results fall back to the opaque
    * "acpx" provider and an "unknown" billing type.
@@ -1893,6 +1904,69 @@ function isResumeFailure(err: unknown): boolean {
   return /resume|load|not found|no session|unknown session|conversation/i.test(message);
 }
 
+/**
+ * Transient upstream connection drops that void an in-flight turn with zero
+ * committed output. The canonical case is the Anthropic gateway closing the
+ * response stream mid-turn (`API Error: Connection closed mid-response.`),
+ * observed in COM-363 as the sole real token-burn failure class: a long turn
+ * runs for minutes/hours, the upstream connection drops, and the whole turn is
+ * discarded with no assistant output. Because nothing was committed, re-issuing
+ * the same prompt on the persistent session is idempotent, so these are safe to
+ * retry. Kept deliberately narrow — genuinely fatal errors (auth, protocol,
+ * backend-missing) must still fail fast rather than burn retries.
+ */
+function isRetryableConnectionDrop(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return /connection closed mid-response|connection closed|connection reset|econnreset|socket hang ?up|epipe|premature close|network (?:error|timeout)|fetch failed|terminated/i.test(
+    message,
+  );
+}
+
+interface TurnReconnectPolicy {
+  maxRetries: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+
+const DEFAULT_TURN_RECONNECT_POLICY: TurnReconnectPolicy = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 15000,
+};
+
+function resolveTurnReconnectPolicy(config: Record<string, unknown>): TurnReconnectPolicy {
+  const maxRetries = Math.max(
+    0,
+    Math.floor(asNumber(config.turnReconnectMaxRetries, DEFAULT_TURN_RECONNECT_POLICY.maxRetries)),
+  );
+  const baseDelayMs = Math.max(
+    0,
+    asNumber(config.turnReconnectBaseDelayMs, DEFAULT_TURN_RECONNECT_POLICY.baseDelayMs),
+  );
+  const maxDelayMs = Math.max(
+    baseDelayMs,
+    asNumber(config.turnReconnectMaxDelayMs, DEFAULT_TURN_RECONNECT_POLICY.maxDelayMs),
+  );
+  return { maxRetries, baseDelayMs, maxDelayMs };
+}
+
+/**
+ * Exponential backoff with full jitter for the Nth reconnect attempt (1-based).
+ * Full jitter (delay uniformly in [0, capped]) spreads concurrent long runs
+ * that drop on the same upstream blip, so they do not reconnect in lockstep and
+ * re-create the thundering herd COM-363 flagged.
+ */
+function turnReconnectDelayMs(
+  policy: TurnReconnectPolicy,
+  attempt: number,
+  random: () => number,
+): number {
+  if (policy.baseDelayMs <= 0) return 0;
+  const capped = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** Math.max(0, attempt - 1));
+  const jittered = capped * random();
+  return Math.round(Math.max(0, jittered));
+}
+
 async function cleanupIdleHandles(input: {
   handles: Map<string, RuntimeCacheEntry>;
   now: number;
@@ -1981,6 +2055,8 @@ function warmHandleMatches(
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const random = deps.random ?? Math.random;
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const engine = resolveEngineSettings(deps);
 
@@ -2203,43 +2279,111 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let controller: AbortController | null = null;
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
-    const textParts: string[] = [];
+    let textParts: string[] = [];
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
+    let terminal: AcpRuntimeTurnResult;
     try {
       // Snapshot pre-turn usage so cumulative agent-reported cost can be
       // attributed to this run alone.
       const preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
       const timeoutMs = prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined;
-      controller = new AbortController();
-      if (timeoutMs) {
-        timeout = setTimeout(() => {
+      // Overall wall-clock deadline shared across reconnect attempts, so a
+      // transient connection drop retried below never silently extends the
+      // run's configured timeout budget.
+      const deadlineAt = timeoutMs !== undefined ? now() + timeoutMs : undefined;
+      const reconnectPolicy = resolveTurnReconnectPolicy(ctx.config);
+      // Idempotent reconnect loop for COM-363 P1: a `Connection closed
+      // mid-response` upstream drop voids a long turn with zero committed
+      // output, so re-issuing the same prompt on the persistent session is
+      // safe. Retry a bounded number of times with jittered backoff; any
+      // non-connection failure (or an exhausted budget) falls through to the
+      // existing terminal/thrown handling unchanged.
+      let attempt = 0;
+      for (;;) {
+        // Reset per-attempt accumulators so a successful retry's output is not
+        // contaminated by the failed attempt's partial text/usage deltas.
+        textParts = [];
+        eventBreakdown = null;
+        eventCostUsd = null;
+        controller = new AbortController();
+        const remainingMs = deadlineAt !== undefined ? deadlineAt - now() : undefined;
+        if (remainingMs !== undefined && remainingMs <= 0) {
           timedOut = true;
-          controller?.abort();
-          void cancelActiveTurn?.(formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)).catch(() => {});
-        }, timeoutMs);
-      }
-      const turn = runtime.startTurn({
-        handle: sessionHandle,
-        text: runPrompt,
-        mode: "prompt",
-        requestId: ctx.runId,
-        timeoutMs,
-        signal: controller?.signal,
-      });
-      cancelActiveTurn = async (reason: string) => {
-        await turn.cancel({ reason });
-      };
-      for await (const event of turn.events) {
-        if (event.type === "text_delta") textParts.push(event.text);
-        if (event.type === "status" && event.tag === "usage_update") {
-          eventBreakdown = event.breakdown ?? eventBreakdown;
-          eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+          controller.abort();
         }
-        await emitRuntimeEvent(ctx, event);
+        timeout = null;
+        if (remainingMs !== undefined && remainingMs > 0) {
+          timeout = setTimeout(() => {
+            timedOut = true;
+            controller?.abort();
+            void cancelActiveTurn?.(formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)).catch(() => {});
+          }, remainingMs);
+        }
+        let attemptError: unknown = null;
+        let attemptTerminal: AcpRuntimeTurnResult | null = null;
+        try {
+          const turn = runtime.startTurn({
+            handle: sessionHandle,
+            text: runPrompt,
+            mode: "prompt",
+            requestId: ctx.runId,
+            timeoutMs: remainingMs ?? timeoutMs,
+            signal: controller?.signal,
+          });
+          cancelActiveTurn = async (reason: string) => {
+            await turn.cancel({ reason });
+          };
+          for await (const event of turn.events) {
+            if (event.type === "text_delta") textParts.push(event.text);
+            if (event.type === "status" && event.tag === "usage_update") {
+              eventBreakdown = event.breakdown ?? eventBreakdown;
+              eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+            }
+            await emitRuntimeEvent(ctx, event);
+          }
+          attemptTerminal = await turn.result;
+        } catch (err) {
+          attemptError = err;
+        } finally {
+          if (timeout) clearTimeout(timeout);
+          timeout = null;
+        }
+        // A connection drop surfaces either as a thrown error or as a terminal
+        // `failed` status carrying the underlying message; consider both.
+        const failureMessage = attemptError
+          ? attemptError instanceof Error
+            ? attemptError.message
+            : String(attemptError)
+          : attemptTerminal && attemptTerminal.status === "failed"
+            ? attemptTerminal.error.message
+            : null;
+        const canRetry =
+          !timedOut &&
+          attempt < reconnectPolicy.maxRetries &&
+          isRetryableConnectionDrop(failureMessage);
+        if (canRetry) {
+          attempt += 1;
+          const delayMs = turnReconnectDelayMs(reconnectPolicy, attempt, random);
+          await ctx.onLog(
+            "stderr",
+            `[paperclip] ACPX turn hit a transient connection drop (attempt ${attempt}/${reconnectPolicy.maxRetries}); reconnecting in ${delayMs}ms: ${failureMessage}\n`,
+          );
+          await emitAcpxLog(ctx, {
+            type: "acpx.reconnect",
+            attempt,
+            maxRetries: reconnectPolicy.maxRetries,
+            delayMs,
+            message: failureMessage,
+          });
+          cancelActiveTurn = null;
+          if (delayMs > 0) await sleep(delayMs);
+          continue;
+        }
+        if (attemptError) throw attemptError;
+        terminal = attemptTerminal as AcpRuntimeTurnResult;
+        break;
       }
-      const terminal = await turn.result;
-      if (timeout) clearTimeout(timeout);
       // Read usage before the close/warm-handle paths below can discard state.
       const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
       const turnUsage = summarizeAcpxTurnUsage({
