@@ -294,6 +294,29 @@ function formatBoardDecisionDate(date: Date): string {
 }
 
 /**
+ * The top-authority imperative appended to an accepted board decision. Only the
+ * NEWEST accepted decision is allowed to carry it (see COM-361 supersession below).
+ */
+export const BOARD_DECISION_ACCEPTED_IMPERATIVE =
+  " — execute this now; overrides any standing preference to the contrary.";
+
+/**
+ * A stable, un-truncatable head of the accepted imperative. `sanitizeDecisions`'
+ * 240-char cap can clip the tail of a long (e.g. CJK) summary line mid-imperative
+ * ("…overrides any standing preference to t"), so supersession detection keys off
+ * this prefix rather than the full suffix — it survives truncation.
+ */
+const BOARD_DECISION_IMPERATIVE_MARKER = " — execute this now";
+
+/**
+ * Replacement suffix for a superseded (demoted) accepted decision: it records the
+ * approval as history but strips the "overrides everything" imperative so a fresh
+ * session no longer treats a stale approval as still-binding.
+ */
+export const BOARD_DECISION_SUPERSEDED_SUFFIX =
+  " — superseded by a newer board decision; kept for history, no longer overriding.";
+
+/**
  * Renders a single board-decision line for the managed block. `summary` is the
  * confirmation's prompt; `reason` is an optional decline reason. The line is
  * imperative so a fresh session treats it as a must-execute item, and self-bounded
@@ -309,7 +332,7 @@ export function renderBoardDecisionLine(input: {
   if (!summary) return null;
   const stamp = formatBoardDecisionDate(input.date);
   if (input.outcome === "accepted") {
-    return `${BOARD_DECISION_ACCEPTED_PREFIX} (${stamp}): ${summary} — execute this now; overrides any standing preference to the contrary.`;
+    return `${BOARD_DECISION_ACCEPTED_PREFIX} (${stamp}): ${summary}${BOARD_DECISION_ACCEPTED_IMPERATIVE}`;
   }
   const reason = input.reason?.replace(/\s+/g, " ").trim();
   const reasonSuffix = reason ? ` — reason: ${reason.slice(0, 80)}` : "";
@@ -317,10 +340,40 @@ export function renderBoardDecisionLine(input: {
 }
 
 /**
+ * Recency-precedence supersession (COM-361, 2026-08-12).
+ *
+ * Root cause of the "agent forgot what we discussed" recurrence: every accepted
+ * confirmation was permanently stamped "execute this now; overrides any standing
+ * preference to the contrary", and the fold logic only case-deduped — it never
+ * retired an older approval when a newer direction arrived. So a fresh session read
+ * a weeks-old approval as still top-authority and re-did / undid the board's latest
+ * direction (observed on TRA-6: a superseded 720p/5s试镜 approval kept shouting
+ * "already done" over a just-agreed 1080p/8s rework).
+ *
+ * Fix: when a NEW accepted board direction is folded in, demote every PRIOR accepted
+ * line — rewrite its imperative tail into a past-tense "superseded … no longer
+ * overriding" note. Only the newest accepted decision keeps top authority. Declined
+ * lines ("do not pursue this") are prohibitions, not preferences, so they are left
+ * intact. Pure + idempotent (a line already demoted has no marker and is untouched).
+ */
+function demoteSupersededBoardApprovals(decisions: string[]): string[] {
+  return decisions.map((line) => {
+    const t = line.trim();
+    if (!t.startsWith(BOARD_DECISION_ACCEPTED_PREFIX)) return line;
+    const marker = t.lastIndexOf(BOARD_DECISION_IMPERATIVE_MARKER);
+    if (marker === -1) return line; // already demoted, or no imperative to strip
+    return `${t.slice(0, marker).trimEnd()}${BOARD_DECISION_SUPERSEDED_SUFFIX}`;
+  });
+}
+
+/**
  * Folds a board-decision line into the managed block as the newest (top-most)
  * decision, preserving the existing objective and remaining decisions. Returns the
  * description unchanged when there is no objective to anchor a block on or the line
  * is already present. Deterministic + idempotent so callers can change-gate.
+ *
+ * When the incoming line is an ACCEPTED direction, prior accepted approvals are
+ * demoted (COM-361 recency-precedence) so only the newest one overrides everything.
  */
 export function foldBoardDecisionIntoDescription(
   description: string | null | undefined,
@@ -334,11 +387,55 @@ export function foldBoardDecisionIntoDescription(
     readManagedGoalBlockObjective(current) ?? deriveGoalObjectiveFromDescription(current);
   if (!objective) return current; // nothing to anchor a block on; leave as-is
 
+  const existing = readManagedGoalBlockDecisions(current);
+  // Idempotency: a repeat of the exact same decision is a no-op. Checked explicitly
+  // (not via sanitizeDecisions' dedup) because demotion below rewrites prior lines,
+  // which would otherwise let a fresh imperative copy coexist with its demoted twin.
+  if (existing.some((d) => d.trim().toLowerCase() === decisionLine.toLowerCase())) {
+    return current;
+  }
+
+  // A new ACCEPTED direction retires older approvals; a decline of some proposal
+  // must NOT strip authority from an unrelated standing approval, so only demote
+  // when the incoming line is itself an approval.
+  const incomingIsAccepted = decisionLine.startsWith(BOARD_DECISION_ACCEPTED_PREFIX);
+  const prior = incomingIsAccepted ? demoteSupersededBoardApprovals(existing) : existing;
+
   // Newest board decision first, then whatever the block already carried.
-  // sanitizeDecisions dedups case-insensitively, so a repeated accept is a no-op.
-  const decisions = sanitizeDecisions([decisionLine, ...readManagedGoalBlockDecisions(current)]);
+  const decisions = sanitizeDecisions([decisionLine, ...prior]);
   const next = upsertManagedGoalBlock(current, { objective, decisions });
   return next === current ? current : next;
+}
+
+/**
+ * Detects an agent-distilled objective that merely CLAIMS the work is finished
+ * ("already done", "nothing pending", "已完成 / 已经做过 / 无待办").
+ *
+ * COM-361 secondary guard: on the incident run the agent's run-end distillation
+ * overwrote the block objective with "Reference-mode paid试镜 already executed …
+ * Nothing pending", collapsing a live board rework into "done". When the block
+ * still carries board-authored decisions, we refuse to let such a completion claim
+ * replace the objective (the caller preserves the prior objective instead) — a
+ * completion claim is never more authoritative than a standing board direction.
+ *
+ * Intentionally conservative: it only PRESERVES an existing objective, never
+ * fabricates one, and only fires alongside board decisions — so a genuinely
+ * finished issue with no board decisions still distills normally.
+ */
+export function isCompletionClaimObjective(objective: string | null | undefined): boolean {
+  if (!objective) return false;
+  const t = objective.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!t) return false;
+  const patterns: RegExp[] = [
+    /\balready (?:done|executed|complete|completed|shipped|delivered|built|made)\b/,
+    /\bnothing (?:is )?(?:left |further |else )?(?:pending|to do|remaining|outstanding)\b/,
+    /\bno (?:further |remaining |additional |more )?(?:action|work|steps?)\b/,
+    /\b(?:task|issue|work|goal)\s+(?:is\s+)?(?:already\s+)?(?:done|complete|completed|finished)\b/,
+    /已(?:经)?(?:完成|做过|做完|搞定|执行完|交付)/,
+    /无(?:待办|需(?:要)?(?:处理|行动|做))/,
+    /没(?:有)?(?:待办|需要处理|要做)/,
+  ];
+  return patterns.some((re) => re.test(t));
 }
 
 /**
