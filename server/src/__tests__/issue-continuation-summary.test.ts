@@ -101,6 +101,42 @@ describe("issue continuation summaries", () => {
     expect(continuationSummaryParksExecutor(body)).toBe(true);
   });
 
+  it("drops a stale 'wait for review' next-action once the issue is back in_progress (COM-355)", () => {
+    // Prior run parked the issue for review; a later run resumes autonomous work
+    // (issue is in_progress, run succeeded) and launches background follow-up.
+    // The stale park text must NOT carry forward, or the queued continuation gets
+    // cancelled (issue_continuation_waiting_on_review) and the follow-up is dropped.
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "TRA-6",
+        title: "Automate the pipeline",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+      },
+      run: {
+        id: "run-3",
+        status: "succeeded",
+        error: null,
+        resultJson: { summary: "Launched background deep-research; will produce a playbook doc." },
+      },
+      agent: { id: "agent-1", name: "CodexCoder", adapterType: "codex_local" },
+      previousSummaryBody: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Wait for reviewer feedback or approval before continuing executor work.",
+      ].join("\n"),
+    });
+
+    expect(extractContinuationSummaryNextAction(body)).toBe(
+      "Resume implementation from the acceptance criteria, latest comments, and this summary.",
+    );
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+
   it("does not park executor work when the next action is still runnable", () => {
     const body = [
       "# Continuation Summary",
