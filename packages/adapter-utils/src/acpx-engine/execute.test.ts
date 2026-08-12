@@ -26,6 +26,10 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   };
 });
 import {
+  DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
+  DEFAULT_ACP_ENGINE_PERMISSION_MODE,
+} from "./constants.js";
+import {
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
@@ -1966,5 +1970,216 @@ describe("ACPX turn reconnect on transient connection drops (COM-364 P1)", () =>
     );
     expect(result.exitCode).toBe(1);
     expect(turnCalls).toBe(1);
+  });
+});
+
+describe("ACPX session-init herd backoff (COM-364 P2 / COM-363)", () => {
+  // Runtime whose `ensureSession` replays a scripted list of failures before
+  // succeeding, so a test can assert the init retry loop backs off and lands on
+  // a fresh session (or fast-fails a non-retryable error).
+  function scriptedInitRuntime(failures: Array<string | Error>) {
+    let initCalls = 0;
+    const runtime = {
+      ensureSession: async () => {
+        const idx = initCalls;
+        initCalls += 1;
+        const failure = failures[idx];
+        if (failure !== undefined) {
+          throw failure instanceof Error ? failure : new Error(failure);
+        }
+        return {
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        };
+      },
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "text_delta", text: "ok", stream: "output" };
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+        cancel: async () => {},
+      }),
+      close: async () => {},
+    };
+    return { runtime, initCalls: () => initCalls };
+  }
+
+  async function runInit(
+    failures: Array<string | Error>,
+    config: Record<string, unknown> = {},
+    deps: { random?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+  ) {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const scripted = scriptedInitRuntime(failures);
+    const logs: Array<{ stream: string; text: string }> = [];
+    const sleeps: number[] = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => scripted.runtime as never,
+      sleep: deps.sleep ?? (async (ms: number) => { sleeps.push(ms); }),
+      random: deps.random ?? (() => 0),
+    });
+    const result = await execute({
+      runId: "run-init-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        cwd,
+        ...config,
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+    return { result, logs, sleeps, initCalls: scripted.initCalls() };
+  }
+
+  it("retries a `session/new` startup timeout and lands on a fresh session", async () => {
+    const { result, logs, initCalls } = await runInit([
+      "acpx session/new timed out after 70000ms",
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+    // 1 failed init + 1 successful retry.
+    expect(initCalls).toBe(2);
+    expect(
+      logs.some(
+        (l) => l.stream === "stderr" && l.text.includes("session init hit a transient failure (attempt 1/3)"),
+      ),
+    ).toBe(true);
+    expect(
+      logs.some((l) => l.stream === "stdout" && l.text.includes('"type":"acpx.session_init_retry"')),
+    ).toBe(true);
+  });
+
+  it("spreads concurrent inits with full jitter (delay scales with random and attempt)", async () => {
+    // random()=1 → delay == full capped exponential window for the attempt.
+    const { result, sleeps, initCalls } = await runInit(
+      ["session/new timed out", "session/new timed out"],
+      { sessionInitBaseDelayMs: 1000, sessionInitMaxDelayMs: 15000 },
+      { random: () => 1 },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(initCalls).toBe(3);
+    // attempt 1 → base*2^0 = 1000ms; attempt 2 → base*2^1 = 2000ms.
+    expect(sleeps).toEqual([1000, 2000]);
+  });
+
+  it("draws a jittered delay inside [0, capped] (random=0.5 halves the window)", async () => {
+    const { sleeps } = await runInit(
+      ["session/new timed out"],
+      { sessionInitBaseDelayMs: 1000, sessionInitMaxDelayMs: 15000 },
+      { random: () => 0.5 },
+    );
+    expect(sleeps).toEqual([500]);
+  });
+
+  it("does not retry an auth failure (fast-fail)", async () => {
+    const { result, logs, initCalls } = await runInit([
+      "session/new failed: 401 Unauthorized (invalid api key)",
+    ]);
+    expect(result.exitCode).toBe(1);
+    // Auth fast-fails without burning the retry budget; it is classified as an
+    // auth error, distinct from the session-init-timeout class.
+    expect(result.errorCode).toBe("acpx_auth_required");
+    expect(initCalls).toBe(1);
+    expect(logs.some((l) => l.text.includes("session init hit a transient failure"))).toBe(false);
+  });
+
+  it("does not retry a missing/broken backend binary (fast-fail)", async () => {
+    const { result, initCalls } = await runInit([
+      "spawn claude ENOENT: command not found",
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    expect(initCalls).toBe(1);
+  });
+
+  it("gives up after exhausting the init retry budget", async () => {
+    const { result, logs, initCalls } = await runInit(
+      ["session/new timed out", "session/new timed out", "session/new timed out"],
+      { sessionInitMaxRetries: 2 },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    // 1 initial attempt + 2 retries = 3 ensureSession calls.
+    expect(initCalls).toBe(3);
+    const retryLogs = logs.filter(
+      (l) => l.stream === "stderr" && l.text.includes("session init hit a transient failure"),
+    );
+    expect(retryLogs).toHaveLength(2);
+  });
+
+  it("does not retry when the init budget is disabled", async () => {
+    const { result, initCalls } = await runInit(
+      ["session/new timed out"],
+      { sessionInitMaxRetries: 0 },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(initCalls).toBe(1);
+  });
+});
+
+describe("non-interactive ACPX permission defaults (COM-364 P2 item 2)", () => {
+  async function runAndCaptureMeta(config: Record<string, unknown>) {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+        cancel: async () => {},
+      }),
+      close: async () => {},
+    };
+    const notes: string[] = [];
+    const execute = createAcpxEngineExecutor({ createRuntime: () => runtime as never });
+    await execute({
+      runId: "run-perm-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        cwd,
+        ...config,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async (meta: { commandNotes?: string[] }) => {
+        for (const n of meta.commandNotes ?? []) notes.push(n);
+      },
+    } as never);
+    return notes;
+  }
+
+  it("constants pin the non-interactive defaults (approve-all + deny)", () => {
+    // COM-364 P2 item 2: non-interactive runs must already ride the intended
+    // defaults with no per-run override, so a herd of recovering agents never
+    // stalls on an interactive permission prompt.
+    expect(DEFAULT_ACP_ENGINE_PERMISSION_MODE).toBe("approve-all");
+    expect(DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS).toBe("deny");
+  });
+
+  it("a non-interactive run defaults to approve-all (no config override needed)", async () => {
+    const notes = await runAndCaptureMeta({});
+    expect(notes.some((n) => n.includes("Effective ACPX permission mode: approve-all"))).toBe(true);
   });
 });
