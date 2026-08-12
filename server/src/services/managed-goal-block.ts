@@ -135,7 +135,16 @@ export function upsertManagedGoalBlock(
   fields: ManagedGoalBlockFields,
 ): string {
   const remainder = stripManagedGoalBlock(description);
-  const block = renderManagedGoalBlock(fields);
+  // Render invariant (COM-361 recurrence): no matter how the decisions list was
+  // assembled — a board fold, an agent's run-end re-distillation, or a mix — at most
+  // the newest accepted board approval may carry the active "execute now" imperative.
+  // This is the single write funnel both the fold and the run-end sync paths pass
+  // through, so enforcing here makes supersession durable (P14 single source of truth).
+  const block = renderManagedGoalBlock(
+    fields.decisions
+      ? { ...fields, decisions: enforceSingleActiveBoardApproval(fields.decisions) }
+      : fields,
+  );
   if (!block) return remainder;
   return remainder.length > 0 ? `${block}\n\n${remainder}` : block;
 }
@@ -356,13 +365,52 @@ export function renderBoardDecisionLine(input: {
  * lines ("do not pursue this") are prohibitions, not preferences, so they are left
  * intact. Pure + idempotent (a line already demoted has no marker and is untouched).
  */
+/** True when a line is an accepted board approval still carrying the active imperative. */
+function isActiveBoardApproval(line: string): boolean {
+  const t = line.trim();
+  return (
+    t.startsWith(BOARD_DECISION_ACCEPTED_PREFIX) &&
+    t.lastIndexOf(BOARD_DECISION_IMPERATIVE_MARKER) !== -1
+  );
+}
+
+/** Rewrites one accepted-approval line's imperative tail into a demoted history note. */
+function demoteBoardApprovalLine(line: string): string {
+  const t = line.trim();
+  if (!t.startsWith(BOARD_DECISION_ACCEPTED_PREFIX)) return line;
+  const marker = t.lastIndexOf(BOARD_DECISION_IMPERATIVE_MARKER);
+  if (marker === -1) return line; // already demoted, or no imperative to strip
+  return `${t.slice(0, marker).trimEnd()}${BOARD_DECISION_SUPERSEDED_SUFFIX}`;
+}
+
 function demoteSupersededBoardApprovals(decisions: string[]): string[] {
+  return decisions.map(demoteBoardApprovalLine);
+}
+
+/**
+ * Render invariant (COM-361 recurrence, 2026-08-13).
+ *
+ * `foldBoardDecisionIntoDescription` demotes older approvals only at fold time. But
+ * the run-end agent-distillation path (`syncManagedGoalBlockInDescription`) rebuilds
+ * the decisions list from what the agent re-emits, and an agent commonly copies a
+ * PRIOR board-approved line back verbatim WITH its active imperative. That re-inflates
+ * a second "execute now; overrides everything" line, so a stale approval regains top
+ * authority — the exact drift observed live on CMP-517 (two active imperatives in one
+ * block after a post-deploy run).
+ *
+ * Fix: enforce the invariant at render time regardless of how the list was assembled —
+ * keep only the FIRST (top-most = newest) active approval, demote every later one.
+ * Pure + idempotent: a list already satisfying the invariant is returned unchanged.
+ */
+export function enforceSingleActiveBoardApproval(decisions: string[]): string[] {
+  let seenActive = false;
   return decisions.map((line) => {
-    const t = line.trim();
-    if (!t.startsWith(BOARD_DECISION_ACCEPTED_PREFIX)) return line;
-    const marker = t.lastIndexOf(BOARD_DECISION_IMPERATIVE_MARKER);
-    if (marker === -1) return line; // already demoted, or no imperative to strip
-    return `${t.slice(0, marker).trimEnd()}${BOARD_DECISION_SUPERSEDED_SUFFIX}`;
+    if (!isActiveBoardApproval(line)) return line;
+    if (!seenActive) {
+      seenActive = true;
+      return line;
+    }
+    return demoteBoardApprovalLine(line);
   });
 }
 
