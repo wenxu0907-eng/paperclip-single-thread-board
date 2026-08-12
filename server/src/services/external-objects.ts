@@ -16,9 +16,29 @@ import type { PluginExternalObjectRecordSnapshot, PluginExternalObjectResolveRes
 import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
-import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
+import {
+  createGitHubExternalObjectProvider,
+  detectPrWake,
+  type GitHubExternalObjectProviderOptions,
+  type PrWakeData,
+} from "./github-external-object-provider.js";
 import { publishLiveEvent } from "./live-events.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+
+// Phase 3 (Emit, COM-336): the slice of the heartbeat `enqueueWakeup` this service
+// needs. Structural type so we don't import the heartbeat module (avoids a cycle);
+// the real signature is a superset, so passing `heartbeat.wakeup` satisfies it.
+export type ExternalObjectWakeup = (
+  agentId: string,
+  opts: {
+    source?: "automation";
+    triggerDetail?: "system";
+    reason?: string;
+    payload?: Record<string, unknown> | null;
+    idempotencyKey?: string;
+    requestedByActorType?: "system";
+  },
+) => Promise<unknown>;
 
 export interface ExternalObjectSourceContext {
   companyId: string;
@@ -357,6 +377,11 @@ export function externalObjectService(
     pluginWorkerManager?: PluginWorkerManager;
     github?: GitHubExternalObjectProviderOptions | false;
     enabled?: boolean | (() => boolean | Promise<boolean>);
+    // Phase 3 (Emit, COM-336): native PR wake emitter. When a refresh observes a
+    // PR transition into CI-green or mergeable (`detectPrWake`), the service resolves
+    // the mentioning issue's assignee and enqueues a wake — no per-run watchdog. Kept
+    // optional so route-scoped construction sites (which never sweep) stay wake-free.
+    enqueueWakeup?: ExternalObjectWakeup;
   } = {},
 ) {
   const githubProvider = opts.github === false ? null : createGitHubExternalObjectProvider(db, opts.github);
@@ -883,7 +908,85 @@ export function externalObjectService(
       type: "external_object.updated",
       payload: { objectId: object.id, statusCategory: next.statusCategory, liveness: next.liveness },
     });
+    // Phase 3 (Emit, COM-336): if this refresh observed a PR transition into CI-green
+    // or mergeable, wake the mentioning issues' assignees natively. This is the whole
+    // point of L3 — the platform wakes the agent instead of the agent claiming to watch.
+    await emitPrWakeIfNeeded(object, next);
     return { object: toObjectPayload(next, now), refreshed: true, reason: "resolved" as const };
+  }
+
+  // Phase 3 (Emit, COM-336). Pure detection lives in `detectPrWake`; this resolves the
+  // wake target(s) and enqueues. Best-effort: a failure here must never fail the refresh
+  // (the status is already persisted), so callers await it but we swallow/log errors.
+  async function emitPrWakeIfNeeded(
+    before: typeof externalObjects.$inferSelect,
+    after: typeof externalObjects.$inferSelect,
+  ) {
+    if (!opts.enqueueWakeup) return;
+    let wake: ReturnType<typeof detectPrWake>;
+    try {
+      wake = detectPrWake(
+        (before.data ?? null) as PrWakeData | null,
+        (after.data ?? null) as PrWakeData | null,
+      );
+    } catch (err) {
+      logger.warn({ err, objectId: after.id }, "detectPrWake threw during refresh; skipping wake");
+      return;
+    }
+    if (!wake) return;
+
+    // Every issue that mentions this object gets its assignee woken. remoteVersion (or
+    // updatedAt as a fallback) makes the idempotency key transition-specific, so a repeat
+    // sweep on the same data can't re-fire, while a genuine later re-green still can.
+    const versionTag = after.remoteVersion ?? after.updatedAt?.toISOString() ?? "na";
+    const mentions = await db
+      .selectDistinct({ sourceIssueId: externalObjectMentions.sourceIssueId })
+      .from(externalObjectMentions)
+      .where(
+        and(
+          eq(externalObjectMentions.companyId, after.companyId),
+          eq(externalObjectMentions.objectId, after.id),
+        ),
+      );
+    if (mentions.length === 0) return;
+
+    const issueRows = await db
+      .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, after.companyId),
+          inArray(
+            issues.id,
+            mentions.map((m) => m.sourceIssueId),
+          ),
+        ),
+      );
+
+    for (const issue of issueRows) {
+      if (!issue.assigneeAgentId) continue;
+      try {
+        await opts.enqueueWakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: wake === "ci_green" ? "external_object_ci_green" : "external_object_pr_mergeable",
+          idempotencyKey: `pr-wake:${issue.id}:${after.id}:${wake}:${versionTag}`,
+          payload: {
+            issueId: issue.id,
+            externalObjectId: after.id,
+            wakeReason: wake,
+            displayKey: after.displayKey,
+            statusLabel: after.statusLabel,
+          },
+          requestedByActorType: "system",
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, objectId: after.id, wake },
+          "external-object PR wake enqueue failed",
+        );
+      }
+    }
   }
 
   async function refreshIssueObjects(issueId: string, input: {

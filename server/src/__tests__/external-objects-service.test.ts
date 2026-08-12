@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  agents,
   companies,
   createDb,
   activityLog,
@@ -559,6 +560,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await db.delete(externalObjects);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(plugins);
     await db.delete(companies);
     vi.restoreAllMocks();
@@ -833,6 +835,148 @@ describeEmbeddedPostgres("externalObjectService", () => {
     const refreshed = await svc.refreshDueObjectsAcrossCompanies(100, new Date(Date.now() + 1_000));
 
     expect(refreshed).toEqual([]);
+  });
+
+  // COM-336 Phase 3 (Emit): a refresh that observes a PR transition into CI-green or
+  // mergeable natively wakes the mentioning issue's assignee — no per-run watchdog.
+  describe("native PR wake emit (Phase 3)", () => {
+    async function seedAssignee(companyId: string) {
+      const agentId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Assignee" });
+      return agentId;
+    }
+
+    // Resolver that returns a different `data` blob on each refresh so a transition
+    // (e.g. pending → success) can be simulated; the last entry sticks for extra calls.
+    function transitioningResolver(datas: Array<Record<string, unknown>>): ExternalObjectResolver {
+      let i = 0;
+      return {
+        providerKey: "url",
+        objectType: "link",
+        resolve: vi.fn(async () => {
+          const data = datas[Math.min(i, datas.length - 1)];
+          i += 1;
+          return {
+            ok: true as const,
+            snapshot: {
+              statusCategory: "open" as const,
+              statusTone: "info" as const,
+              statusKey: "open",
+              statusLabel: "Open",
+              ttlSeconds: 300,
+              data,
+            },
+          };
+        }),
+      };
+    }
+
+    it("wakes the mentioning issue's assignee when a PR goes CI-green", async () => {
+      const { companyId, issueId } = await createIssue();
+      const agentId = await seedAssignee(companyId);
+      await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+
+      const enqueueWakeup = vi.fn(async () => ({}));
+      const svc = externalObjectService(db, {
+        resolvers: [transitioningResolver([{ checksState: "pending" }, { checksState: "success" }])],
+        github: false,
+        enqueueWakeup,
+      });
+      await svc.syncIssue(issueId);
+      const [object] = await db.select().from(externalObjects);
+
+      // First refresh only captures `pending` — no prior success to transition from.
+      await svc.refreshObject(object!.id, { companyId, force: true });
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+
+      // Second refresh observes pending → success → one native ci_green wake.
+      await svc.refreshObject(object!.id, { companyId, force: true });
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      const [wokenAgentId, opts] = enqueueWakeup.mock.calls[0]!;
+      expect(wokenAgentId).toBe(agentId);
+      expect(opts.reason).toBe("external_object_ci_green");
+      expect(opts.payload).toMatchObject({ issueId, externalObjectId: object!.id, wakeReason: "ci_green" });
+      expect(opts.idempotencyKey).toContain("ci_green");
+      expect(opts.idempotencyKey).toContain(issueId);
+    });
+
+    it("wakes on a mergeable transition (false → true)", async () => {
+      const { companyId, issueId } = await createIssue();
+      const agentId = await seedAssignee(companyId);
+      await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+
+      const enqueueWakeup = vi.fn(async () => ({}));
+      const svc = externalObjectService(db, {
+        resolvers: [transitioningResolver([{ mergeable: false }, { mergeable: true }])],
+        github: false,
+        enqueueWakeup,
+      });
+      await svc.syncIssue(issueId);
+      const [object] = await db.select().from(externalObjects);
+
+      await svc.refreshObject(object!.id, { companyId, force: true });
+      await svc.refreshObject(object!.id, { companyId, force: true });
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup.mock.calls[0]![1].reason).toBe("external_object_pr_mergeable");
+    });
+
+    it("does not re-fire while the PR stays green (idempotent on stable state)", async () => {
+      const { companyId, issueId } = await createIssue();
+      const agentId = await seedAssignee(companyId);
+      await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+
+      const enqueueWakeup = vi.fn(async () => ({}));
+      const svc = externalObjectService(db, {
+        resolvers: [transitioningResolver([{ checksState: "pending" }, { checksState: "success" }])],
+        github: false,
+        enqueueWakeup,
+      });
+      await svc.syncIssue(issueId);
+      const [object] = await db.select().from(externalObjects);
+
+      await svc.refreshObject(object!.id, { companyId, force: true }); // pending
+      await svc.refreshObject(object!.id, { companyId, force: true }); // → success (fires)
+      await svc.refreshObject(object!.id, { companyId, force: true }); // success → success (no re-fire)
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not wake when the mentioning issue has no assignee", async () => {
+      const { companyId, issueId } = await createIssue();
+
+      const enqueueWakeup = vi.fn(async () => ({}));
+      const svc = externalObjectService(db, {
+        resolvers: [transitioningResolver([{ checksState: "pending" }, { checksState: "success" }])],
+        github: false,
+        enqueueWakeup,
+      });
+      await svc.syncIssue(issueId);
+      const [object] = await db.select().from(externalObjects);
+
+      await svc.refreshObject(object!.id, { companyId, force: true });
+      await svc.refreshObject(object!.id, { companyId, force: true });
+
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("refreshes cleanly when no wake emitter is wired (route-scoped construction)", async () => {
+      const { companyId, issueId } = await createIssue();
+      const agentId = await seedAssignee(companyId);
+      await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+
+      // No enqueueWakeup dep — the transition still resolves without throwing.
+      const svc = externalObjectService(db, {
+        resolvers: [transitioningResolver([{ checksState: "pending" }, { checksState: "success" }])],
+        github: false,
+      });
+      await svc.syncIssue(issueId);
+      const [object] = await db.select().from(externalObjects);
+
+      await svc.refreshObject(object!.id, { companyId, force: true });
+      const result = await svc.refreshObject(object!.id, { companyId, force: true });
+      expect(result.refreshed).toBe(true);
+    });
   });
 
   it("keeps external object identities company-scoped for duplicate urls", async () => {

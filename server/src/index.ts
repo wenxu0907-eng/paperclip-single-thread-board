@@ -898,6 +898,10 @@ export async function startServer(): Promise<StartedServer> {
     const externalObjects = externalObjectService(db as any, {
       pluginWorkerManager,
       enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
+      // Phase 3 (Emit, COM-336): give the sweep the ability to wake mentioning issues'
+      // assignees when a PR goes CI-green / mergeable. Only this scheduler-scoped
+      // construction site sweeps, so it's the only one that needs the emitter.
+      enqueueWakeup: heartbeat.wakeup,
     });
     const tools = toolAccessService(db as any, {
       deploymentMode: config.deploymentMode,
