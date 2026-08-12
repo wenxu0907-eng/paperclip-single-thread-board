@@ -5,6 +5,7 @@ import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } fro
 import { documentService } from "./documents.js";
 import {
   extractGoalUpdateFromRunResult,
+  isBoardAuthoredDecision,
   readManagedGoalBlockDecisions,
   stripManagedGoalBlock,
   syncManagedGoalBlockInDescription,
@@ -280,10 +281,18 @@ export async function refreshIssueContinuationSummary(input: {
   // real diff (no churn / notification noise).
   const goalUpdate = extractGoalUpdateFromRunResult(run.resultJson);
   const preservedDecisions = readManagedGoalBlockDecisions(issue.description);
+  // Board decisions folded in from confirmation outcomes (COM-294 recurrence) are
+  // more authoritative than an agent's re-distillation — keep them across a run even
+  // when the agent emits its own decisions and forgot to re-echo them. They stay at
+  // the top; sanitizeDecisions dedups if the agent did re-echo one.
+  const preservedBoardDecisions = preservedDecisions.filter(isBoardAuthoredDecision);
+  const extraDecisions =
+    goalUpdate && goalUpdate.decisions.length > 0
+      ? [...preservedBoardDecisions, ...goalUpdate.decisions]
+      : preservedDecisions;
   const nextDescription = syncManagedGoalBlockInDescription(issue.description, {
     objectiveOverride: goalUpdate?.objective ?? null,
-    extraDecisions:
-      goalUpdate && goalUpdate.decisions.length > 0 ? goalUpdate.decisions : preservedDecisions,
+    extraDecisions,
   });
   if (nextDescription !== (issue.description ?? "")) {
     await db.update(issues).set({ description: nextDescription }).where(eq(issues.id, issueId));

@@ -27,6 +27,11 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import {
+  isBoardAuthoredDecision,
+  readManagedGoalBlockDecisions,
+  syncManagedGoalBlockInDescription,
+} from "../services/managed-goal-block.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1204,6 +1209,77 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, requiresReason.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("A decline reason is required for this confirmation");
+  });
+
+  it("folds an accepted confirmation into the managed goal block (COM-294)", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Goal block fold-in");
+
+    // Seed the issue description with a managed goal block carrying a STALE standing
+    // preference — the exact TRA-6 shape that overrode a just-approved paid action.
+    const description = syncManagedGoalBlockInDescription("Produce the launch video.", {
+      objectiveOverride: "Produce the launch video",
+      extraDecisions: ["Prefer free post-layer fixes before spending Vidu credits"],
+    });
+    await db.update(issues).set({ description }).where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve spending credits to generate shot #1 (the plaque shot)?",
+      },
+    }, { userId: "local-board" });
+
+    await interactionsSvc.acceptInteraction(
+      { id: issueId, companyId, goalId, projectId: null },
+      created.id,
+      {},
+      { userId: "local-board" },
+    );
+
+    const updated = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    const decisions = readManagedGoalBlockDecisions(updated?.description ?? null);
+    // Board approval is folded in as the newest, most-authoritative decision...
+    expect(decisions.some(isBoardAuthoredDecision)).toBe(true);
+    expect(decisions[0]).toContain("generate shot #1");
+    expect(decisions[0]).toContain("execute this now");
+    // ...without wiping the standing preference already in the block.
+    expect(decisions).toContain("Prefer free post-layer fixes before spending Vidu credits");
+  });
+
+  it("folds a declined confirmation into the managed goal block with its reason (COM-294)", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Goal block decline fold-in");
+
+    const description = syncManagedGoalBlockInDescription("Produce the launch video.", {
+      objectiveOverride: "Produce the launch video",
+    });
+    await db.update(issues).set({ description }).where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Spend credits on an intro sting?" },
+    }, { userId: "local-board" });
+
+    await interactionsSvc.rejectInteraction(
+      { id: issueId, companyId, goalId, projectId: null },
+      created.id,
+      { reason: "out of scope for v1" },
+      { userId: "local-board" },
+    );
+
+    const updated = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    const decisions = readManagedGoalBlockDecisions(updated?.description ?? null);
+    expect(decisions[0]).toContain("Board declined");
+    expect(decisions[0]).toContain("do not pursue this");
+    expect(decisions[0]).toContain("out of scope for v1");
   });
 
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
