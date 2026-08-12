@@ -113,7 +113,20 @@ function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previou
     return "Inspect the failed run, fix the cause, and resume from the most recent concrete action above.";
   }
   if (run.status === "cancelled") return "Confirm the cancellation reason before starting another run.";
-  return previousNextAction ?? "Resume implementation from the acceptance criteria, latest comments, and this summary.";
+  const resumeDefault = "Resume implementation from the acceptance criteria, latest comments, and this summary.";
+  // COM-355: We only reach this branch when the issue is NOT `done`/`in_review`
+  // (those returned above) and the run made progress. A carried-over
+  // "wait for review/approval" next-action from a prior in_review moment is stale
+  // here — the issue is back `in_progress` and actively working. Preserving it
+  // would make continuationSummaryParksExecutor() park the queued continuation
+  // (issue_continuation_waiting_on_review), silently dropping the follow-up work
+  // the run just launched (e.g. a background research/render that re-invokes the
+  // assignee) — the "task cancels then no follow-up" symptom the board reported.
+  // Drop the stale park text and fall back to the resume default.
+  if (previousNextAction && WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(previousNextAction)) {
+    return resumeDefault;
+  }
+  return previousNextAction ?? resumeDefault;
 }
 
 function bulletList(items: string[], empty: string) {
