@@ -52,6 +52,81 @@ function asNestedString(record: Record<string, unknown>, key: string, nestedKey:
   return nested ? asString(nested[nestedKey]) : null;
 }
 
+// --- L3 native wake events (COM-336): PR CI-green + mergeable capture/detection ---
+// These are pure helpers (no I/O) so the transition logic is fully unit-testable on
+// synthetic GitHub payloads. See docs/design/l3-native-wake-events.md.
+
+export type PrChecksState = "success" | "pending" | "failure" | "none";
+
+// The subset of a PR external object's stored `data` that Phase 3 compares to decide
+// whether a native wake should fire. All fields optional so partial/legacy rows are safe.
+export interface PrWakeData {
+  mergeable?: boolean | null;
+  mergeableState?: string | null;
+  checksState?: PrChecksState | null;
+  draft?: boolean;
+  merged?: boolean;
+  state?: string;
+}
+
+// Conclusions that count as "not a failure" for a completed check run.
+const CHECK_RUN_SUCCESS_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+
+// Reduce a GitHub `/commits/{sha}/check-runs` response into a single rollup category.
+// Accepts either the wrapped `{ check_runs: [...] }` shape or a bare array. Pure.
+export function summarizeCheckRuns(body: unknown): { state: PrChecksState; total: number } {
+  const record = asRecord(body);
+  const rawRuns = record && Array.isArray(record["check_runs"])
+    ? record["check_runs"]
+    : Array.isArray(body)
+    ? body
+    : [];
+  const runs = rawRuns.map(asRecord).filter((run): run is Record<string, unknown> => run !== null);
+  if (runs.length === 0) return { state: "none", total: 0 };
+
+  let anyIncomplete = false;
+  let anyFailure = false;
+  for (const run of runs) {
+    const status = asString(run["status"]);
+    const conclusion = asString(run["conclusion"]);
+    if (status !== "completed") {
+      anyIncomplete = true;
+      continue;
+    }
+    if (!conclusion || !CHECK_RUN_SUCCESS_CONCLUSIONS.has(conclusion)) {
+      anyFailure = true;
+    }
+  }
+  // A hard failure keeps a PR out of "green" even if other runs are still queued.
+  if (anyFailure) return { state: "failure", total: runs.length };
+  if (anyIncomplete) return { state: "pending", total: runs.length };
+  return { state: "success", total: runs.length };
+}
+
+// Decide whether a PR data transition should emit a native wake. Returns the event
+// name or null. Only fires on a genuine observed transition (prior state must be known),
+// which avoids a cold-start storm when the fields are first captured, and never fires for
+// terminal/draft PRs. Pure — Phase 3 feeds it `before.data` / `after.data`.
+export function detectPrWake(
+  prev: PrWakeData | null | undefined,
+  next: PrWakeData | null | undefined,
+): "ci_green" | "pr_mergeable" | null {
+  if (!next) return null;
+  if (next.merged === true || next.state === "closed" || next.draft === true) return null;
+
+  const prevChecks = prev?.checksState ?? null;
+  if (next.checksState === "success" && prevChecks != null && prevChecks !== "success") {
+    return "ci_green";
+  }
+
+  const prevMergeableKnown = prev?.mergeable === true || prev?.mergeable === false;
+  if (next.mergeable === true && prevMergeableKnown && prev?.mergeable !== true) {
+    return "pr_mergeable";
+  }
+
+  return null;
+}
+
 function parseGitHubCanonicalUrl(canonical: ExternalObjectCanonicalUrl): GitHubObjectIdentity | null {
   if (canonical.canonicalIdentity.scheme !== "https") return null;
   const host = canonical.canonicalIdentity.host.toLowerCase();
@@ -188,7 +263,12 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
   };
 }
 
-function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function pullRequestSnapshot(
+  identity: GitHubObjectIdentity,
+  body: Record<string, unknown>,
+  etag: string | null,
+  checks: { state: PrChecksState; total: number } | null = null,
+): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
@@ -197,6 +277,11 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headRef = asNestedString(body, "head", "ref");
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
+  // `mergeable` may be true/false or null while GitHub is still computing it; keep the
+  // tri-state (only omit when GitHub returned no value at all). `mergeable_state` is the
+  // richer label (e.g. "clean", "blocked", "behind").
+  const mergeable = asBoolean(body.mergeable);
+  const mergeableState = asString(body.mergeable_state);
 
   let statusKey = state;
   let statusLabel = state === "open" ? "Open" : state === "closed" ? "Closed" : "Unknown";
@@ -254,6 +339,9 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headRef ? { headRef } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
+      ...(mergeable !== null ? { mergeable } : {}),
+      ...(mergeableState ? { mergeableState } : {}),
+      ...(checks ? { checksState: checks.state, checksTotal: checks.total } : {}),
     },
   };
 }
@@ -428,10 +516,31 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
+        // For PRs, also roll up the head commit's check runs so CI-green transitions can be
+        // detected (COM-336 Phase 1). This is a best-effort secondary fetch behind the same
+        // TTL-cached fetcher — a failure here must never fail the PR resolve, just leaves the
+        // checks rollup unknown.
+        let checks: { state: PrChecksState; total: number } | null = null;
+        if (objectType === "pull_request") {
+          const headSha = asNestedString(body, "head", "sha");
+          if (headSha) {
+            try {
+              const checksUrl = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/commits/${encodeURIComponent(headSha)}/check-runs`;
+              const checksResponse = await fetchImpl(checksUrl, { headers });
+              if (checksResponse.ok) {
+                const checksBody = await safeJson(checksResponse);
+                if (checksBody) checks = summarizeCheckRuns(checksBody);
+              }
+            } catch {
+              checks = null;
+            }
+          }
+        }
+
         return {
           ok: true,
           snapshot: objectType === "pull_request"
-            ? pullRequestSnapshot(identity, body, etag)
+            ? pullRequestSnapshot(identity, body, etag, checks)
             : issueSnapshot(identity, body, etag),
         };
       },
