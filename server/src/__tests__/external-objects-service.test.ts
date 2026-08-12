@@ -780,6 +780,61 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes due objects across all companies in one sweep (Phase 2)", async () => {
+    const a = await createIssue();
+    const b = await createIssue();
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "open" as const,
+        statusTone: "info" as const,
+        statusKey: "open",
+        statusLabel: "Open",
+        ttlSeconds: 300,
+      },
+    }));
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(a.issueId);
+    await svc.syncIssue(b.issueId);
+    expect(resolve).not.toHaveBeenCalled();
+
+    const refreshed = await svc.refreshDueObjectsAcrossCompanies(100, new Date(Date.now() + 1_000));
+
+    // One object per company refreshed, without the caller supplying any companyId.
+    expect(refreshed).toHaveLength(2);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    const refreshedCompanies = new Set(
+      (await db.select().from(externalObjects)).map((row) => row.companyId),
+    );
+    expect(refreshedCompanies).toEqual(new Set([a.companyId, b.companyId]));
+  });
+
+  it("no-ops the cross-company sweep when external objects are disabled", async () => {
+    const { issueId } = await createIssue();
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "open" as const,
+        statusTone: "info" as const,
+        statusKey: "open",
+        statusLabel: "Open",
+        ttlSeconds: 300,
+      },
+    }));
+    const resolver: ExternalObjectResolver = { providerKey: "url", objectType: "link", resolve };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false, enabled: false });
+    await svc.syncIssue(issueId);
+
+    const refreshed = await svc.refreshDueObjectsAcrossCompanies(100, new Date(Date.now() + 1_000));
+
+    expect(refreshed).toEqual([]);
+  });
+
   it("keeps external object identities company-scoped for duplicate urls", async () => {
     const first = await createIssue();
     const second = await createIssue();

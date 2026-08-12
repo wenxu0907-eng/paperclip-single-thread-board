@@ -45,6 +45,7 @@ import {
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
+  externalObjectService,
   heartbeatService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
@@ -890,6 +891,14 @@ export async function startServer(): Promise<StartedServer> {
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    // Phase 2 (Sweep, COM-336): background refresh of external objects (PR/CI state) so
+    // status transitions — CI-green, PR-mergeable — are observed without a per-request
+    // access or a hand-rolled watchdog routine. The service self-gates on the
+    // enableExternalObjects experimental flag.
+    const externalObjects = externalObjectService(db as any, {
+      pluginWorkerManager,
+      enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
+    });
     const tools = toolAccessService(db as any, {
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
@@ -1086,6 +1095,21 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "periodic tool connection health sweep failed");
+          }));
+
+        if (heartbeatSchedulerStopped) return;
+        // Phase 2 (Sweep, COM-336): refresh external objects whose TTL is due so PR/CI
+        // status transitions are observed in the background. No-op unless the
+        // enableExternalObjects flag is on (service self-gates).
+        trackHeartbeatSchedulerWork(externalObjects
+          .refreshDueObjectsAcrossCompanies()
+          .then((refreshed) => {
+            if (refreshed.length > 0) {
+              logger.info({ refreshed: refreshed.length }, "external-object due-refresh sweep refreshed objects");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "external-object due-refresh sweep failed");
           }));
 
         if (heartbeatSchedulerStopped) return;
