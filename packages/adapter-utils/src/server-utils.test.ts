@@ -1078,6 +1078,83 @@ describe("renderPaperclipWakePrompt", () => {
     });
   });
 
+  it("renders answered ask_user_questions selections as new CEO input (COM-331)", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-6",
+        identifier: "TRA-6",
+        title: "EP1 v8",
+        status: "in_progress",
+      },
+      interactionKind: "ask_user_questions",
+      interactionStatus: "answered",
+      questionAnswers: {
+        title: "EP1 v8 — 两个决定",
+        answers: [
+          {
+            questionId: "plaque_wobble",
+            prompt: "匾额那段还晃不晃？",
+            selectedOptionIds: ["redo"],
+            selectedOptions: [{ id: "redo", label: "还晃，改走付费Q3重生成", description: null }],
+            otherText: null,
+          },
+          {
+            questionId: "fall_merge",
+            prompt: "是否同意合并成一次 Vidu Q3 重生成？",
+            selectedOptionIds: ["yes"],
+            selectedOptions: [{ id: "yes", label: "同意", description: null }],
+            otherText: null,
+          },
+        ],
+        summaryMarkdown: null,
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("CEO answered your questions");
+    expect(prompt).toContain("匾额那段还晃不晃？ → 还晃，改走付费Q3重生成");
+    expect(prompt).toContain("是否同意合并成一次 Vidu Q3 重生成？ → 同意");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      questionAnswers: {
+        answers: [
+          { questionId: "plaque_wobble", selectedOptionIds: ["redo"] },
+          { questionId: "fall_merge", selectedOptionIds: ["yes"] },
+        ],
+      },
+    });
+  });
+
+  it("renders free-text otherText from ask_user_questions answers", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "issue-7", identifier: "TRA-7", title: "x", status: "in_progress" },
+      interactionKind: "ask_user_questions",
+      interactionStatus: "answered",
+      questionAnswers: {
+        title: null,
+        answers: [
+          {
+            questionId: "q1",
+            prompt: "Which direction?",
+            selectedOptionIds: ["other"],
+            selectedOptions: [{ id: "other", label: "我另有想法", description: null }],
+            otherText: "走方案C，先只做前3秒",
+          },
+        ],
+        summaryMarkdown: null,
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Which direction? → 我另有想法; other: 走方案C，先只做前3秒");
+  });
+
   it("renders accepted empty checkbox selections explicitly", () => {
     const payload = {
       reason: "issue_commented",

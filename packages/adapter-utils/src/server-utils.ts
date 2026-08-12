@@ -632,6 +632,24 @@ type PaperclipWakeCheckboxSelection = {
   }>;
 };
 
+type PaperclipWakeQuestionAnswer = {
+  questionId: string;
+  prompt: string | null;
+  selectedOptionIds: string[];
+  selectedOptions: Array<{
+    id: string;
+    label: string;
+    description: string | null;
+  }>;
+  otherText: string | null;
+};
+
+type PaperclipWakeQuestionAnswers = {
+  title: string | null;
+  answers: PaperclipWakeQuestionAnswer[];
+  summaryMarkdown: string | null;
+};
+
 type PaperclipWakeExecutionWorkspace = {
   branchName: string | null;
 };
@@ -664,6 +682,7 @@ type PaperclipWakePayload = {
   interactionKind: string | null;
   interactionStatus: string | null;
   checkboxSelection: PaperclipWakeCheckboxSelection | null;
+  questionAnswers: PaperclipWakeQuestionAnswers | null;
   executionWorkspace: PaperclipWakeExecutionWorkspace | null;
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
@@ -1053,6 +1072,49 @@ function normalizePaperclipWakeCheckboxSelection(value: unknown): PaperclipWakeC
   };
 }
 
+function normalizePaperclipWakeQuestionAnswers(value: unknown): PaperclipWakeQuestionAnswers | null {
+  const container = parseObject(value);
+  const rawAnswers = Array.isArray(container.answers) ? container.answers : [];
+  const answers = rawAnswers
+    .map((entry) => {
+      const answer = parseObject(entry);
+      const questionId = asString(answer.questionId, "").trim();
+      if (!questionId) return null;
+      const selectedOptionIds = Array.isArray(answer.selectedOptionIds)
+        ? answer.selectedOptionIds.map((id) => asString(id, "").trim()).filter(Boolean)
+        : [];
+      const selectedOptions = Array.isArray(answer.selectedOptions)
+        ? answer.selectedOptions
+            .map((optionValue) => {
+              const option = parseObject(optionValue);
+              const id = asString(option.id, "").trim();
+              if (!id) return null;
+              return {
+                id,
+                label: asString(option.label, id).trim() || id,
+                description: asString(option.description, "").trim() || null,
+              };
+            })
+            .filter((option): option is { id: string; label: string; description: string | null } => Boolean(option))
+        : [];
+      const optionById = new Map(selectedOptions.map((option) => [option.id, option]));
+      return {
+        questionId,
+        prompt: asString(answer.prompt, "").trim() || null,
+        selectedOptionIds,
+        selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
+        otherText: asString(answer.otherText, "").trim() || null,
+      };
+    })
+    .filter((answer): answer is PaperclipWakeQuestionAnswer => Boolean(answer));
+  if (answers.length === 0) return null;
+  return {
+    title: asString(container.title, "").trim() || null,
+    answers,
+    summaryMarkdown: asString(container.summaryMarkdown, "").trim() || null,
+  };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -1262,8 +1324,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
+  const questionAnswers = normalizePaperclipWakeQuestionAnswers(payload.questionAnswers);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !questionAnswers && !executionWorkspace && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1286,6 +1349,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     checkboxSelection,
+    questionAnswers,
     executionWorkspace,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
@@ -1469,6 +1533,27 @@ export function renderPaperclipWakePrompt(
       .join(", ") || "(none)";
     lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
     lines.push(`- checkbox selection options: ${selectedOptions}`);
+  }
+  if (normalized.questionAnswers) {
+    // The board answered your `ask_user_questions` interaction. These ARE the new CEO
+    // input — do not report "no new input" (COM-331). Answering creates no thread comment,
+    // so the answers arrive only here.
+    lines.push(
+      `- CEO answered your questions${normalized.questionAnswers.title ? ` (${normalized.questionAnswers.title})` : ""}: the board resolved the interaction — treat the answers below as the latest CEO input and act on them.`,
+    );
+    for (const answer of normalized.questionAnswers.answers) {
+      const chosen = answer.selectedOptions
+        .map((option) => (option.label && option.label !== option.id ? `${option.label}` : option.id))
+        .join(", ");
+      const parts: string[] = [];
+      if (chosen) parts.push(chosen);
+      if (answer.otherText) parts.push(`other: ${answer.otherText}`);
+      const answerText = parts.join("; ") || "(no option selected)";
+      lines.push(`  - ${answer.prompt ?? answer.questionId} → ${answerText}`);
+    }
+    if (normalized.questionAnswers.summaryMarkdown) {
+      lines.push(`  - CEO note: ${normalized.questionAnswers.summaryMarkdown}`);
+    }
   }
   if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;

@@ -4341,6 +4341,7 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionStatus",
   "continuationPolicy",
   "checkboxSelection",
+  "questionAnswers",
   "itemVerdicts",
   "newlyResolvedItemIds",
 ] as const;
@@ -4690,6 +4691,7 @@ export async function buildPaperclipWakePayload(input: {
     }
   }
   const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
+  const questionAnswers = parseObject(input.contextSnapshot.questionAnswers);
   const planReviewContext = issueId
     ? await buildPlanReviewContext({
       db: input.db,
@@ -4772,6 +4774,7 @@ export async function buildPaperclipWakePayload(input: {
     interactionKind,
     interactionStatus,
     checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
+    questionAnswers: Object.keys(questionAnswers).length > 0 ? questionAnswers : null,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
