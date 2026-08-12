@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOARD_DECISION_ACCEPTED_PREFIX,
+  BOARD_DECISION_DECLINED_PREFIX,
   MANAGED_GOAL_BLOCK_END,
   MANAGED_GOAL_BLOCK_MAX_CHARS,
   MANAGED_GOAL_BLOCK_START,
@@ -7,9 +9,13 @@ import {
   deriveGoalObjectiveFromDescription,
   extractGoalUpdateFromRunResult,
   extractManagedGoalBlock,
+  foldBoardDecisionIntoDescription,
   hasManagedGoalBlock,
+  isBoardAuthoredDecision,
   preserveManagedGoalBlockOnWrite,
   readManagedGoalBlockDecisions,
+  readManagedGoalBlockObjective,
+  renderBoardDecisionLine,
   renderManagedGoalBlock,
   stripManagedGoalBlock,
   syncManagedGoalBlockInDescription,
@@ -224,6 +230,100 @@ describe("managed goal block", () => {
         objective: null,
         decisions: ["Only decision"],
       });
+    });
+  });
+
+  describe("COM-294 recurrence — board decision fold-in", () => {
+    const DATE = new Date("2026-08-12T10:00:00Z");
+    // A description whose block carries a stale standing preference (the TRA-6 bug).
+    const withStalePref = syncManagedGoalBlockInDescription(HUMAN, {
+      objectiveOverride: "Produce the video",
+      extraDecisions: ["Prefer free post-layer fixes before spending Vidu credits"],
+    });
+
+    it("renders an imperative, self-bounded accepted line", () => {
+      const line = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "Approve spending credits to generate shot #1 (the plaque shot)",
+        date: DATE,
+      })!;
+      expect(line.startsWith(BOARD_DECISION_ACCEPTED_PREFIX)).toBe(true);
+      expect(line).toContain("2026-08-12");
+      expect(line).toContain("execute this now");
+      expect(isBoardAuthoredDecision(line)).toBe(true);
+    });
+
+    it("renders a declined line with an optional reason", () => {
+      const line = renderBoardDecisionLine({
+        outcome: "declined",
+        summary: "Spend credits on the intro",
+        reason: "too expensive for a first pass",
+        date: DATE,
+      })!;
+      expect(line.startsWith(BOARD_DECISION_DECLINED_PREFIX)).toBe(true);
+      expect(line).toContain("do not pursue this");
+      expect(line).toContain("reason: too expensive");
+      expect(isBoardAuthoredDecision(line)).toBe(true);
+    });
+
+    it("returns null for an empty summary", () => {
+      expect(renderBoardDecisionLine({ outcome: "accepted", summary: "   ", date: DATE })).toBeNull();
+    });
+
+    it("folds an accepted decision in as the newest, top-most decision", () => {
+      const line = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "Generate shot #1 via credits",
+        date: DATE,
+      })!;
+      const next = foldBoardDecisionIntoDescription(withStalePref, line);
+      const decisions = readManagedGoalBlockDecisions(next);
+      expect(decisions[0]).toBe(line); // board decision is first / most authoritative
+      expect(decisions).toContain("Prefer free post-layer fixes before spending Vidu credits");
+      // Objective is preserved (not downgraded to a description-derived one).
+      expect(readManagedGoalBlockObjective(next)).toBe("Produce the video");
+    });
+
+    it("is idempotent — folding the same decision twice is a no-op", () => {
+      const line = renderBoardDecisionLine({ outcome: "accepted", summary: "Do X", date: DATE })!;
+      const once = foldBoardDecisionIntoDescription(withStalePref, line);
+      const twice = foldBoardDecisionIntoDescription(once, line);
+      expect(twice).toBe(once);
+      expect(readManagedGoalBlockDecisions(twice).filter((d) => d === line)).toHaveLength(1);
+    });
+
+    it("no-ops when there is no objective to anchor a block on", () => {
+      const line = renderBoardDecisionLine({ outcome: "accepted", summary: "Do X", date: DATE })!;
+      expect(foldBoardDecisionIntoDescription("", line)).toBe("");
+      expect(foldBoardDecisionIntoDescription(null, line)).toBe("");
+    });
+
+    it("survives run-end agent distillation that forgot to re-echo it", () => {
+      // Board approves -> folded in.
+      const line = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "Generate shot #1 via credits",
+        date: DATE,
+      })!;
+      const afterFold = foldBoardDecisionIntoDescription(withStalePref, line);
+
+      // Next run: the agent distills its own decisions and forgets the board one.
+      // The continuation-summary caller keeps board-authored decisions on top.
+      const preserved = readManagedGoalBlockDecisions(afterFold);
+      const preservedBoard = preserved.filter(isBoardAuthoredDecision);
+      const agentDecisions = ["Use ffmpeg deshake for the push-in segment"];
+      const afterRun = syncManagedGoalBlockInDescription(afterFold, {
+        objectiveOverride: "Produce the video",
+        extraDecisions: [...preservedBoard, ...agentDecisions],
+      });
+      const finalDecisions = readManagedGoalBlockDecisions(afterRun);
+      expect(finalDecisions).toContain(line); // board decision NOT wiped
+      expect(finalDecisions).toContain("Use ffmpeg deshake for the push-in segment");
+    });
+
+    it("readManagedGoalBlockObjective returns null without a block", () => {
+      expect(readManagedGoalBlockObjective(HUMAN)).toBeNull();
+      expect(readManagedGoalBlockObjective(null)).toBeNull();
     });
   });
 

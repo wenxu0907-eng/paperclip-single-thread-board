@@ -51,6 +51,10 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import {
+  foldBoardDecisionIntoDescription,
+  renderBoardDecisionLine,
+} from "./managed-goal-block.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 
 type InteractionActor = {
@@ -274,6 +278,60 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
     .update(issues)
     .set({ updatedAt: new Date() })
     .where(eq(issues.id, issueId));
+}
+
+/** The board-facing prompt of a confirmation-like interaction, or null otherwise. */
+function readConfirmationPrompt(interaction: IssueThreadInteraction): string | null {
+  if (
+    interaction.kind !== "request_confirmation" &&
+    interaction.kind !== "request_checkbox_confirmation"
+  ) {
+    return null;
+  }
+  const prompt = interaction.payload.prompt?.trim();
+  return prompt && prompt.length > 0 ? prompt : null;
+}
+
+type IssueGoalFoldDb = Pick<Db, "select" | "update">;
+
+/**
+ * COM-294 recurrence fix: fold a board confirmation outcome into the issue's
+ * platform-managed goal block so the decision survives the next fresh-session
+ * heartbeat (and can't be overridden by a stale standing preference the agent reads
+ * from the block). Best-effort + change-gated: skips silently when there is no
+ * objective to anchor a block on, and never throws into the resolution transaction.
+ */
+async function foldConfirmationOutcomeIntoGoalBlock(
+  db: IssueGoalFoldDb,
+  args: {
+    issueId: string;
+    outcome: "accepted" | "declined";
+    summary: string;
+    reason?: string | null;
+    now: Date;
+  },
+): Promise<void> {
+  try {
+    const line = renderBoardDecisionLine({
+      outcome: args.outcome,
+      summary: args.summary,
+      reason: args.reason ?? null,
+      date: args.now,
+    });
+    if (!line) return;
+
+    const current = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, args.issueId))
+      .then((rows: Array<{ description: string | null }>) => rows[0]?.description ?? null);
+
+    const next = foldBoardDecisionIntoDescription(current, line);
+    if (next === (current ?? "")) return; // no-op (idempotent) — nothing to write
+    await db.update(issues).set({ description: next }).where(eq(issues.id, args.issueId));
+  } catch (error) {
+    console.error("[paperclip] Failed to fold confirmation outcome into goal block", error);
+  }
 }
 
 function isTerminalIssueStatus(status: string) {
@@ -1093,6 +1151,7 @@ export function issueThreadInteractionService(db: Db) {
             selectedOptionIds: args.input.selectedOptionIds,
           })
         : undefined;
+    const confirmationPrompt = readConfirmationPrompt(interaction);
 
     const now = new Date();
     const result = await db.transaction(async (tx) => {
@@ -1161,6 +1220,18 @@ export function issueThreadInteractionService(db: Db) {
         }
       } else {
         await touchIssue(tx, args.issue.id);
+      }
+
+      // COM-294: fold the board's approval into the managed goal block so a fresh
+      // session on resume treats it as a must-execute item that overrides any stale
+      // standing preference. Best-effort; runs in-tx so it rolls back with the accept.
+      if (confirmationPrompt) {
+        await foldConfirmationOutcomeIntoGoalBlock(tx, {
+          issueId: args.issue.id,
+          outcome: "accepted",
+          summary: confirmationPrompt,
+          now,
+        });
       }
 
       return {
@@ -1259,6 +1330,19 @@ export function issueThreadInteractionService(db: Db) {
         }
       } else {
         await touchIssue(tx, args.issue.id);
+      }
+
+      // COM-294: fold the board's decline into the managed goal block so a fresh
+      // session on resume knows not to pursue the declined path.
+      const declinePrompt = readConfirmationPrompt(interaction);
+      if (declinePrompt) {
+        await foldConfirmationOutcomeIntoGoalBlock(tx, {
+          issueId: args.issue.id,
+          outcome: "declined",
+          summary: declinePrompt,
+          reason: reason || null,
+          now,
+        });
       }
 
       return {

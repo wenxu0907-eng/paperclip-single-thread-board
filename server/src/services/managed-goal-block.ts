@@ -241,6 +241,107 @@ function sanitizeDecisions(decisions: string[] | null | undefined): string[] {
 }
 
 /**
+ * Board-authored decision folding (COM-294 recurrence, 2026-08-12).
+ *
+ * The Option B mechanism only carries *agent-distilled* decisions into the block.
+ * A decision the board makes by accepting/declining a confirmation card was never
+ * folded in, so on the next fresh session the agent read a stale standing
+ * preference from the block and overrode the just-approved action (observed on
+ * TRA-6). The more authoritative direction — board → block — was left open.
+ *
+ * Fix: when a confirmation is accepted/declined, the platform folds the outcome
+ * into the block as the newest, most-authoritative decision, phrased as an
+ * imperative must-execute item. These lines carry a stable prefix so the run-end
+ * agent-distillation sync PRESERVES them (they are not wiped by an agent that
+ * forgot to re-emit them). Single source of truth (P14): the block already rides
+ * in the description that every fresh session reloads, so folding here also
+ * satisfies "restate the accepted proposal in the resume context".
+ */
+export const BOARD_DECISION_ACCEPTED_PREFIX = "✅ Board approved";
+export const BOARD_DECISION_DECLINED_PREFIX = "⛔ Board declined";
+
+/** True when a decision line was folded in from a board confirmation outcome. */
+export function isBoardAuthoredDecision(line: string | null | undefined): boolean {
+  if (!line) return false;
+  const t = line.trim();
+  return (
+    t.startsWith(BOARD_DECISION_ACCEPTED_PREFIX) || t.startsWith(BOARD_DECISION_DECLINED_PREFIX)
+  );
+}
+
+/** Reads the objective (`**Goal:** …`) currently rendered in a description's block. */
+export function readManagedGoalBlockObjective(
+  description: string | null | undefined,
+): string | null {
+  const inner = extractManagedGoalBlock(description);
+  if (!inner) return null;
+  for (const line of inner.split("\n")) {
+    const m = /^\*\*Goal:\*\*\s*(.+)$/.exec(line.trim());
+    if (m) {
+      const objective = m[1].replace(/\s+/g, " ").trim();
+      return objective.length > 0 ? objective : null;
+    }
+  }
+  return null;
+}
+
+/** Max chars of the underlying confirmation prompt to echo into the block line. */
+const BOARD_DECISION_SUMMARY_MAX_CHARS = 150;
+
+/** Formats a `YYYY-MM-DD` stamp from a Date without pulling in a date library. */
+function formatBoardDecisionDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Renders a single board-decision line for the managed block. `summary` is the
+ * confirmation's prompt; `reason` is an optional decline reason. The line is
+ * imperative so a fresh session treats it as a must-execute item, and self-bounded
+ * so `sanitizeDecisions`' 240-char cap never truncates the trailing directive.
+ */
+export function renderBoardDecisionLine(input: {
+  outcome: "accepted" | "declined";
+  summary: string;
+  reason?: string | null;
+  date: Date;
+}): string | null {
+  const summary = input.summary.replace(/\s+/g, " ").trim().slice(0, BOARD_DECISION_SUMMARY_MAX_CHARS);
+  if (!summary) return null;
+  const stamp = formatBoardDecisionDate(input.date);
+  if (input.outcome === "accepted") {
+    return `${BOARD_DECISION_ACCEPTED_PREFIX} (${stamp}): ${summary} — execute this now; overrides any standing preference to the contrary.`;
+  }
+  const reason = input.reason?.replace(/\s+/g, " ").trim();
+  const reasonSuffix = reason ? ` — reason: ${reason.slice(0, 80)}` : "";
+  return `${BOARD_DECISION_DECLINED_PREFIX} (${stamp}): ${summary}${reasonSuffix}; do not pursue this.`;
+}
+
+/**
+ * Folds a board-decision line into the managed block as the newest (top-most)
+ * decision, preserving the existing objective and remaining decisions. Returns the
+ * description unchanged when there is no objective to anchor a block on or the line
+ * is already present. Deterministic + idempotent so callers can change-gate.
+ */
+export function foldBoardDecisionIntoDescription(
+  description: string | null | undefined,
+  line: string,
+): string {
+  const current = description ? normalizeText(description) : "";
+  const decisionLine = line.replace(/\s+/g, " ").trim();
+  if (!decisionLine) return current;
+
+  const objective =
+    readManagedGoalBlockObjective(current) ?? deriveGoalObjectiveFromDescription(current);
+  if (!objective) return current; // nothing to anchor a block on; leave as-is
+
+  // Newest board decision first, then whatever the block already carried.
+  // sanitizeDecisions dedups case-insensitively, so a repeated accept is a no-op.
+  const decisions = sanitizeDecisions([decisionLine, ...readManagedGoalBlockDecisions(current)]);
+  const next = upsertManagedGoalBlock(current, { objective, decisions });
+  return next === current ? current : next;
+}
+
+/**
  * Reads the confirmed decisions currently rendered in a description's managed
  * block, so a heartbeat that emits no fresh distillation preserves the existing set
  * instead of wiping it. Returns [] when there is no block or no decisions.
