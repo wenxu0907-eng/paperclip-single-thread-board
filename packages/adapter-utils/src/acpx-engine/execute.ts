@@ -1951,13 +1951,15 @@ function resolveTurnReconnectPolicy(config: Record<string, unknown>): TurnReconn
 }
 
 /**
- * Exponential backoff with full jitter for the Nth reconnect attempt (1-based).
- * Full jitter (delay uniformly in [0, capped]) spreads concurrent long runs
- * that drop on the same upstream blip, so they do not reconnect in lockstep and
- * re-create the thundering herd COM-363 flagged.
+ * Exponential backoff with full jitter for the Nth attempt (1-based). Full
+ * jitter (delay uniformly in [0, capped]) spreads concurrent runs that fail on
+ * the same upstream blip, so they do not retry in lockstep and re-create the
+ * thundering herd COM-363 flagged (session_init: 64 hits/minute across 7 agents
+ * during a recovery burst). Single source of truth for both the turn-reconnect
+ * (P1) and session-init (P2) retry seams so the two never drift.
  */
-function turnReconnectDelayMs(
-  policy: TurnReconnectPolicy,
+function fullJitterBackoffMs(
+  policy: { baseDelayMs: number; maxDelayMs: number },
   attempt: number,
   random: () => number,
 ): number {
@@ -1965,6 +1967,68 @@ function turnReconnectDelayMs(
   const capped = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** Math.max(0, attempt - 1));
   const jittered = capped * random();
   return Math.round(Math.max(0, jittered));
+}
+
+function turnReconnectDelayMs(
+  policy: TurnReconnectPolicy,
+  attempt: number,
+  random: () => number,
+): number {
+  return fullJitterBackoffMs(policy, attempt, random);
+}
+
+interface SessionInitRetryPolicy {
+  maxRetries: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+
+const DEFAULT_SESSION_INIT_RETRY_POLICY: SessionInitRetryPolicy = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 15000,
+};
+
+function resolveSessionInitRetryPolicy(config: Record<string, unknown>): SessionInitRetryPolicy {
+  const maxRetries = Math.max(
+    0,
+    Math.floor(asNumber(config.sessionInitMaxRetries, DEFAULT_SESSION_INIT_RETRY_POLICY.maxRetries)),
+  );
+  const baseDelayMs = Math.max(
+    0,
+    asNumber(config.sessionInitBaseDelayMs, DEFAULT_SESSION_INIT_RETRY_POLICY.baseDelayMs),
+  );
+  const maxDelayMs = Math.max(
+    baseDelayMs,
+    asNumber(config.sessionInitMaxDelayMs, DEFAULT_SESSION_INIT_RETRY_POLICY.maxDelayMs),
+  );
+  return { maxRetries, baseDelayMs, maxDelayMs };
+}
+
+/**
+ * Session-init failures that are safe to retry with backoff. COM-363 RCA: during
+ * a recovery burst, queued wakes pile onto `session/new` and hit the ~70s
+ * startup timeout, then all retry at once (thundering herd). Establishing a
+ * session is idempotent (no committed output yet), so a startup timeout/stall is
+ * safe to re-attempt on a jittered backoff. Kept deliberately narrow and
+ * fast-failing: auth and a missing/broken backend binary never recover by
+ * retrying, and resume-not-found is already handled by the resume→fresh fallback
+ * ({@link isResumeFailure}), so those must NOT burn the init retry budget.
+ */
+function isRetryableSessionInitFailure(message: string | null | undefined): boolean {
+  if (!message) return false;
+  // Fast-fail: never retry auth or a missing/broken backend binary.
+  if (/unauthorized|forbidden|\b40[13]\b|api[ _-]?key|invalid[ _-]?key|authentication|credential/i.test(message)) {
+    return false;
+  }
+  if (/enoent|eacces|command not found|not installed|no such file|cannot find|executable/i.test(message)) {
+    return false;
+  }
+  // Retryable: a transient connection drop during init, or a startup timeout/stall.
+  if (isRetryableConnectionDrop(message)) return true;
+  return /session\/new|session (?:init|start)|initiali[sz](?:e|ing)|startup|timed? ?out|timeout|etimedout|stall(?:ed)?|did not respond|no response|unresponsive|deadline exceeded/i.test(
+    message,
+  );
 }
 
 async function cleanupIdleHandles(input: {
@@ -2120,32 +2184,73 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let resumedSession = Boolean(handle ?? resumeSessionId);
     let clearSession = false;
 
+    // Acquire the session, transparently falling back from an unavailable
+    // resume target to a fresh session. Idempotent, so the outer retry loop can
+    // safely re-invoke it on a transient startup timeout/stall.
+    const acquireSession = async () => {
+      const tryResume = Boolean(resumeSessionId) && !clearSession;
+      try {
+        return await runtime.ensureSession({
+          sessionKey: prepared.sessionKey,
+          agent: prepared.acpxAgent,
+          mode: prepared.mode,
+          cwd: prepared.cwd,
+          ...(tryResume ? { resumeSessionId } : {}),
+          sessionOptions: { env: prepared.env },
+        });
+      } catch (err) {
+        if (!tryResume || !isResumeFailure(err)) throw err;
+        clearSession = true;
+        resumedSession = false;
+        await ctx.onLog(
+          "stdout",
+          `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
+        );
+        return await runtime.ensureSession({
+          sessionKey: prepared.sessionKey,
+          agent: prepared.acpxAgent,
+          mode: prepared.mode,
+          cwd: prepared.cwd,
+          sessionOptions: { env: prepared.env },
+        });
+      }
+    };
+
     try {
       if (!handle) {
-        try {
-          handle = await runtime.ensureSession({
-            sessionKey: prepared.sessionKey,
-            agent: prepared.acpxAgent,
-            mode: prepared.mode,
-            cwd: prepared.cwd,
-            resumeSessionId,
-            sessionOptions: { env: prepared.env },
-          });
-        } catch (err) {
-          if (!resumeSessionId || !isResumeFailure(err)) throw err;
-          clearSession = true;
-          resumedSession = false;
-          await ctx.onLog(
-            "stdout",
-            `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
-          );
-          handle = await runtime.ensureSession({
-            sessionKey: prepared.sessionKey,
-            agent: prepared.acpxAgent,
-            mode: prepared.mode,
-            cwd: prepared.cwd,
-            sessionOptions: { env: prepared.env },
-          });
+        // COM-363 P2: bound the session-init thundering herd. A recovery burst
+        // queues many wakes onto `session/new`; they hit the ~70s startup
+        // timeout and, without jitter, all retry in lockstep. Retry startup
+        // timeout/stall a bounded number of times on exponential backoff with
+        // full jitter so concurrent inits spread out; auth/backend-missing and
+        // any other error fall through to fast-fail unchanged.
+        const sessionInitPolicy = resolveSessionInitRetryPolicy(ctx.config);
+        let initAttempt = 0;
+        for (;;) {
+          try {
+            handle = await acquireSession();
+            break;
+          } catch (err) {
+            const initFailureMessage = err instanceof Error ? err.message : String(err);
+            const canRetryInit =
+              initAttempt < sessionInitPolicy.maxRetries &&
+              isRetryableSessionInitFailure(initFailureMessage);
+            if (!canRetryInit) throw err;
+            initAttempt += 1;
+            const delayMs = fullJitterBackoffMs(sessionInitPolicy, initAttempt, random);
+            await ctx.onLog(
+              "stderr",
+              `[paperclip] ACPX session init hit a transient failure (attempt ${initAttempt}/${sessionInitPolicy.maxRetries}); retrying in ${delayMs}ms: ${initFailureMessage}\n`,
+            );
+            await emitAcpxLog(ctx, {
+              type: "acpx.session_init_retry",
+              attempt: initAttempt,
+              maxRetries: sessionInitPolicy.maxRetries,
+              delayMs,
+              message: initFailureMessage,
+            });
+            if (delayMs > 0) await sleep(delayMs);
+          }
         }
       }
     } catch (err) {
