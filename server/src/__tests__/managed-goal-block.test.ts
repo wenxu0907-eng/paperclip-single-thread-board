@@ -11,6 +11,7 @@ import {
   deriveGoalObjectiveFromDescription,
   extractGoalUpdateFromRunResult,
   extractManagedGoalBlock,
+  enforceSingleActiveBoardApproval,
   foldBoardDecisionIntoDescription,
   hasManagedGoalBlock,
   isBoardAuthoredDecision,
@@ -436,6 +437,63 @@ describe("managed goal block", () => {
       const decisions = readManagedGoalBlockDecisions(twice);
       expect(decisions.filter((d) => d.includes("execute this now"))).toHaveLength(1);
       expect(decisions.filter((d) => d.includes("Old approval"))).toHaveLength(1);
+    });
+
+    it("keeps at most one active imperative when a run-end distillation re-echoes an old approval (CMP-517)", () => {
+      // Live recurrence: the board-fold path demotes correctly, but the agent's
+      // run-end distillation re-emits a PRIOR board approval verbatim WITH its active
+      // imperative, re-inflating a second "execute now" line so a stale approval regains
+      // authority. Observed on CMP-517: two active imperatives in one block post-deploy.
+      const older = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "CMP-517 开始实现确认：方案A 料号栏收窄+材质规格栏",
+        date: DATE_OLD,
+      })!;
+      const newer = renderBoardDecisionLine({
+        outcome: "accepted",
+        summary: "CMP-517 实现已完成经真验，请合并 main（不可逆）",
+        date: DATE_NEW,
+      })!;
+      // Fold both — after this only `newer` is active (fold demotes `older`).
+      const afterFolds = foldBoardDecisionIntoDescription(
+        foldBoardDecisionIntoDescription(base, older),
+        newer,
+      );
+      expect(
+        readManagedGoalBlockDecisions(afterFolds).filter((d) => d.includes("execute this now")),
+      ).toHaveLength(1);
+
+      // Agent run-end distillation re-echoes BOTH lines with their active imperatives.
+      const afterAgentSync = syncManagedGoalBlockInDescription(afterFolds, {
+        extraDecisions: [newer, older],
+      });
+      const decisions = readManagedGoalBlockDecisions(afterAgentSync);
+      // The render invariant must hold: exactly one active imperative, the newest.
+      const active = decisions.filter((d) => d.includes("execute this now"));
+      expect(active).toHaveLength(1);
+      expect(active[0]).toContain("实现已完成");
+      // The re-echoed older approval is demoted to history, not re-activated.
+      const olderLine = decisions.find((d) => d.includes("开始实现确认"))!;
+      expect(olderLine).not.toContain("execute this now");
+      expect(olderLine).toContain("superseded by a newer board decision");
+    });
+
+    it("enforceSingleActiveBoardApproval keeps the first active line and demotes the rest", () => {
+      const a = renderBoardDecisionLine({ outcome: "accepted", summary: "A", date: DATE_NEW })!;
+      const b = renderBoardDecisionLine({ outcome: "accepted", summary: "B", date: DATE_OLD })!;
+      const c = renderBoardDecisionLine({ outcome: "accepted", summary: "C", date: DATE_OLD })!;
+      const out = enforceSingleActiveBoardApproval([a, b, c]);
+      expect(out[0]).toBe(a); // newest/top-most kept active
+      expect(out[1]).not.toContain("execute this now");
+      expect(out[2]).not.toContain("execute this now");
+      // Idempotent: a list already satisfying the invariant is unchanged.
+      expect(enforceSingleActiveBoardApproval(out)).toEqual(out);
+      // Non-approval lines and declines are untouched.
+      const decline = renderBoardDecisionLine({ outcome: "declined", summary: "D", date: DATE_OLD })!;
+      expect(enforceSingleActiveBoardApproval([decline, "- plain note"])).toEqual([
+        decline,
+        "- plain note",
+      ]);
     });
   });
 
