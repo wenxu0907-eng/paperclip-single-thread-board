@@ -1138,6 +1138,97 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).toContain("Recovery action:");
   });
 
+  it("COM-360: converts a productive continuation into a blocked-on-children dependency wait instead of re-waking the parent", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    // The parent is a tracking issue that has delegated its remaining work to an
+    // open child. With no live path of its own it keeps being re-woken, each time
+    // leaving only a status comment (needs_followup) that counts as "productive".
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      title: "Delegated child work",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      parentId: sourceIssueId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-08-12T18:00:00.000Z"),
+      finishedAt: new Date("2026-08-12T18:01:00.000Z"),
+      livenessState: "needs_followup",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        retryReason: "issue_continuation_needed",
+        source: "issue.productive_terminal_continuation_recovery",
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.productiveContinuationDependencyWaited).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    const [parent] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(parent?.status).toBe("blocked");
+    // The loop is broken: no continuation re-wake was enqueued for the parent.
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    // The parent got a first-class dependency-wait comment naming the open child.
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments.some((c) => c.body?.includes(`${prefix}-2`))).toBe(true);
+  });
+
+  it("COM-360: backs off successive productive continuation re-wakes for a non-parent issue", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    // No open children -> dependency-wait conversion does not apply. A recent
+    // productive continuation just finished, and the assignee left a status
+    // comment (visible progress) so the GGU-809 exemption falls through to the
+    // enqueue path. The global backoff must throttle the immediate re-wake.
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceIssueId,
+      authorAgentId: coderId,
+      authorType: "agent",
+      body: "Status update: still comparing options, no concrete action yet.",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date(Date.now() - 90_000),
+      finishedAt: new Date(Date.now() - 30_000),
+      livenessState: "needs_followup",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        retryReason: "issue_continuation_needed",
+        source: "issue.productive_terminal_continuation_recovery",
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    // Exemption was hit (visible progress) but the backoff then skipped the
+    // re-wake, so nothing was re-queued and no wake was enqueued.
+    expect(result.recentProgressExempted).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.productiveContinuationDependencyWaited).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(issue?.status).toBe("in_progress");
+  });
+
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
     const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
     const recoveryIssueId = randomUUID();

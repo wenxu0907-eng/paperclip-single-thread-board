@@ -312,6 +312,15 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+// COM-360: minimum spacing between successive *productive* continuation
+// re-wakes for the same issue. Previously this path had no throttle, so a
+// parent that keeps emitting status comments could be re-woken back-to-back
+// (CMP-510 fired four in ~12 minutes). The interval grows with the run of
+// consecutive productive continuations so a genuinely-advancing batch keeps
+// moving while a status-comment spin loop is spaced out. Capped so it never
+// starves a legitimate continuation indefinitely.
+const PRODUCTIVE_CONTINUATION_BASE_BACKOFF_MS = 3 * 60_000;
+const PRODUCTIVE_CONTINUATION_MAX_BACKOFF_MS = 30 * 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -813,6 +822,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         break;
       }
 
+      consecutive += 1;
+      if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
+    }
+    return { consecutive, latestFinishedAt };
+  }
+
+  // COM-360: count consecutive *successful, productive* continuation recoveries
+  // for an issue (the `issue.productive_terminal_continuation_recovery` source).
+  // The failure-path summarizer above deliberately breaks on non-unsuccessful
+  // runs, so it never sees these. We use this to apply a global backoff to the
+  // productive re-wake path, which previously had no throttle at all — that is
+  // why CMP-510 could fire four productive continuations inside ~12 minutes.
+  async function summarizeRecentProductiveContinuations(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+  ) {
+    const rows = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(10);
+
+    let consecutive = 0;
+    let latestFinishedAt: Date | null = null;
+    for (const row of rows) {
+      const ctx = parseObject(row.contextSnapshot);
+      if (readNonEmptyString(ctx.retryReason) !== "issue_continuation_needed") break;
+      if (readNonEmptyString(ctx.source) !== "issue.productive_terminal_continuation_recovery") break;
+      if (row.status !== "succeeded") break;
       consecutive += 1;
       if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
     }
@@ -3584,6 +3634,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
+      productiveContinuationDependencyWaited: 0,
       waitingOnReviewSkipped: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
@@ -4064,6 +4115,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        // COM-360: before re-queuing another productive continuation wake,
+        // check whether this issue is a parent that has already delegated its
+        // remaining work to open child/blocker issues. If so, it has nothing to
+        // do itself right now — every re-wake just produces another status
+        // comment, which `needs_followup` counts as "productive", which feeds
+        // the next re-wake (the CMP-510 "worked and worked again" loop). Convert
+        // it into a first-class blocked-on-children dependency wait instead, so
+        // it resumes automatically when a child/blocker finishes. This reuses
+        // the exact conversion the review-parked branch already uses
+        // (`resolveContinuationWaitingOnReview`) and mirrors the
+        // `hasOpenDelegatedChildren` skip in successful-run-handoff.ts — closing
+        // the P14 drift where one sibling path handled open children and this
+        // one did not. `resolveContinuationWaitingOnReview` returns null when
+        // there are no open children/blockers, so non-parent issues fall through
+        // to the existing behaviour unchanged.
+        const dependencyWaited = await resolveContinuationWaitingOnReview(issue);
+        if (dependencyWaited) {
+          result.productiveContinuationDependencyWaited += 1;
+          result.issueIds.push(issue.id);
+          continue;
+        }
+
         if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
           // GGU-809: skip escalation if the assignee has shown visible progress
           // (comment or attachment) within the exemption window. Falling
@@ -4098,6 +4171,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
           continue;
+        }
+
+        // COM-360: global backoff for the productive continuation path. Space
+        // successive productive re-wakes apart (growing with the consecutive
+        // run, capped) so a status-comment spin loop can't fire back-to-back.
+        {
+          const { consecutive, latestFinishedAt } = await summarizeRecentProductiveContinuations(
+            issue.companyId,
+            issue.id,
+            agentId,
+          );
+          if (consecutive > 0 && latestFinishedAt) {
+            const requiredDelay = Math.min(
+              PRODUCTIVE_CONTINUATION_MAX_BACKOFF_MS,
+              PRODUCTIVE_CONTINUATION_BASE_BACKOFF_MS * Math.pow(2, Math.max(0, consecutive - 1)),
+            );
+            const elapsed = Date.now() - latestFinishedAt.getTime();
+            if (elapsed < requiredDelay) {
+              result.skipped += 1;
+              continue;
+            }
+          }
         }
 
         const queued = await enqueueStrandedIssueRecovery({
