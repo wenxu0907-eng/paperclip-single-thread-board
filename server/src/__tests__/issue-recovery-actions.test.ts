@@ -1229,6 +1229,128 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(issue?.status).toBe("in_progress");
   });
 
+  it("COM-360 reopen: converts a parent whose run cancelled on issue_dependencies_blocked into a blocked-on-children dependency wait", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    // Parent tracking issue: only remaining work is an open (blocked) child. Its
+    // own continuation run cancels because that dependency is blocked. Left
+    // in_progress it thrashes runs on comment/child-completion wakes (LUC-348).
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      title: "Board-gated child work",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      parentId: sourceIssueId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "cancelled",
+      errorCode: "issue_dependencies_blocked",
+      startedAt: new Date("2026-08-12T18:00:00.000Z"),
+      finishedAt: new Date("2026-08-12T18:00:30.000Z"),
+      livenessState: "needs_followup",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        retryReason: "issue_continuation_needed",
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.terminalFailureDependencyWaited).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    const [parent] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(parent?.status).toBe("blocked");
+    // No re-wake enqueued: the parent now waits on the child instead of thrashing.
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments.some((c) => c.body?.includes(`${prefix}-2`))).toBe(true);
+  });
+
+  it("COM-360 reopen: converts a parent whose run was process_lost into a blocked-on-children dependency wait", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      title: "Delegated child work",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      parentId: sourceIssueId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      errorCode: "process_lost",
+      startedAt: new Date("2026-08-12T18:00:00.000Z"),
+      finishedAt: new Date("2026-08-12T18:00:30.000Z"),
+      livenessState: "needs_followup",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        retryReason: "issue_continuation_needed",
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.terminalFailureDependencyWaited).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    const [parent] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(parent?.status).toBe("blocked");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("COM-360 reopen: does NOT convert a non-parent issue that cancelled on issue_dependencies_blocked (no open children -> genuine failure still escalates)", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    // No open children/blockers: resolveContinuationWaitingOnReview returns null,
+    // so the conversion must not fire and the genuine non-retryable failure keeps
+    // surfacing for intervention instead of being silently hidden as a wait.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "cancelled",
+      errorCode: "issue_dependencies_blocked",
+      startedAt: new Date("2026-08-12T18:00:00.000Z"),
+      finishedAt: new Date("2026-08-12T18:00:30.000Z"),
+      livenessState: "needs_followup",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        retryReason: "issue_continuation_needed",
+      },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    // Conversion did not fire (no children to wait on); the genuine non-retryable
+    // failure still escalates for intervention rather than being hidden as a wait.
+    expect(result.terminalFailureDependencyWaited).toBe(0);
+    expect(result.escalated).toBe(1);
+    // No first-class dependency-wait comment was posted.
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments.some((c) => c.body?.includes("waiting on"))).toBe(false);
+  });
+
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
     const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
     const recoveryIssueId = randomUUID();
