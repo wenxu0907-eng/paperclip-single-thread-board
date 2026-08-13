@@ -1134,6 +1134,11 @@ describe("IssueChatThread", () => {
     scrollHost.style.overflowY = "auto";
     scrollHost.style.overflow = "auto";
     scrollHost.style.height = "640px";
+    // jsdom computes no layout, so the scroller-detection in
+    // lib/scroll-to-page-end (overflow + scrollHeight > clientHeight) needs
+    // real numbers to pick this element over window scroll.
+    Object.defineProperty(scrollHost, "clientHeight", { configurable: true, get: () => 640 });
+    Object.defineProperty(scrollHost, "scrollHeight", { configurable: true, get: () => 8000 });
     document.body.appendChild(scrollHost);
     container = document.createElement("div");
     scrollHost.appendChild(container);
@@ -1192,6 +1197,11 @@ describe("IssueChatThread", () => {
     scrollHost.style.overflowY = "auto";
     scrollHost.style.overflow = "auto";
     scrollHost.style.height = "640px";
+    // jsdom computes no layout, so the scroller-detection in
+    // lib/scroll-to-page-end (overflow + scrollHeight > clientHeight) needs
+    // real numbers to pick this element over window scroll.
+    Object.defineProperty(scrollHost, "clientHeight", { configurable: true, get: () => 640 });
+    Object.defineProperty(scrollHost, "scrollHeight", { configurable: true, get: () => 8000 });
     document.body.appendChild(scrollHost);
     container = document.createElement("div");
     scrollHost.appendChild(container);
@@ -1267,6 +1277,11 @@ describe("IssueChatThread", () => {
     scrollHost.style.overflowY = "auto";
     scrollHost.style.overflow = "auto";
     scrollHost.style.height = "640px";
+    // jsdom computes no layout, so the scroller-detection in
+    // lib/scroll-to-page-end (overflow + scrollHeight > clientHeight) needs
+    // real numbers to pick this element over window scroll.
+    Object.defineProperty(scrollHost, "clientHeight", { configurable: true, get: () => 640 });
+    Object.defineProperty(scrollHost, "scrollHeight", { configurable: true, get: () => 8000 });
     document.body.appendChild(scrollHost);
     container = document.createElement("div");
     scrollHost.appendChild(container);
@@ -1321,6 +1336,11 @@ describe("IssueChatThread", () => {
     scrollHost.style.overflowY = "auto";
     scrollHost.style.overflow = "auto";
     scrollHost.style.height = "640px";
+    // jsdom computes no layout, so the scroller-detection in
+    // lib/scroll-to-page-end (overflow + scrollHeight > clientHeight) needs
+    // real numbers to pick this element over window scroll.
+    Object.defineProperty(scrollHost, "clientHeight", { configurable: true, get: () => 640 });
+    Object.defineProperty(scrollHost, "scrollHeight", { configurable: true, get: () => 8000 });
     document.body.appendChild(scrollHost);
     container = document.createElement("div");
     scrollHost.appendChild(container);
@@ -1434,10 +1454,10 @@ describe("IssueChatThread", () => {
     vi.useRealTimers();
   });
 
-  // Regression for PAP-2672: when the merged feed ends with a non-comment row
-  // (run/timeline/embedded output) we still want Jump to latest to land on the
-  // last comment, not whichever activity row sorts last.
-  it("targets the latest comment row when trailing rows are non-comments (PAP-2672)", () => {
+  // Regression for COM-374 (supersedes PAP-2672): when the merged feed ends with
+  // a non-comment row (run/timeline/embedded output), Jump to latest must still
+  // reach the true end of the scroller rather than stopping at the last comment.
+  it("reaches the true page end when trailing rows are non-comments (COM-374)", () => {
     const lastComment = issueChatLongThreadComments.at(-1);
     expect(lastComment).toBeDefined();
     const trailingRunStart = new Date(new Date(lastComment!.createdAt).getTime() + 60_000);
@@ -1530,16 +1550,15 @@ describe("IssueChatThread", () => {
       .filter(hasSmoothScrollBehavior);
     expect(smoothCalls.length).toBeGreaterThan(0);
 
-    // For align="end" with the very last index, tanstack-virtual short-circuits
-    // to getMaxScrollOffset() (= scrollHeight - clientHeight = 199_200 here).
-    // A jump to the latest comment row (one slot earlier) lands at item.end -
-    // clientHeight, which is strictly less. Asserting top < maxScrollOffset
-    // proves the button isn't routing to the trailing run row.
-    const maxScrollOffset = 200_000 - 800;
+    // COM-374 supersedes the original PAP-2672 expectation. The jump now targets
+    // the scroller's true end instead of the latest comment row: stopping at that
+    // row left everything below it — trailing run/timeline rows, the sticky
+    // composer, page padding — off-screen, which is exactly the reported
+    // "clicked but didn't reach the end, had to click again" bug. Trailing
+    // non-comment rows are newer content, so landing past them is correct.
     const lastTop = smoothCalls[smoothCalls.length - 1]?.top;
     expect(typeof lastTop).toBe("number");
-    expect(lastTop as number).toBeLessThan(maxScrollOffset);
-    expect(lastTop as number).toBeGreaterThan(0);
+    expect(lastTop as number).toBe(scrollHost.scrollHeight);
 
     act(() => {
       root.unmount();
@@ -1591,11 +1610,13 @@ describe("IssueChatThread", () => {
   });
 
   it("uses comments rendered by onRefreshLatestComments before resolving latest", async () => {
-    const scrolledIds: string[] = [];
     const originalScrollIntoView = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = vi.fn(function scrollIntoView(this: Element) {
-      scrolledIds.push(this.id);
-    }) as unknown as typeof Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn() as unknown as typeof Element.prototype.scrollIntoView;
+
+    // The PAP-2672 guarantee under COM-374: the click refetches, so the newest
+    // comment is in the thread before we scroll to the end.
+    let refreshed = false;
+    const windowScrollToSpy = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
 
     const olderComment = {
       id: "comment-before-refresh",
@@ -1633,6 +1654,7 @@ describe("IssueChatThread", () => {
           onRefreshLatestComments={async () => {
             setComments([olderComment, latestComment]);
             await new Promise((resolve) => window.requestAnimationFrame(resolve));
+            refreshed = true;
           }}
         />
       );
@@ -1657,8 +1679,15 @@ describe("IssueChatThread", () => {
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
     });
 
-    expect(scrolledIds).toContain("comment-comment-after-refresh");
+    // COM-374: the jump scrolls to the page end rather than to a specific
+    // comment anchor, so the guarantee this test protects is now "the refresh
+    // pulled the newest comment into the thread" — the end of the page then
+    // necessarily includes it. (Refresh-happens-before-scroll ordering is
+    // covered by "invokes onRefreshLatestComments before scrolling" above.)
+    expect(refreshed).toBe(true);
+    expect(container.querySelector("#comment-comment-after-refresh")).not.toBeNull();
 
+    windowScrollToSpy.mockRestore();
     Element.prototype.scrollIntoView = originalScrollIntoView;
     act(() => {
       root.unmount();

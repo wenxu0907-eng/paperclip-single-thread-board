@@ -2,74 +2,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { cn } from "../lib/utils";
-
-function resolveScrollTarget() {
-  const mainContent = document.getElementById("main-content");
-
-  if (mainContent instanceof HTMLElement) {
-    const overflowY = window.getComputedStyle(mainContent).overflowY;
-    const usesOwnScroll =
-      (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay")
-      && mainContent.scrollHeight > mainContent.clientHeight + 1;
-
-    if (usesOwnScroll) {
-      return { type: "element" as const, element: mainContent };
-    }
-  }
-
-  return { type: "window" as const };
-}
-
-function activeScroller(target: ReturnType<typeof resolveScrollTarget>): Element {
-  if (target.type === "element") return target.element;
-  return document.scrollingElement ?? document.documentElement;
-}
-
-function distanceFromBottom(target: ReturnType<typeof resolveScrollTarget>) {
-  if (target.type === "element") {
-    return target.element.scrollHeight - target.element.scrollTop - target.element.clientHeight;
-  }
-
-  const scroller = document.scrollingElement ?? document.documentElement;
-  return scroller.scrollHeight - window.scrollY - window.innerHeight;
-}
-
-function scrollToBottomOnce(target: ReturnType<typeof resolveScrollTarget>, behavior: ScrollBehavior) {
-  if (target.type === "element") {
-    target.element.scrollTo({ top: target.element.scrollHeight, behavior });
-    return;
-  }
-
-  const scroller = document.scrollingElement ?? document.documentElement;
-  window.scrollTo({ top: scroller.scrollHeight, behavior });
-}
-
-// The issue thread is virtualized (see IssueChatThread): rows below the viewport
-// are rendered from an estimated height and only measured for real as they scroll
-// into view, so `scrollHeight` keeps growing while a scroll is in flight. A single
-// `scrollTo(scrollHeight)` therefore lands short of the true bottom — the reported
-// "click doesn't reach the end, need several clicks" bug. Instead we chase the
-// *current* bottom across animation frames until the height stabilizes, aborting if
-// the user scrolls up or after a safety cap.
-const SETTLE_THRESHOLD_PX = 4;
-const REQUIRED_STABLE_FRAMES = 4;
-const MAX_DURATION_MS = 4000;
-// If the scroller moves this far above the furthest point we've reached, treat it
-// as the user deliberately scrolling up and stop chasing.
-const USER_SCROLL_UP_ABORT_PX = 120;
+import {
+  chaseScrollToPageEnd,
+  distanceFromPageBottom,
+  resolvePageScrollTarget,
+} from "../lib/scroll-to-page-end";
 
 /**
  * Floating scroll-to-bottom button that follows the active page scroller.
  * On desktop that is `#main-content`; on mobile it falls back to window/page scroll.
+ *
+ * The actual scrolling lives in `lib/scroll-to-page-end` so this button and the
+ * thread's `Jump to latest` control share one implementation (COM-374).
  */
 export function ScrollToBottom() {
   const [visible, setVisible] = useState(false);
   const { panelVisible, panelContent } = usePanel();
-  const rafRef = useRef<number | null>(null);
+  const cancelChaseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const check = () => {
-      setVisible(distanceFromBottom(resolveScrollTarget()) > 300);
+      setVisible(distanceFromPageBottom(resolvePageScrollTarget()) > 300);
     };
 
     const mainContent = document.getElementById("main-content");
@@ -79,55 +32,60 @@ export function ScrollToBottom() {
     window.addEventListener("scroll", check, { passive: true });
     window.addEventListener("resize", check);
 
+    // Scroll/resize events alone leave the button stale: on a live task the
+    // thread grows underneath a stationary scroller (a run streams new rows in),
+    // which fires neither. The distance to the bottom jumps from 0 to thousands
+    // of px and the arrow never appears — "I used the floating arrow and it is
+    // not working", because there was nothing to click (COM-374).
+    //
+    // Watch the scroll host and its content boxes instead, so the button tracks
+    // content growth as well as user scrolling.
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    const observed = new Set<Element>();
+    const observe = (element: Element | null | undefined) => {
+      if (!element || !resizeObserver || observed.has(element)) return;
+      observed.add(element);
+      resizeObserver.observe(element);
+    };
+
+    const syncObservedContent = () => {
+      // The scroll host itself covers viewport-box changes; its children are the
+      // content whose height actually moves the bottom.
+      observe(mainContent);
+      observe(document.body);
+      for (const child of mainContent?.children ?? []) observe(child);
+      check();
+    };
+
+    syncObservedContent();
+
+    // The content wrapper inside `#main-content` is remounted on navigation, so
+    // re-attach the observer when the subtree is replaced.
+    let mutationObserver: MutationObserver | null = null;
+    if (mainContent && typeof MutationObserver !== "undefined") {
+      mutationObserver = new MutationObserver(syncObservedContent);
+      mutationObserver.observe(mainContent, { childList: true });
+    }
+
     return () => {
       mainContent?.removeEventListener("scroll", check);
       window.removeEventListener("scroll", check);
       window.removeEventListener("resize", check);
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      cancelChaseRef.current?.();
+      cancelChaseRef.current = null;
     };
   }, []);
 
   const scroll = useCallback(() => {
-    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-
-    const start = typeof performance !== "undefined" ? performance.now() : 0;
-    const now = () => (typeof performance !== "undefined" ? performance.now() : start);
-    let lastHeight = -1;
-    let maxScrollTop = -Infinity;
-    let stableFrames = 0;
-    let firstFrame = true;
-
-    const step = () => {
-      const target = resolveScrollTarget();
-      const scroller = activeScroller(target);
-      const scrollTop = target.type === "element" ? target.element.scrollTop : window.scrollY;
-      const height = scroller.scrollHeight;
-
-      // Abort if the user has scrolled meaningfully up from the furthest point we
-      // reached (normal virtualized growth only ever increases scrollTop).
-      if (!firstFrame && scrollTop < maxScrollTop - USER_SCROLL_UP_ABORT_PX) {
-        rafRef.current = null;
-        return;
-      }
-      firstFrame = false;
-      maxScrollTop = Math.max(maxScrollTop, scrollTop);
-
-      // Re-target the current bottom every frame; smooth on the first nudge for a
-      // pleasant start, then instant so we stay pinned as content measures in.
-      scrollToBottomOnce(target, stableFrames === 0 && lastHeight === -1 ? "smooth" : "auto");
-
-      const settled = height === lastHeight && distanceFromBottom(target) <= SETTLE_THRESHOLD_PX;
-      stableFrames = settled ? stableFrames + 1 : 0;
-      lastHeight = height;
-
-      if (stableFrames >= REQUIRED_STABLE_FRAMES || now() - start > MAX_DURATION_MS) {
-        rafRef.current = null;
-        return;
-      }
-      rafRef.current = requestAnimationFrame(step);
-    };
-
-    rafRef.current = requestAnimationFrame(step);
+    cancelChaseRef.current?.();
+    cancelChaseRef.current = chaseScrollToPageEnd({
+      onSettled: () => {
+        cancelChaseRef.current = null;
+      },
+    });
   }, []);
 
   if (!visible) return null;
