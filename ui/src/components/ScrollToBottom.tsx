@@ -32,10 +32,48 @@ export function ScrollToBottom() {
     window.addEventListener("scroll", check, { passive: true });
     window.addEventListener("resize", check);
 
+    // Scroll/resize events alone leave the button stale: on a live task the
+    // thread grows underneath a stationary scroller (a run streams new rows in),
+    // which fires neither. The distance to the bottom jumps from 0 to thousands
+    // of px and the arrow never appears — "I used the floating arrow and it is
+    // not working", because there was nothing to click (COM-374).
+    //
+    // Watch the scroll host and its content boxes instead, so the button tracks
+    // content growth as well as user scrolling.
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    const observed = new Set<Element>();
+    const observe = (element: Element | null | undefined) => {
+      if (!element || !resizeObserver || observed.has(element)) return;
+      observed.add(element);
+      resizeObserver.observe(element);
+    };
+
+    const syncObservedContent = () => {
+      // The scroll host itself covers viewport-box changes; its children are the
+      // content whose height actually moves the bottom.
+      observe(mainContent);
+      observe(document.body);
+      for (const child of mainContent?.children ?? []) observe(child);
+      check();
+    };
+
+    syncObservedContent();
+
+    // The content wrapper inside `#main-content` is remounted on navigation, so
+    // re-attach the observer when the subtree is replaced.
+    let mutationObserver: MutationObserver | null = null;
+    if (mainContent && typeof MutationObserver !== "undefined") {
+      mutationObserver = new MutationObserver(syncObservedContent);
+      mutationObserver.observe(mainContent, { childList: true });
+    }
+
     return () => {
       mainContent?.removeEventListener("scroll", check);
       window.removeEventListener("scroll", check);
       window.removeEventListener("resize", check);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
       cancelChaseRef.current?.();
       cancelChaseRef.current = null;
     };

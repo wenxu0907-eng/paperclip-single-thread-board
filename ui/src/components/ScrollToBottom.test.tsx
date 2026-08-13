@@ -35,6 +35,27 @@ function flushFrames(count: number) {
   }
 }
 
+// jsdom ships no ResizeObserver. Stub a controllable one so tests can simulate
+// content growing under a stationary scroller.
+let resizeObserverCallbacks: ResizeObserverCallback[] = [];
+
+function triggerResizeObservers() {
+  for (const cb of resizeObserverCallbacks) {
+    cb([], {} as ResizeObserver);
+  }
+}
+
+class TestResizeObserver implements ResizeObserver {
+  constructor(private readonly callback: ResizeObserverCallback) {
+    resizeObserverCallbacks.push(callback);
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {
+    resizeObserverCallbacks = resizeObserverCallbacks.filter((cb) => cb !== this.callback);
+  }
+}
+
 describe("ScrollToBottom", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -46,6 +67,8 @@ describe("ScrollToBottom", () => {
 
   beforeEach(() => {
     rafQueue = [];
+    resizeObserverCallbacks = [];
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
     clock = 0;
     scrollTop = 0;
     scrollHeight = 2000; // initial (under-)estimate, as the virtualizer would report
@@ -92,6 +115,7 @@ describe("ScrollToBottom", () => {
     act(() => root.unmount());
     container.remove();
     main.remove();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -181,5 +205,42 @@ describe("ScrollToBottom", () => {
     // The chase released the scroller instead of fighting the user back down.
     expect(scrollTop).toBe(stoppedAt);
     expect(scrollTop).toBeLessThan(MAX_HEIGHT - CLIENT_HEIGHT);
+  });
+
+  // COM-374 follow-up: on a live task the thread grows underneath a stationary
+  // scroller while a run streams rows in. That fires neither `scroll` nor
+  // `resize`, so a purely event-driven visibility check left the arrow hidden
+  // while the user was thousands of px from the end — the board's "I used the
+  // floating arrow and it is not working" (there was no arrow to click).
+  it("appears when content grows below the fold without a scroll or resize", async () => {
+    act(() => {
+      root.render(
+        <PanelProvider>
+          <ScrollToBottom />
+        </PanelProvider>,
+      );
+    });
+
+    // Park the user at the true bottom: the arrow is correctly hidden.
+    act(() => {
+      main.scrollTop = scrollHeight - CLIENT_HEIGHT;
+      main.dispatchEvent(new Event("scroll"));
+    });
+    expect(container.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull();
+
+    // A run streams new rows in: content height grows, scrollTop stays put.
+    // No scroll/resize event is dispatched — only the ResizeObserver fires.
+    act(() => {
+      scrollHeight += 4000;
+      triggerResizeObservers();
+    });
+
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Scroll to bottom"]');
+    expect(button).not.toBeNull();
+
+    // And it still takes the user to the true end.
+    act(() => button!.click());
+    flushFrames(60);
+    expect(scrollTop).toBe(scrollHeight - CLIENT_HEIGHT);
   });
 });
