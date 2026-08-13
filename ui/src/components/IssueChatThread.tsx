@@ -50,6 +50,7 @@ import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { chaseScrollToPageEnd } from "../lib/scroll-to-page-end";
 import {
   buildIssueChatMessages,
   findFirstUnreadCommentAnchorId,
@@ -4817,158 +4818,35 @@ export function IssueChatThread({
         );
         if (landed) return;
       }
-      scrollToLatestCommentWithSettle(latestMessagesRef.current);
+      scrollToLatestCommentWithSettle();
     });
     return () => cancelAnimationFrame(frame);
   }, [autoScrollToLatestOnInitialLoad, messages, variant, location.hash]);
 
-  function jumpToLatestFallback() {
-    if (useVirtualizedThread) {
-      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
-      return;
-    }
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }
-
-  // Lands on the latest `comment-*` row and then drives the scroll the rest
-  // of the way home as the virtualizer's per-row measurements arrive.
+  // COM-374: "take me to the end of the page" now has exactly one implementation,
+  // shared with the floating ScrollToBottom button (see lib/scroll-to-page-end).
   //
-  // The virtualizer estimates 220px for unmeasured rows. On long threads
-  // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
-  // underestimated until rows render and get measured. A single scroll
-  // lands above the actual bottom; rendered rows then expand, the layout
-  // grows, and the user has to keep clicking Jump-to-latest to walk closer
-  // to the real bottom. The convergence loop below issues `scrollIntoView`
-  // on the latest comment element on every tick until the DOM bottom of
-  // that element is at the scroll container's bottom (or scroll position
-  // and content height stop changing).
-  function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
-    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
-    if (latestCommentIndex < 0) {
-      jumpToLatestFallback();
-      return;
-    }
-    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
-    if (!latestCommentAnchor) {
-      jumpToLatestFallback();
-      return;
-    }
-
-    const initial = scrollToThreadAnchor(
-      latestCommentAnchor,
-      { align: "end", behavior: "smooth" },
-      messageSnapshot,
-    );
-    if (!initial) {
-      jumpToLatestFallback();
-      return;
-    }
-
-    if (typeof window === "undefined") return;
-
-    const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
-    const MAX_DURATION_MS = 4000;
-    const TICK_MS = 80;
-    const TOLERANCE_PX = 4;
-
+  // The previous version aligned the *latest comment row* to the scroll
+  // container's bottom. That is short by everything rendered below it — trailing
+  // run/system rows, the sticky composer, page padding — so on long threads the
+  // click visibly stopped a few hundred px above the end, and because the target
+  // was fixed, clicking again never closed the gap. Chasing the scroller's true
+  // end fixes both, and still absorbs the virtualizer's growing `scrollHeight` as
+  // unmeasured rows (estimated at 220px) measure in (PAP-2536 et al.).
+  function scrollToLatestCommentWithSettle() {
+    // Cancel a chase still in flight from a previous click.
     clearLatestSettleTimeouts();
-    const resolveScrollContainer = (): HTMLElement | null =>
-      (document.getElementById("main-content") as HTMLElement | null);
-    const cancelTarget = resolveScrollContainer() ?? window;
 
-    let lastScrollTop = -1;
-    let lastScrollHeight = -1;
-    let stableTicks = 0;
-    let cancelled = false;
-
-    const cancel = () => {
-      cancelled = true;
-    };
-
-    const cleanup = () => {
-      cancelTarget.removeEventListener("wheel", cancel);
-      cancelTarget.removeEventListener("touchstart", cancel);
-    };
-
-    cancelTarget.addEventListener("wheel", cancel, { once: true, passive: true });
-    cancelTarget.addEventListener("touchstart", cancel, { once: true, passive: true });
-    latestSettleCleanupRef.current = cleanup;
-
-    const finish = () => {
-      cleanup();
-      latestSettleCleanupRef.current = null;
-      for (const timeout of latestSettleTimeoutsRef.current) {
-        window.clearTimeout(timeout);
-      }
-      latestSettleTimeoutsRef.current = [];
-    };
-
-    const scheduleTick = (delay: number) => {
-      const timeout = window.setTimeout(() => {
-        latestSettleTimeoutsRef.current = latestSettleTimeoutsRef.current.filter((entry) => entry !== timeout);
-        tick();
-      }, delay);
-      latestSettleTimeoutsRef.current.push(timeout);
-    };
-
-    const tick = () => {
-      const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
-      if (cancelled || now - startedAt > MAX_DURATION_MS) {
-        finish();
-        return;
-      }
-
-      if (typeof document === "undefined") {
-        finish();
-        return;
-      }
-
-      const el = document.getElementById(latestCommentAnchor);
-      if (!el) {
-        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
-        // the offset (instant) so it gets mounted, then keep settling.
-        virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
-          align: "end",
-          behavior: "auto",
-        });
-        scheduleTick(TICK_MS);
-        return;
-      }
-
-      const container = resolveScrollContainer();
-      const containerBottom = container
-        ? container.getBoundingClientRect().bottom
-        : window.innerHeight;
-      const elBottom = el.getBoundingClientRect().bottom;
-      const offBottom = elBottom - containerBottom;
-
-      if (Math.abs(offBottom) > TOLERANCE_PX) {
-        el.scrollIntoView({ behavior: "smooth", block: "end" });
-      }
-
-      const currentScrollTop = container?.scrollTop ?? window.scrollY;
-      const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
-      const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
-      const heightStable = currentScrollHeight === lastScrollHeight;
-      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
-      if (scrollStable && heightStable && atBottom) {
-        stableTicks += 1;
-        if (stableTicks >= 3) {
-          finish();
-          return;
-        }
-      } else {
-        stableTicks = 0;
-      }
-      lastScrollTop = currentScrollTop;
-      lastScrollHeight = currentScrollHeight;
-      scheduleTick(TICK_MS);
-    };
-
-    // Hold the first iteration off for one frame so the initial smooth
-    // scroll has begun (and the virtualizer has rendered the buffer around
-    // the target) before we start settling.
-    scheduleTick(120);
+    // Deliberately no `virtualizedThreadRef.scrollToLatest()` nudge first: the
+    // virtualizer applies its own offset a frame later, which yanks scrollTop
+    // back up mid-chase and trips the "user scrolled up" abort, leaving the
+    // click short (COM-374 — it measured 562px short on a 122-comment thread).
+    // Chasing scrollHeight mounts the trailing rows on its own.
+    latestSettleCleanupRef.current = chaseScrollToPageEnd({
+      onSettled: () => {
+        latestSettleCleanupRef.current = null;
+      },
+    });
   }
 
   function handleJumpToLatest() {
@@ -4981,13 +4859,13 @@ export function IssueChatThread({
       const refreshed = onRefreshLatestComments();
       if (refreshed && typeof (refreshed as Promise<unknown>).then === "function") {
         (refreshed as Promise<unknown>).then(
-          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
-          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+          () => scrollToLatestCommentWithSettle(),
+          () => scrollToLatestCommentWithSettle(),
         );
         return;
       }
     }
-    scrollToLatestCommentWithSettle(latestMessagesRef.current);
+    scrollToLatestCommentWithSettle();
   }
 
   const stableOnVote = useStableEvent(onVote);

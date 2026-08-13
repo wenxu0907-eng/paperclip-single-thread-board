@@ -134,4 +134,52 @@ describe("ScrollToBottom", () => {
     expect(rafQueue.length).toBe(settledCalls);
     expect(scrollTop).toBe(MAX_HEIGHT - CLIENT_HEIGHT);
   });
+
+  // COM-374: the chase used to abort when scrollTop moved backwards by >120px,
+  // assuming that meant the user scrolled up. The virtualizer legitimately
+  // corrects the offset by several hundred px while rows measure in, so that
+  // heuristic stopped the click partway down and the user had to click again.
+  it("keeps chasing through a backwards offset correction from the virtualizer", async () => {
+    act(() => {
+      root.render(
+        <PanelProvider>
+          <ScrollToBottom />
+        </PanelProvider>,
+      );
+    });
+    const button = await waitForButton(container);
+
+    act(() => button.click());
+    flushFrames(3);
+
+    // Simulate the virtualizer re-measuring and yanking the offset back up.
+    scrollTop = Math.max(0, scrollTop - 400);
+    flushFrames(60);
+
+    expect(scrollTop).toBe(MAX_HEIGHT - CLIENT_HEIGHT);
+  });
+
+  it("hands the scroller back as soon as the user takes over", async () => {
+    act(() => {
+      root.render(
+        <PanelProvider>
+          <ScrollToBottom />
+        </PanelProvider>,
+      );
+    });
+    const button = await waitForButton(container);
+
+    act(() => button.click());
+    flushFrames(2);
+
+    act(() => {
+      main.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    });
+    const stoppedAt = scrollTop;
+    flushFrames(60);
+
+    // The chase released the scroller instead of fighting the user back down.
+    expect(scrollTop).toBe(stoppedAt);
+    expect(scrollTop).toBeLessThan(MAX_HEIGHT - CLIENT_HEIGHT);
+  });
 });
