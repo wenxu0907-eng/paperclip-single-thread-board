@@ -2676,7 +2676,13 @@ function isExecutionReviewParticipantRecoveryRun(
 ) {
   if (!run) return false;
   const context = parseObject(run.contextSnapshot);
-  return readNonEmptyString(context.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
+  if (readNonEmptyString(context.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON) {
+    return true;
+  }
+  // A source-scoped recovery-action run dispatched *for* this cause is still a review-recovery
+  // attempt. Without this, the recovery-action run resets the one-shot guard above and the
+  // review-recovery / recovery-action pair alternates forever.
+  return readNonEmptyString(context.recoveryCause) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE;
 }
 
 function isExecutionReviewParticipantRecoveryEligibleRun(
