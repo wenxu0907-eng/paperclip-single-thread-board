@@ -241,6 +241,7 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
+  signalRunCancelled,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
@@ -16925,6 +16926,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       : options.resultJson;
 
+    // COM-322: adapter lanes that own no killable child process (the ACPX
+    // engine drives a persistent runtime session and never registers a pid)
+    // would otherwise keep executing as zombies after cancel — one such
+    // zombie created a duplicate issue 5.5 min after its run was cancelled
+    // (CMP-575). Signal in-process executors so they can interrupt their
+    // in-flight turn (ACP session/cancel) before we mark the run cancelled.
+    signalRunCancelled(run.id, reason);
+
     const running = runningProcesses.get(run.id);
     try {
       if (running) {
@@ -16980,6 +16989,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      // COM-322: interrupt adapter lanes with no killable child (ACPX
+      // persistent sessions) the same way cancelRunInternal does, so a
+      // pause-driven mass cancel cannot leave zombies running.
+      signalRunCancelled(run.id, reason);
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,

@@ -100,6 +100,65 @@ export function signalRunningProcess(
 }
 
 export const runningProcesses = new Map<string, RunningProcess>();
+
+// COM-322: run-cancel signalling for adapter lanes that own no killable child
+// process. The ACPX engine drives a persistent runtime session (no onSpawn, no
+// runningProcesses entry, no DB pid), so the platform's cancel path finds
+// nothing to terminate and the agent keeps working as a zombie — e.g. creating
+// duplicate issues minutes after its run was cancelled (CMP-575). The
+// heartbeat service calls signalRunCancelled() when a run transitions to
+// cancelled; executors register a handler that interrupts their in-flight
+// work (ACP session/cancel) instead.
+export type RunCancelHandler = (reason: string) => void | Promise<void>;
+
+const runCancelHandlers = new Map<string, Set<RunCancelHandler>>();
+// Cancels that land before any handler registers are replayed once at
+// registration, closing the cancel-before-execute race. Bounded so a leak in
+// a caller cannot grow this without limit.
+const pendingRunCancelReasons = new Map<string, string>();
+const PENDING_RUN_CANCEL_LIMIT = 512;
+
+export function registerRunCancelHandler(runId: string, handler: RunCancelHandler): () => void {
+  const pendingReason = pendingRunCancelReasons.get(runId);
+  if (pendingReason !== undefined) {
+    pendingRunCancelReasons.delete(runId);
+    void handler(pendingReason);
+    return () => {};
+  }
+  let handlers = runCancelHandlers.get(runId);
+  if (!handlers) {
+    handlers = new Set();
+    runCancelHandlers.set(runId, handlers);
+  }
+  handlers.add(handler);
+  return () => {
+    const current = runCancelHandlers.get(runId);
+    if (!current) return;
+    current.delete(handler);
+    if (current.size === 0) runCancelHandlers.delete(runId);
+  };
+}
+
+export function signalRunCancelled(runId: string, reason: string): void {
+  const handlers = runCancelHandlers.get(runId);
+  if (!handlers || handlers.size === 0) {
+    pendingRunCancelReasons.set(runId, reason);
+    while (pendingRunCancelReasons.size > PENDING_RUN_CANCEL_LIMIT) {
+      const oldest = pendingRunCancelReasons.keys().next().value;
+      if (oldest === undefined) break;
+      pendingRunCancelReasons.delete(oldest);
+    }
+    return;
+  }
+  for (const handler of [...handlers]) {
+    try {
+      void handler(reason);
+    } catch {
+      // A throwing cancel handler must not break the platform cancel path.
+    }
+  }
+}
+
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
