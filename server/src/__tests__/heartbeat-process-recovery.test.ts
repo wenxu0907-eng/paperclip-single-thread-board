@@ -4227,6 +4227,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.assigneeAgentId).toBe(agentId);
   });
 
+  it("does not re-arm review recovery from a source-scoped recovery-action run for the same cause", async () => {
+    const { agentId, issueId, runId } = await seedInReviewParticipantRunFixture();
+    // A source-scoped recovery-action run dispatched for this cause carries `recoveryCause`
+    // rather than `retryReason`. It must still count as a review-recovery attempt, otherwise it
+    // resets the one-shot guard and the two recovery reasons alternate forever.
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "source_scoped_recovery_action",
+          recoveryCause: "execution_review_participant_recovery",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    const blockedIssue = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "blocked" ? row : null;
+    }, 8_000);
+    expect(blockedIssue).toBeTruthy();
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.some((row) =>
+      (row.contextSnapshot as Record<string, unknown> | null)?.retryReason ===
+        "execution_review_participant_recovery"
+    )).toBe(false);
+  });
+
   it("retries a pending execution-review participant once before blocking with a recovery action", async () => {
     const { companyId, agentId, issueId, runId, stageId } = await seedInReviewParticipantRunFixture();
     const heartbeat = heartbeatService(db);
