@@ -1388,6 +1388,56 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows the pending execution-stage participant to comment and mutate when not the assignee", async () => {
+    // Regression for COM-335: a review-gate participant whose assignee seat was
+    // reassigned to the executor (or never held) must keep its write path;
+    // previously every standing-key write hit "outside authorization boundary".
+    const company = await createCompany(db, "ParticipantAuthz");
+    const executorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const reviewerAgent = await createAgent(db, company.id, { role: "ceo" });
+    const bystanderAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Review-gated issue",
+      assigneeAgentId: executorAgent.id,
+      status: "in_review",
+    });
+
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: executorAgent.id,
+      status: "in_review",
+      pendingParticipantAgentId: reviewerAgent.id,
+    } as const;
+
+    const reviewerActor = { type: "agent", agentId: reviewerAgent.id, companyId: company.id, source: "agent_key" } as const;
+    await expect(authorization.decide({
+      actor: reviewerActor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_execution_participant" });
+    await expect(authorization.decide({
+      actor: reviewerActor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_execution_participant" });
+
+    // A peer that is neither assignee nor participant stays denied.
+    const bystanderActor = { type: "agent", agentId: bystanderAgent.id, companyId: company.id, source: "agent_key" } as const;
+    await expect(authorization.decide({
+      actor: bystanderActor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+    await expect(authorization.decide({
+      actor: bystanderActor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
   it("limits viewer members to read-only visibility actions", async () => {
     const company = await createCompany(db, "BoardViewerVisibility");
     const userId = `user-${randomUUID()}`;

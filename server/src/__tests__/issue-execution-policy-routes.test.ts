@@ -815,4 +815,96 @@ describe("issue execution policy routes", () => {
 
     expect(res.status).toBe(200);
   });
+
+  it("lets the pending review participant patch when the assignee seat moved to the executor", async () => {
+    // Regression for COM-335: the review workflow assigns the issue to the
+    // reviewer while the gate is pending, but an out-of-band reassignment to
+    // the executor must not strand the participant — every standing-key write
+    // used to fail 403 ("outside authorization boundary" / "cannot mutate
+    // another agent's issue") in that shape.
+    const participantAgentId = "33333333-3333-4333-8333-333333333333";
+    const executorAgentId = "11111111-1111-4111-8111-111111111111";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      parentId: null,
+      status: "in_review",
+      assigneeAgentId: executorAgentId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1012",
+      title: "Pending review, participant is not the assignee",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: "55555555-5555-4555-8555-555555555555",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{
+            id: "66666666-6666-4666-8666-666666666666",
+            type: "agent",
+            agentId: participantAgentId,
+            userId: null,
+          }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: "55555555-5555-4555-8555-555555555555",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: participantAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: executorAgentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const mutateDecideInputs: Array<{ resource?: { pendingParticipantAgentId?: string | null } }> = [];
+    mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string; resource?: { pendingParticipantAgentId?: string | null } }) => {
+      if (input.action === "issue:mutate") mutateDecideInputs.push(input);
+      const allowed = input.actor?.type === "board" && input.actor.source === "local_implicit"
+        ? true
+        : input.actor?.type === "agent" && [
+            "company_scope:read",
+            "issue:read",
+            "issue:mutate",
+            "runtime:manage",
+          ].includes(input.action ?? "")
+          ? true
+          : false;
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_execution_participant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+      };
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: participantAgentId,
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ title: "Participant can still write" });
+
+    expect(res.status).toBe(200);
+    // The route must hand the derived participant to the authorization
+    // service — this is the SSOT plumbing the grant depends on.
+    expect(mutateDecideInputs.length).toBeGreaterThan(0);
+    expect(mutateDecideInputs[0]?.resource?.pendingParticipantAgentId).toBe(participantAgentId);
+  });
 });

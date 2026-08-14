@@ -85,6 +85,11 @@ export type AuthorizationResource =
       originKind?: string | null;
       originId?: string | null;
       status?: string | null;
+      // Agent that currently owns the issue's pending execution stage (e.g. the
+      // reviewer of a pending review gate). Routes derive this from
+      // executionState so the review workflow keeps working when the issue
+      // assignee is (or was reassigned to) someone other than the participant.
+      pendingParticipantAgentId?: string | null;
     };
 
 export type AuthorizationDecision = {
@@ -102,6 +107,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_execution_participant"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
@@ -1887,6 +1893,17 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (
+        resource?.pendingParticipantAgentId &&
+        resource.pendingParticipantAgentId === actorAgentId
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_execution_participant",
+          explanation:
+            "Allowed because the actor owns the issue's pending execution stage (e.g. review participant), independent of the assignee seat.",
         });
       }
       if (
