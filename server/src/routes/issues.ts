@@ -1735,6 +1735,35 @@ function humanReviewerUserIdsFromPolicy(policy: NormalizedExecutionPolicy | null
     .map((participant) => participant.userId);
 }
 
+export const SELF_REVIEW_SEAT_COLLAPSE_MESSAGE =
+  "An issue's assignee cannot be the only reviewer of its own review stage. " +
+  "Assign the work to the agent who will do it and name a different reviewer, or drop the review stage.";
+
+/**
+ * Rejects the "one agent holds every seat" shape: the agent that does the work is also the
+ * only participant on a review stage of the same issue. A review nobody independent performs
+ * is not a review — and the recovery machinery treats the executor's own terminal runs as
+ * "the reviewer run ended without a decision", so the seat collapse is also a live source of
+ * self-exciting recovery wakes (COM-335, PRs #79/#80/#81 capped the symptoms).
+ *
+ * `executorAgentId` is the agent that owns the *work*: an issue already in review carries it
+ * in `executionState.returnAssignee`, since the workflow reassigns the issue to the reviewer
+ * while the stage is pending. Assignee == reviewer during review is the normal state and must
+ * stay legal; only executor == reviewer is rejected.
+ */
+function violatesSelfReviewSeatCollapse(input: {
+  executorAgentId: string | null | undefined;
+  policy: NormalizedExecutionPolicy | null;
+}): boolean {
+  const executorAgentId = input.executorAgentId ?? null;
+  if (!executorAgentId) return false;
+  return (input.policy?.stages ?? []).some((stage) =>
+    stage.type === "review" &&
+    stage.participants.length > 0 &&
+    stage.participants.every((participant) =>
+      participant.type === "agent" && participant.agentId === executorAgentId));
+}
+
 function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
   return status === "done" || status === "cancelled";
 }
@@ -7225,6 +7254,17 @@ export function issueRoutes(
       companyId,
       rawCreateBody.assigneeAgentId as string | null | undefined,
     );
+    if (
+      violatesSelfReviewSeatCollapse({
+        executorAgentId: normalizedAssigneeAgentId !== undefined
+          ? normalizedAssigneeAgentId
+          : (rawCreateBody.assigneeAgentId as string | null | undefined),
+        policy: normalizeIssueExecutionPolicy(rawCreateBody.executionPolicy),
+      })
+    ) {
+      res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+      return;
+    }
     const actor = getActorInfo(req);
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
       ? null
@@ -7445,6 +7485,15 @@ export function issueRoutes(
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
+    if (
+      violatesSelfReviewSeatCollapse({
+        executorAgentId: createBody.assigneeAgentId as string | null | undefined,
+        policy: normalizeIssueExecutionPolicy(createBody.executionPolicy),
+      })
+    ) {
+      res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+      return;
+    }
     const childAssigneeViolatesBoardOnlyOnParents = violatesBoardOnlyOnParents({
       hasParent: true,
       assigneeUserId: createBody.assigneeUserId as string | null | undefined,
@@ -7665,6 +7714,10 @@ export function issueRoutes(
         actor.actorType,
       );
       await assertCanManageIssueMonitor(access, req, sourceIssue.companyId, child.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+      if (violatesSelfReviewSeatCollapse({ executorAgentId: child.assigneeAgentId ?? null, policy: executionPolicy })) {
+        res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+        return;
+      }
       const childIssueId = randomUUID();
       const sourceTrust = await sourceTrustForActorWrite({
         id: childIssueId,
@@ -8114,6 +8167,25 @@ export function issueRoutes(
         : previousExecutionPolicy;
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+    }
+    if (req.body.executionPolicy !== undefined || normalizedAssigneeAgentId !== undefined) {
+      const existingExecutionState = parseIssueExecutionState(existing.executionState);
+      // Never guess an executor from a state we could not parse: falling back to the assignee
+      // there would reject the ordinary in_review shape (assignee == reviewer).
+      const executionStateReadable = existingExecutionState !== null || !existing.executionState;
+      const existingReturnAssignee = existingExecutionState?.returnAssignee ?? null;
+      // Once a stage is pending the issue is assigned to the *reviewer*, so the executor is
+      // whoever the workflow will hand the issue back to. A non-agent return assignee can
+      // never collide with an agent reviewer.
+      const executorAgentId = existingReturnAssignee
+        ? (existingReturnAssignee.type === "agent" ? existingReturnAssignee.agentId : null)
+        : updateFields.assigneeAgentId !== undefined
+          ? (updateFields.assigneeAgentId as string | null)
+          : existing.assigneeAgentId;
+      if (executionStateReadable && violatesSelfReviewSeatCollapse({ executorAgentId, policy: nextExecutionPolicy })) {
+        res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+        return;
+      }
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     await assertCanManageIssueMonitor(
