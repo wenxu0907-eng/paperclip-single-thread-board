@@ -583,12 +583,15 @@ describe("IssueChatThread", () => {
       createdAt: new Date(iso),
       updatedAt: new Date(iso),
     });
-    // Five old comments (read), then one new comment from another user.
+    // Seven old comments (read), then one new comment from another user.
     const comments = [
       mkComment("old-1", "2026-04-06T11:00:00.000Z", "user-2"),
       mkComment("old-2", "2026-04-06T11:01:00.000Z", "user-2"),
       mkComment("old-3", "2026-04-06T11:02:00.000Z", "user-2"),
       mkComment("old-4", "2026-04-06T11:03:00.000Z", "user-2"),
+      mkComment("old-5", "2026-04-06T11:04:00.000Z", "user-2"),
+      mkComment("old-6", "2026-04-06T11:05:00.000Z", "user-2"),
+      mkComment("old-7", "2026-04-06T11:06:00.000Z", "user-2"),
       mkComment("new-1", "2026-04-06T13:00:00.000Z", "user-2"),
     ];
 
@@ -612,11 +615,15 @@ describe("IssueChatThread", () => {
 
     // New divider is present and anchored at the first unread comment.
     expect(container.querySelector('[data-testid="issue-chat-new-divider"]')).not.toBeNull();
-    // Earlier (read) history is collapsed behind a toggle by default.
+    // Earlier (read) history is collapsed behind a toggle by default, but the
+    // keep-visible context tail (COM-382) right above the divider stays mounted.
     const toggle = container.querySelector('[data-testid="issue-chat-earlier-toggle"] button') as HTMLButtonElement | null;
     expect(toggle).not.toBeNull();
     expect(toggle?.textContent).toContain("Show 4 earlier messages");
     expect(container.textContent).not.toContain("body old-1");
+    expect(container.textContent).not.toContain("body old-4");
+    expect(container.textContent).toContain("body old-5");
+    expect(container.textContent).toContain("body old-7");
     // The live (new) content is visible without expanding.
     expect(container.textContent).toContain("body new-1");
 
@@ -626,6 +633,68 @@ describe("IssueChatThread", () => {
     });
     expect(container.textContent).toContain("body old-1");
     expect(container.textContent).toContain("Hide earlier messages");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the recent context tail above the New divider visible (COM-382)", () => {
+    const root = createRoot(container);
+    const mkComment = (id: string, iso: string, authorUserId: string) => ({
+      id,
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId,
+      authorType: "user" as const,
+      body: `body ${id}`,
+      presentation: null,
+      metadata: null,
+      createdAt: new Date(iso),
+      updatedAt: new Date(iso),
+    });
+    // Old read history, then the viewer's own just-posted comment, then a new
+    // reply. The board complaint: their own comment (and the live work card)
+    // used to fold behind "Show earlier messages" even though it sits directly
+    // above the newest reply.
+    const comments = [
+      mkComment("old-1", "2026-04-06T11:00:00.000Z", "user-2"),
+      mkComment("old-2", "2026-04-06T11:01:00.000Z", "user-2"),
+      mkComment("old-3", "2026-04-06T11:02:00.000Z", "user-2"),
+      mkComment("old-4", "2026-04-06T11:03:00.000Z", "user-2"),
+      mkComment("old-5", "2026-04-06T11:04:00.000Z", "user-2"),
+      mkComment("mine", "2026-04-06T12:30:00.000Z", "user-1"),
+      mkComment("new-1", "2026-04-06T13:00:00.000Z", "user-2"),
+    ];
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={comments}
+            currentUserId="user-1"
+            myLastTouchAt={new Date("2026-04-06T12:00:00.000Z")}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // Only genuinely old history folds (6 messages above the divider, 3 kept).
+    const toggle = container.querySelector('[data-testid="issue-chat-earlier-toggle"] button') as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle?.textContent).toContain("Show 3 earlier messages");
+    expect(container.textContent).not.toContain("body old-1");
+    expect(container.textContent).not.toContain("body old-3");
+    // The viewer's own recent comment stays visible without expanding.
+    expect(container.textContent).toContain("body mine");
+    expect(container.textContent).toContain("body new-1");
 
     act(() => {
       root.unmount();
@@ -704,10 +773,12 @@ describe("IssueChatThread", () => {
       '[data-testid="issue-chat-earlier-toggle"] button',
     ) as HTMLButtonElement | null;
     expect(toggle).not.toBeNull();
-    expect(toggle?.textContent).toContain(`Show ${oldCount} earlier messages`);
-    // Earlier history is collapsed, so the oldest body is not mounted; the live
-    // (new) content above the threshold is.
-    expect(container.textContent).not.toContain("body old-1");
+    expect(toggle?.textContent).toContain(`Show ${oldCount - 3} earlier messages`);
+    // Earlier history is collapsed, so a folded body is not mounted (old-153 is
+    // the last folded row — substring-safe, unlike "body old-1" ⊂ "body old-154");
+    // the keep-visible tail (COM-382) and the live (new) content are mounted.
+    expect(container.textContent).not.toContain("body old-153");
+    expect(container.textContent).toContain("body old-154");
     expect(container.textContent).toContain("body new-1");
 
     // Expanding flips the shared collapse state and reveals earlier history.

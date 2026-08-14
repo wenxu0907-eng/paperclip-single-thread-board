@@ -3017,8 +3017,7 @@ interface VirtualizedIssueChatThreadListProps {
   // and the imperative handle translates the message indices the parent passes
   // into row indices, so every existing scroll caller keeps working unchanged.
   firstUnreadAnchorId: string | null;
-  firstUnreadIndex: number;
-  canCollapseEarlier: boolean;
+  collapseEarlierCount: number;
   earlierExpanded: boolean;
   onToggleEarlier: () => void;
 }
@@ -3060,6 +3059,11 @@ function IssueChatNewDivider() {
 // COM-7 / 2b: collapses the resolved/old history that sits above the "New"
 // divider behind a toggle, so the live ask is what the viewer sees first.
 const ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD = 3;
+// COM-382: always keep this many messages immediately above the "New" divider
+// visible. That tail is the recent context (the comment the viewer just
+// posted, the currently-running work card) they almost always want to see;
+// only genuinely older history folds behind the toggle.
+const ISSUE_CHAT_EARLIER_KEEP_VISIBLE = 3;
 
 function IssueChatEarlierToggle({
   count,
@@ -3108,8 +3112,9 @@ type VirtualChatRow =
 
 interface IssueChatRowDecorations {
   firstUnreadAnchorId: string | null;
-  firstUnreadIndex: number;
-  canCollapseEarlier: boolean;
+  // COM-382: number of leading messages folded behind the earlier-toggle (0 =
+  // no collapse). Already accounts for the keep-visible context tail.
+  collapseEarlierCount: number;
   earlierExpanded: boolean;
 }
 
@@ -3117,17 +3122,17 @@ export function buildIssueChatVirtualRows(
   messages: readonly ThreadMessage[],
   decorations: IssueChatRowDecorations,
 ): VirtualChatRow[] {
-  const { firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded } =
+  const { firstUnreadAnchorId, collapseEarlierCount, earlierExpanded } =
     decorations;
   const rows: VirtualChatRow[] = [];
   messages.forEach((message, index) => {
-    const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+    const isEarlier = index < collapseEarlierCount;
     if (isEarlier && !earlierExpanded) {
       // Collapse the whole earlier block behind a single toggle row.
       if (index === 0) rows.push({ kind: "earlier-toggle" });
       return;
     }
-    if (canCollapseEarlier && earlierExpanded && index === 0) {
+    if (collapseEarlierCount > 0 && earlierExpanded && index === 0) {
       rows.push({ kind: "earlier-toggle" });
     }
     if (issueChatMessageAnchorId(message) === firstUnreadAnchorId) {
@@ -3403,8 +3408,7 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
   interruptingQueuedRunId,
   variant,
   firstUnreadAnchorId,
-  firstUnreadIndex,
-  canCollapseEarlier,
+  collapseEarlierCount,
   earlierExpanded,
   onToggleEarlier,
   mode,
@@ -3447,11 +3451,10 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     () =>
       buildIssueChatVirtualRows(messages, {
         firstUnreadAnchorId,
-        firstUnreadIndex,
-        canCollapseEarlier,
+        collapseEarlierCount,
         earlierExpanded,
       }),
-    [messages, firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded],
+    [messages, firstUnreadAnchorId, collapseEarlierCount, earlierExpanded],
   );
   // Map a message index (the unit the parent's scroll callers speak) to its
   // row index. Collapsed-earlier messages are absent — scrolling to one is a
@@ -3600,7 +3603,7 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
               <IssueChatNewDivider />
             ) : (
               <IssueChatEarlierToggle
-                count={firstUnreadIndex}
+                count={collapseEarlierCount}
                 expanded={earlierExpanded}
                 onToggle={onToggleEarlier}
               />
@@ -4632,7 +4635,16 @@ export function IssueChatThread({
   const firstUnreadIndex = firstUnreadAnchorId
     ? messageAnchorIndex.get(firstUnreadAnchorId) ?? -1
     : -1;
-  const canCollapseEarlier = firstUnreadIndex >= ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD;
+  // COM-382: fold only history older than the visible context tail above the
+  // "New" divider — the messages right above it (your own just-posted comment,
+  // the live work card) stay rendered. Count is the number of leading messages
+  // hidden behind the earlier-toggle; 0 disables the collapse.
+  const earlierFoldableCount = firstUnreadIndex > 0
+    ? Math.max(0, firstUnreadIndex - ISSUE_CHAT_EARLIER_KEEP_VISIBLE)
+    : 0;
+  const collapseEarlierCount = earlierFoldableCount >= ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD
+    ? earlierFoldableCount
+    : 0;
 
   function scrollToThreadAnchor(
     anchorId: string,
@@ -5000,8 +5012,7 @@ export function IssueChatThread({
                   interruptingQueuedRunId={interruptingQueuedRunId}
                   variant={variant}
                   firstUnreadAnchorId={firstUnreadAnchorId}
-                  firstUnreadIndex={firstUnreadIndex}
-                  canCollapseEarlier={canCollapseEarlier}
+                  collapseEarlierCount={collapseEarlierCount}
                   earlierExpanded={earlierExpanded}
                   onToggleEarlier={() => setEarlierExpanded((prev) => !prev)}
                 />
@@ -5010,13 +5021,13 @@ export function IssueChatThread({
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
                 messages.map((message, index) => {
-                  const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+                  const isEarlier = index < collapseEarlierCount;
                   if (isEarlier && !earlierExpanded) {
                     // Render the toggle once in place of the whole collapsed block.
                     return index === 0 ? (
                       <IssueChatEarlierToggle
                         key="issue-chat-earlier-toggle"
-                        count={firstUnreadIndex}
+                        count={collapseEarlierCount}
                         expanded={false}
                         onToggle={() => setEarlierExpanded(true)}
                       />
@@ -5024,9 +5035,9 @@ export function IssueChatThread({
                   }
                   return (
                     <Fragment key={message.id}>
-                      {canCollapseEarlier && earlierExpanded && index === 0 ? (
+                      {collapseEarlierCount > 0 && earlierExpanded && index === 0 ? (
                         <IssueChatEarlierToggle
-                          count={firstUnreadIndex}
+                          count={collapseEarlierCount}
                           expanded
                           onToggle={() => setEarlierExpanded(false)}
                         />
