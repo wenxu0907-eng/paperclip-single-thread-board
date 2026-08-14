@@ -56,6 +56,13 @@ export type ResolveIssueRecoveryActionInput = {
   resolutionNote?: string | null;
 };
 
+export type EscalateIssueRecoveryActionToBoardInput = {
+  companyId: string;
+  sourceIssueId: string;
+  actionId: string;
+  resolutionNote: string;
+};
+
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
   return {
     id: row.id,
@@ -305,7 +312,41 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  // COM-335: hand an agent-owned recovery action to the board when automatic
+  // recovery is exhausted. The action stays open (`escalated` counts as active)
+  // but `ownerType: "board"` is what `attention.ts` filters on, so the stranded
+  // issue becomes a visible "needs your action" entry instead of disappearing
+  // when we stop waking the agent owner.
+  async function escalateActiveToBoard(
+    input: EscalateIssueRecoveryActionToBoardInput,
+    dbOrTx: DbOrTransaction = db,
+  ): Promise<IssueRecoveryAction | null> {
+    const [updated] = await dbOrTx
+      .update(issueRecoveryActions)
+      .set({
+        status: "escalated",
+        ownerType: "board",
+        ownerAgentId: null,
+        previousOwnerAgentId: issueRecoveryActions.ownerAgentId,
+        wakePolicy: { type: "board_escalation", reason: "recovery_wake_attempts_exhausted" },
+        resolutionNote: input.resolutionNote,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, input.companyId),
+          eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+          eq(issueRecoveryActions.id, input.actionId),
+          inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+        ),
+      )
+      .returning();
+
+    return updated ? toReadModel(updated) : null;
+  }
+
   return {
+    escalateActiveToBoard,
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
