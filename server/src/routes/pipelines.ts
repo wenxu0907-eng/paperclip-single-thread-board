@@ -53,6 +53,7 @@ import {
   type AttentionCaller,
 } from "../services/pipelines-aggregation.js";
 import { accessService } from "../services/access.js";
+import { parseIssueExecutionState } from "../services/issue-execution-policy.js";
 import { authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
 import { assertCompanyAccess } from "./authz.js";
@@ -741,6 +742,18 @@ async function writeRouteEvent(
   return event!;
 }
 
+// Agent id that owns the issue's pending execution stage (e.g. the reviewer
+// of a pending review gate), or null when no stage is pending / the
+// participant is a user. Mirrors the helper in routes/issues.ts.
+function pendingExecutionParticipantAgentId(value: unknown): string | null {
+  const state = parseIssueExecutionState(value);
+  if (!state || state.status !== "pending") return null;
+  const participant = state.currentParticipant;
+  if (participant?.type !== "agent") return null;
+  const agentId = participant.agentId;
+  return typeof agentId === "string" && agentId.trim().length > 0 ? agentId : null;
+}
+
 async function getIssueMutationTarget(db: Db, input: { companyId: string; issueId: string }) {
   return db
     .select({
@@ -751,6 +764,7 @@ async function getIssueMutationTarget(db: Db, input: { companyId: string; issueI
       assigneeAgentId: issueRows.assigneeAgentId,
       assigneeUserId: issueRows.assigneeUserId,
       status: issueRows.status,
+      executionState: issueRows.executionState,
     })
     .from(issueRows)
     .where(and(eq(issueRows.id, input.issueId), eq(issueRows.companyId, input.companyId)))
@@ -778,6 +792,7 @@ async function assertIssueLinkMutationAllowed(
       assigneeAgentId: input.issue.assigneeAgentId,
       assigneeUserId: input.issue.assigneeUserId,
       status: input.issue.status,
+      pendingParticipantAgentId: pendingExecutionParticipantAgentId(input.issue.executionState),
     },
     scope: {
       issueId: input.issue.id,
@@ -794,6 +809,15 @@ async function assertIssueLinkMutationAllowed(
   const actorAgentId = req.actor.agentId;
   if (!actorAgentId) throw forbidden("Agent authentication required");
   if (input.issue.assigneeAgentId === null) return;
+  // Pending execution-stage participants (e.g. review-gate reviewers) keep
+  // their write path even when the assignee seat belongs to the executor;
+  // in_progress stays guarded by the checkout-owner path below.
+  if (
+    input.issue.status !== "in_progress" &&
+    pendingExecutionParticipantAgentId(input.issue.executionState) === actorAgentId
+  ) {
+    return;
+  }
   if (input.issue.assigneeAgentId !== actorAgentId) {
     if (input.issue.status === "in_progress") {
       throw conflict("Issue is checked out by another agent", {

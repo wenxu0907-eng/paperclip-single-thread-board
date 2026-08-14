@@ -670,6 +670,19 @@ function hasExecutionParticipant(value: unknown) {
   return false;
 }
 
+// Agent id that owns the issue's pending execution stage (e.g. the reviewer of
+// a pending review gate), or null when no stage is pending / the participant
+// is a user. Authorization uses this so the review workflow keeps its write
+// path even when the assignee seat is held by (or reassigned to) the executor.
+function pendingExecutionParticipantAgentId(value: unknown): string | null {
+  const state = parseIssueExecutionState(value);
+  if (!state || state.status !== "pending") return null;
+  const participant = state.currentParticipant;
+  if (participant?.type !== "agent") return null;
+  const agentId = participant.agentId;
+  return typeof agentId === "string" && agentId.trim().length > 0 ? agentId : null;
+}
+
 function hasScheduledMonitor(input: {
   existingMonitorNextCheckAt?: Date | null;
   patchMonitorNextCheckAt?: unknown;
@@ -3584,6 +3597,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
       status: string;
+      executionState?: unknown;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
   ) {
@@ -3599,6 +3613,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         status: issue.status,
+        pendingParticipantAgentId: pendingExecutionParticipantAgentId(issue.executionState),
       },
       scope: {
         issueId: issue.id,
@@ -3628,6 +3643,7 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      executionState?: unknown;
     },
   ) {
     if (req.actor.type !== "agent") return true;
@@ -3709,6 +3725,7 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      executionState?: unknown;
     },
   ) {
     if (req.actor.type !== "agent") return true;
@@ -3746,6 +3763,17 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === null) {
+      return true;
+    }
+    // The pending execution-stage participant (e.g. a review-gate reviewer)
+    // keeps its write path even when the assignee seat belongs to the
+    // executor — the review workflow assigns the issue to the reviewer while
+    // the stage is pending, and an out-of-band reassignment must not strand
+    // the gate. in_progress stays guarded by the checkout-owner path below.
+    if (
+      issue.status !== "in_progress" &&
+      pendingExecutionParticipantAgentId(issue.executionState) === actorAgentId
+    ) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
