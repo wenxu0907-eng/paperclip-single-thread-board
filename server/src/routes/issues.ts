@@ -4154,6 +4154,48 @@ export function issueRoutes(
     return run;
   }
 
+  // COM-322: a run that has already reached a terminal state must not create
+  // issues. A cancelled ACPX-lane run once kept executing as a zombie (its
+  // persistent runtime session never registered a pid, so cancel found
+  // nothing to kill) and created a duplicate child issue 5.5 minutes after
+  // cancellation (CMP-575). The cancel-signal wiring interrupts the zombie's
+  // in-flight turn; this guard is the write-path backstop — any issue-create
+  // tagged with a terminal run id is rejected, so no future zombie variant
+  // can mint issues regardless of process-kill semantics. Runs legitimately
+  // create issues only while queued/running (the platform marks terminal
+  // states after adapter execution returns), so real creates are unaffected.
+  const ISSUE_CREATE_FORBIDDEN_RUN_STATUSES = new Set([
+    "succeeded",
+    "interrupted",
+    "failed",
+    "cancelled",
+    "timed_out",
+  ]);
+  async function assertIssueCreateAllowedByRunContext(
+    req: Request,
+    res: Response,
+    companyId: string,
+  ) {
+    const runId = req.actor.runId?.trim();
+    if (!runId) return true;
+    const run = await db
+      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.companyId !== companyId) return true;
+    if (!ISSUE_CREATE_FORBIDDEN_RUN_STATUSES.has(run.status)) return true;
+    res.status(409).json({
+      error: `Refusing to create an issue from heartbeat run ${runId} because that run is already ${run.status}; terminated runs cannot create issues`,
+      details: {
+        runId,
+        runStatus: run.status,
+        code: "terminated_run_issue_create",
+      },
+    });
+    return false;
+  }
+
   async function assertCheapRecoveryIssueAssigneeProfileAllowed(
     req: Request,
     res: Response,
@@ -7176,6 +7218,7 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertIssueCreateAllowedByRunContext(req, res, companyId))) return;
     if (isSkillTestScopedActor(req)) {
       res.status(403).json({
         error: "Skill-test run tokens cannot create issues.",
@@ -7467,6 +7510,7 @@ export function issueRoutes(
     const parentId = req.params.id as string;
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
+    if (!(await assertIssueCreateAllowedByRunContext(req, res, parent.companyId))) return;
     if (!isTaskBridgeKeyActor(req) && !(await assertIssueReadAllowed(req, res, parent))) return;
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
@@ -7675,6 +7719,7 @@ export function issueRoutes(
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
+    if (!(await assertIssueCreateAllowedByRunContext(req, res, sourceIssue.companyId))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
 
     const requestedChildren = [];

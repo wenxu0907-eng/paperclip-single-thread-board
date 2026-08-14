@@ -45,6 +45,7 @@ import {
   parseObject,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
+  registerRunCancelHandler,
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
@@ -2388,6 +2389,21 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
     let terminal: AcpRuntimeTurnResult;
+    // COM-322: this lane owns no killable child process (the acpx runtime
+    // session is spawned/managed inside the acpx package, so onSpawn never
+    // fires and the platform's cancel path finds no pid). Without this hook a
+    // cancelled run kept executing as a zombie for minutes — one created a
+    // duplicate issue after its run was cancelled (CMP-575). Register for the
+    // platform's run-cancel signal: abort the turn stream and issue an ACP
+    // session/cancel so the underlying agent process stops immediately.
+    // Cancels that already fired before registration are replayed by the
+    // registry, so `runCancelReason` may be set before the turn starts.
+    let runCancelReason: string | null = null;
+    const unregisterRunCancelHandler = registerRunCancelHandler(ctx.runId, (reason) => {
+      runCancelReason = reason;
+      controller?.abort();
+      void cancelActiveTurn?.(reason).catch(() => {});
+    });
     try {
       // Snapshot pre-turn usage so cumulative agent-reported cost can be
       // attributed to this run alone.
@@ -2406,6 +2422,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // existing terminal/thrown handling unchanged.
       let attempt = 0;
       for (;;) {
+        // A platform cancel that arrived between attempts (e.g. during the
+        // reconnect backoff sleep) must stop the loop instead of re-issuing
+        // the prompt on the persistent session.
+        if (runCancelReason) throw new Error(runCancelReason);
         // Reset per-attempt accumulators so a successful retry's output is not
         // contaminated by the failed attempt's partial text/usage deltas.
         textParts = [];
@@ -2639,6 +2659,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         resultJson: { phase: "turn" },
         summary: message,
       };
+    } finally {
+      unregisterRunCancelHandler();
     }
   };
 }

@@ -37,7 +37,7 @@ import {
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
 } from "./execute.js";
-import { runChildProcess } from "../server-utils.js";
+import { runChildProcess, signalRunCancelled } from "../server-utils.js";
 
 
 const tempRoots: string[] = [];
@@ -1582,6 +1582,107 @@ describe("gemini ACP flag selection", () => {
     expect(result.errorCode).toBe("acpx_timeout");
     expect(result.errorMessage).toBe(expectedMessage);
     expect(cancelReasons).toContain(expectedMessage);
+  }, 15_000);
+});
+
+describe("platform run-cancel wiring (COM-322)", () => {
+  it("interrupts the in-flight ACP turn when the platform cancels the run", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cancelReasons: string[] = [];
+    let releaseTurn: (() => void) | null = null;
+    const turnCancelled = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    let turnStarted = false;
+
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => {
+          turnStarted = true;
+          return {
+            // Hangs until cancelled, simulating a long-running zombie turn.
+            events: (async function* () {
+              await turnCancelled;
+            })(),
+            result: turnCancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+            cancel: async ({ reason }: { reason: string }) => {
+              cancelReasons.push(reason);
+              releaseTurn?.();
+            },
+          };
+        },
+        close: async () => {},
+      }) as never,
+    });
+
+    const runId = "run-platform-cancel-mid-turn";
+    const resultPromise = execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+    while (!turnStarted) await new Promise((resolve) => setImmediate(resolve));
+    signalRunCancelled(runId, "Cancelled by control plane");
+
+    const result = await resultPromise;
+    expect(cancelReasons).toContain("Cancelled by control plane");
+    expect(result.exitCode).toBe(1);
+    expect(result.timedOut).toBe(false);
+  }, 15_000);
+
+  it("never starts a turn when the run was cancelled before execution began", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    let startTurnCalls = 0;
+
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => {
+          startTurnCalls += 1;
+          return {
+            events: (async function* () {
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          };
+        },
+        close: async () => {},
+      }) as never,
+    });
+
+    const runId = "run-platform-cancel-before-execute";
+    // Platform cancel lands before the executor ever registers its handler;
+    // the registry must replay it so no prompt is issued on the session.
+    signalRunCancelled(runId, "Cancelled by control plane");
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(startTurnCalls).toBe(0);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("Cancelled by control plane");
   }, 15_000);
 });
 
