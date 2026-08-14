@@ -653,4 +653,166 @@ describe("issue execution policy routes", () => {
       }),
     );
   });
+
+  it("rejects a child issue whose assignee is its own only review participant", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Parent issue",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({
+        title: "Self-reviewed child",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        executionPolicy: {
+          stages: [{
+            type: "review",
+            participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+          }],
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("cannot be the only reviewer");
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+  });
+
+  it("allows a child issue whose review participant differs from its assignee", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Parent issue",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({
+        title: "Delegated child",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        executionPolicy: {
+          stages: [{
+            type: "review",
+            participants: [{ type: "agent", agentId: "11111111-1111-4111-8111-111111111111" }],
+          }],
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.createChild).toHaveBeenCalled();
+  });
+
+  it("rejects a policy update that makes the issue assignee its own only reviewer", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Self review",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          stages: [{
+            type: "review",
+            participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+          }],
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("cannot be the only reviewer");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps assignee-equals-reviewer legal while a review stage is pending", async () => {
+    // The workflow assigns the issue to the reviewer while the stage is pending, so
+    // assignee == participant is the normal in_review shape. Only the *executor*
+    // (executionState.returnAssignee) may not review their own work.
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Pending review",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: "55555555-5555-4555-8555-555555555555",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{
+            id: "66666666-6666-4666-8666-666666666666",
+            type: "agent",
+            agentId: "33333333-3333-4333-8333-333333333333",
+            userId: null,
+          }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: "55555555-5555-4555-8555-555555555555",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", userId: null },
+        returnAssignee: { type: "agent", agentId: "11111111-1111-4111-8111-111111111111", userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          stages: [{
+            type: "review",
+            participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+          }],
+        },
+      });
+
+    expect(res.status).toBe(200);
+  });
 });
