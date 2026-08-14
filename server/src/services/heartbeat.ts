@@ -119,6 +119,7 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
+import { EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE as SHARED_EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE } from "./issue-recovery-actions.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
@@ -351,7 +352,9 @@ const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
+// Re-exported from the recovery-action service so the issue routes and this
+// detector cannot drift on what the cause string is.
+const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = SHARED_EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE;
 const GITHUB_PR_WORKFLOW_SKILL_KEY = "paperclipai/bundled/software-development/github-pr-workflow";
 const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
 const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;

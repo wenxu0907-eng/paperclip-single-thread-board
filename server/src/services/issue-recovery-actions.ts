@@ -9,6 +9,13 @@ import type {
   IssueRecoveryActionStatus,
 } from "@paperclipai/shared";
 
+// Single source of truth for the review-participant recovery cause. `heartbeat.ts`
+// raises actions with this cause and the issue routes must recognise them when
+// deciding whether a source change makes an action stale — a pending agent review
+// participant is the *reason* these actions exist, so it can never be evidence
+// that one has become stale.
+export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
+
 const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const MAX_UPSERT_RETRIES = 3;
 

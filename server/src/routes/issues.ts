@@ -104,6 +104,7 @@ import {
   goalService,
   heartbeatService,
   issueApprovalService,
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
   issueRecoveryActionService,
   issueThreadInteractionService,
   inboxAgentPolicyService,
@@ -3068,6 +3069,7 @@ export function issueRoutes(
     resumeRequested?: boolean;
     reopened?: boolean;
     blockedToTodoRecovery?: boolean;
+    recoveryCause?: string | null;
   }): Promise<string | null> {
     const { issue } = input;
     if (issue.status === "done" || issue.status === "cancelled") {
@@ -3115,7 +3117,19 @@ export function issueRoutes(
       return `Recovery action became stale because the source issue is ${issue.status} with an agent owner.`;
     }
 
-    if (issue.status === "in_review" && (await issueHasActiveReviewPath(issue))) {
+    // A review-participant recovery action is raised *because* the issue is
+    // `in_review` with a pending agent participant whose run died. That pending
+    // participant therefore also satisfies `issueHasActiveReviewPath`, so treating
+    // it as staleness cancels the action on the very evidence that created it: the
+    // stranded-issue detector immediately re-raises a fresh action, the fresh row
+    // resets `attemptCount`, and the one-shot retry cap never engages — a ~45s
+    // wake loop. Other staleness signals (terminal status, human owner, blockers,
+    // scheduled monitor) still apply to these actions; only this one cannot.
+    if (
+      issue.status === "in_review" &&
+      input.recoveryCause !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE &&
+      (await issueHasActiveReviewPath(issue))
+    ) {
       return "Recovery action became stale because the source issue now has an active review path.";
     }
 
@@ -3149,7 +3163,10 @@ export function issueRoutes(
         : input.activeRecoveryAction;
     if (!activeRecoveryAction) return null;
 
-    const resolutionNote = await classifySourceRecoveryRevalidation(input);
+    const resolutionNote = await classifySourceRecoveryRevalidation({
+      ...input,
+      recoveryCause: activeRecoveryAction.cause,
+    });
     if (!resolutionNote) return activeRecoveryAction;
 
     const resolved = await recoveryActionsSvc.resolveActiveForIssue({
