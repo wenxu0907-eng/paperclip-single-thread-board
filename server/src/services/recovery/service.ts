@@ -3926,6 +3926,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         }
+
+        // COM-335: a paused review participant is a deliberate human hold, not a
+        // stranded reviewer. Blocking the issue and waking the agent fights the
+        // board's own control surface — CMP-554 flip-flopped in_review→blocked
+        // repeatedly while the participant was paused. Skip quietly; the normal
+        // review flow resumes when the agent is resumed.
+        if (agent?.status === "paused") {
+          result.skipped += 1;
+          continue;
+        }
+
+        // COM-335: when a recovery action for this cause is already active (or
+        // escalated to the board), that action IS the escalation. Re-blocking
+        // the issue on every sweep pass fights the reviewer/owner restoring
+        // in_review and re-mints wakes (CMP-554 was blocked 4x in 4h, once 17s
+        // after a restore). The existing action's wake cap and board escalation
+        // remain the liveness path; the run-end path still refreshes it when a
+        // real participant run ends.
+        const existingReviewParticipantRecovery = await recoveryActionsSvc.getActiveForIssue(
+          issue.companyId,
+          issue.id,
+        );
+        if (existingReviewParticipantRecovery?.cause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) {
+          result.skipped += 1;
+          continue;
+        }
+
         const participantLatestRun = participantLatestRunForRecovery;
 
         if (!participantLatestRun || !isTerminalIssueRun(participantLatestRun)) {
