@@ -1076,6 +1076,59 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  // COM-335: the owner-wake path used to have no attempt cap, and its idempotency
+  // key embeds `attemptCount`, so a cause the owner could not clear minted a fresh
+  // wake on every detector sweep — an unbounded billed loop. Waking must stop after
+  // MAX_OWNER_RECOVERY_WAKE_ATTEMPTS and the action must land on the board so the
+  // stranded issue stays visible instead of going silent.
+  it("stops waking the agent owner after the attempt cap and escalates the action to the board", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const escalateOnce = async () =>
+      recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_review",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "succeeded",
+          error: null,
+          errorCode: null,
+          contextSnapshot: { retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE },
+          livenessState: "needs_followup",
+        } as const,
+        comment: "Review participant run ended while the review stage was pending.",
+        recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+      });
+
+    // Three sweeps are allowed to wake the owner; the fourth must not.
+    for (let i = 0; i < 4; i += 1) await escalateOnce();
+
+    expect(enqueueWakeup).toHaveBeenCalledTimes(3);
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      companyId,
+      cause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      attemptCount: 4,
+    });
+    expect(action?.resolutionNote).toContain("Automatic recovery wakes exhausted");
+    // The action stays open (never resolved) so it keeps surfacing for a human.
+    expect(action?.resolvedAt).toBeNull();
+
+    // A further sweep must stay silent rather than resuming the loop.
+    await escalateOnce();
+    expect(enqueueWakeup).toHaveBeenCalledTimes(3);
+  });
+
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));

@@ -88,6 +88,10 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+// COM-335: how many times an agent-owned source-scoped recovery action may wake its
+// owner before Paperclip gives up and escalates to the board. Without a cap a cause
+// the owner cannot clear re-wakes forever, once per detector sweep.
+const MAX_OWNER_RECOVERY_WAKE_ATTEMPTS = 3;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -3012,6 +3016,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       return;
     }
+
+    // COM-335: the no-owner branch above stops after one auto-retry, but this
+    // owner branch had no cap at all — and its idempotency key embeds
+    // `attemptCount`, so every re-raise mints a fresh key and a fresh wake. When
+    // the owner cannot actually clear the cause (the review-participant loop is
+    // the worst case: the pending participant and the recovery owner are the same
+    // agent, so the owner's own run ending re-triggers the detector) that is an
+    // unbounded wake loop billed once per cycle. Bound it the same way, then hand
+    // the action to the board so the stranded issue stays visible.
+    if (input.action.attemptCount > MAX_OWNER_RECOVERY_WAKE_ATTEMPTS) {
+      const escalated = await recoveryActionsSvc.escalateActiveToBoard({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: input.action.id,
+        resolutionNote:
+          `Automatic recovery wakes exhausted after ${MAX_OWNER_RECOVERY_WAKE_ATTEMPTS} attempts ` +
+          `(cause \`${input.recoveryCause}\`). Paperclip stopped waking the agent owner and needs a human decision.`,
+      });
+      logger.warn(
+        {
+          issueId: input.issue.id,
+          recoveryActionId: input.action.id,
+          recoveryCause: input.recoveryCause,
+          attemptCount: input.action.attemptCount,
+          escalated: Boolean(escalated),
+        },
+        "COM-335 recovery wake attempts exhausted; escalated to board instead of waking the owner again",
+      );
+      return;
+    }
+
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
