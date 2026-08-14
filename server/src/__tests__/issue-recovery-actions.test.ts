@@ -24,7 +24,10 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
-import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import {
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+  issueRecoveryActionService,
+} from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1848,6 +1851,111 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       trigger: "comment",
       recoveryActionId: action.id,
     });
+  });
+
+  async function seedReviewParticipantRecovery(cause: string) {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    // The exact state a review-participant recovery is raised for: `in_review`
+    // with a pending agent participant whose run died.
+    await db.update(issues).set({
+      // Production shape: the review-participant detector has just pushed the
+      // issue to `blocked`, and the woken owner restores it to `in_review`.
+      status: "blocked",
+      assigneeAgentId: managerId,
+      assigneeUserId: null,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause,
+      fingerprint: `${cause}:review-participant-loop`,
+      evidence: { latestIssueStatus: "in_review" },
+      nextAction: "Repair the failed review participant path.",
+      wakePolicy: { type: "wake_owner", reason: "source_scoped_recovery_action", ownerAgentId: managerId },
+    });
+    const [seeded] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(seeded?.status).toBe("blocked");
+    // The production trigger is the woken recovery-owner agent touching the
+    // source issue, not a board edit (a board PATCH returns the issue to its
+    // assignee, which is a different staleness branch entirely).
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      source: "agent_jwt",
+    });
+    return { companyId, sourceIssueId, action, recoveryActionSvc, app };
+  }
+
+  it("keeps a review-participant recovery active when the pending participant that caused it is still present", async () => {
+    const { companyId, sourceIssueId, action, recoveryActionSvc, app } = await seedReviewParticipantRecovery(
+      EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+    );
+
+    // A durable source change from the woken recovery run. Before the fix this
+    // cancelled the action via "now has an active review path" — using the very
+    // pending participant that caused the recovery — so the stranded detector
+    // re-raised a fresh row with attemptCount reset, looping every ~45s.
+    await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "in_review" })
+      .expect(200);
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({ status: "active", outcome: null, resolvedAt: null });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+  });
+
+  it("still folds a non-review-participant recovery when the source issue gains an active review path", async () => {
+    const { companyId, sourceIssueId, action, recoveryActionSvc, app } =
+      await seedReviewParticipantRecovery("issue_graph_liveness");
+
+    await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "in_review" })
+      .expect(200);
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue now has an active review path.",
+    });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
   });
 
   it("rejects peer-agent source issue updates that would hide another owner's recovery action", async () => {
