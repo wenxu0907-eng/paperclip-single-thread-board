@@ -990,6 +990,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     kind?: string;
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
+    expectWake?: boolean;
   }) {
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
@@ -1007,14 +1008,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       recoveryIssueId: null,
       kind: input.kind ?? "stranded_assigned_issue",
       status: "active",
-      ownerType: "agent",
-      ownerAgentId: input.agentId,
+      ownerType: input.expectWake ? "agent" : "board",
+      ownerAgentId: input.expectWake ? input.agentId : null,
       previousOwnerAgentId: input.previousOwnerAgentId ?? input.agentId,
       returnOwnerAgentId: input.returnOwnerAgentId ?? input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
       maxAttempts: null,
     });
+    if (!input.expectWake) {
+      expect(action.wakePolicy).toMatchObject({
+        type: "board_escalation",
+        reason: "automatic_recovery_wakes_disabled",
+        routedOwnerAgentId: input.agentId,
+      });
+    }
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
       previousStatus: input.previousStatus,
@@ -1040,6 +1048,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(issues.originId, input.issueId),
       ));
     expect(recoveryIssues).toHaveLength(0);
+
+    if (!input.expectWake) {
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, input.agentId));
+      expect(wakeups.some((wakeup) => {
+        const payload = wakeup.payload as Record<string, unknown> | null;
+        return payload?.issueId === input.issueId &&
+          payload?.sourceIssueId === input.issueId &&
+          payload?.recoveryActionId === action.id &&
+          payload?.strandedRunId === input.runId;
+      })).toBe(false);
+      await waitForHeartbeatIdle(db);
+      const sourceIssue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(sourceIssue?.status).toBe("blocked");
+      return action;
+    }
 
     const recoveryWakeup = await waitForValue(async () => {
       const wakeups = await db
@@ -2050,7 +2080,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).toContain("Recovery owner: board escalation");
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
@@ -2730,7 +2760,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       kind: "workspace_validation",
       cause: "workspace_validation_failed",
       status: "active",
-      ownerAgentId: agentId,
+      ownerAgentId: null,
       recoveryIssueId: null,
     });
     expect(recoveryAction?.evidence).toMatchObject({
@@ -2823,7 +2853,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       kind: "configuration_validation",
       cause: "configuration_incomplete",
       status: "active",
-      ownerAgentId: agentId,
+      ownerAgentId: null,
       recoveryIssueId: null,
     });
     expect(recoveryAction?.nextAction).toContain("Bind the missing secret");
@@ -3215,7 +3245,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           title: "Recovery owner",
           rows: expect.arrayContaining([
             expect.objectContaining({ type: "key_value", label: "Recovery action", value: recoveryAction.id }),
-            expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CodexCoder" }),
+            expect.objectContaining({ type: "key_value", label: "Recovery owner", value: "unknown" }),
           ]),
         }),
         expect.objectContaining({
@@ -4423,7 +4453,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(sourceIssue).toMatchObject({
       status: "blocked",
-      assigneeAgentId: agentId,
+      assigneeAgentId: sourceAssigneeAgentId,
     });
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
@@ -5150,7 +5180,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("retried dispatch");
     expect(comments[0]?.body).toContain("Latest failure: `process_lost`. Inspect the linked run for the full error detail.");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).toContain("Recovery owner: board escalation");
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
@@ -5551,7 +5581,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("Latest failure: `process_lost`. Inspect the linked run for the full error detail.");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).toContain("Recovery owner: board escalation");
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
@@ -6203,7 +6233,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-    expect(followupRuns).toHaveLength(2);
+    expect(followupRuns).toHaveLength(1);
   });
 
   it("preserves a persisted issue monitor as the durable external-wait path", async () => {
@@ -6311,7 +6341,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("automatically retried continuation");
     expect(comments[0]?.body).toContain("still has no live execution path");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).toContain("Recovery owner: board escalation");
   });
 
   it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {

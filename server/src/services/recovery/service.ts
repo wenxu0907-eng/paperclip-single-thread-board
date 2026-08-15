@@ -88,6 +88,7 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const SOURCE_SCOPED_RECOVERY_WAKES_ENV = "PAPERCLIP_ENABLE_SOURCE_SCOPED_RECOVERY_WAKES";
 // COM-335: how many times an agent-owned source-scoped recovery action may wake its
 // owner before Paperclip gives up and escalates to the board. Without a cap a cause
 // the owner cannot clear re-wakes forever, once per detector sweep.
@@ -113,6 +114,11 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   60_000,
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
+
+export function sourceScopedRecoveryWakesEnabled() {
+  const raw = process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV]?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -2879,13 +2885,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
+    const automaticWakesEnabled = sourceScopedRecoveryWakesEnabled();
     const routing = await resolveStrandedRecoveryRouting({
       issue: input.issue,
       latestRun: input.latestRun,
       recoveryCause,
       preferredOwnerAgentId: input.recoveryOwnerAgentId,
     });
-    const ownerAgentId = routing.ownerAgentId;
+    const ownerAgentId = automaticWakesEnabled ? routing.ownerAgentId : null;
+    const routedOwnerAgentId = routing.ownerAgentId;
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2929,7 +2937,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : recoveryCause === "execution_review_participant_recovery"
           ? "Repair the failed review participant path, restore the source issue to in_review with a live reviewer, or record an intentional manual resolution."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
-      wakePolicy: recoveryCause === "provider_quota" && !ownerAgentId
+      wakePolicy: !automaticWakesEnabled && routedOwnerAgentId
+        ? {
+          type: "board_escalation",
+          reason: "automatic_recovery_wakes_disabled",
+          routedOwnerAgentId,
+        }
+        : recoveryCause === "provider_quota" && !ownerAgentId
         ? {
           type: "monitor_only",
           reason: recoveryCause,
@@ -2966,6 +2980,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
+    if (!sourceScopedRecoveryWakesEnabled()) {
+      if (input.action.ownerAgentId) {
+        await recoveryActionsSvc.escalateActiveToBoard({
+          companyId: input.issue.companyId,
+          sourceIssueId: input.issue.id,
+          actionId: input.action.id,
+          resolutionNote:
+            `Automatic source-scoped recovery wakes are disabled by default. Set ${SOURCE_SCOPED_RECOVERY_WAKES_ENV}=true only after the recovery loop fixes are verified.`,
+        });
+      }
+      return;
+    }
+
     if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) {
@@ -5598,6 +5625,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       exhausted: 0,
       issueIds: [] as string[],
     };
+
+    if (!sourceScopedRecoveryWakesEnabled()) {
+      return result;
+    }
 
     const activeActions = await db
       .select({
