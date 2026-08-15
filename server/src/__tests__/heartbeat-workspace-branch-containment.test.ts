@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -693,9 +693,9 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
     nextAction: expect.stringContaining("choose a new execution workspace"),
     wakePolicy: expect.objectContaining({
-      type: "wake_owner",
-      reason: "source_scoped_recovery_action",
-      ownerAgentId: expect.any(String),
+      type: "board_escalation",
+      reason: "automatic_recovery_wakes_disabled",
+      routedOwnerAgentId: expect.any(String),
     }),
   });
 
@@ -754,8 +754,8 @@ async function expectForwardBranchReconciled(input: {
   expect(activeWorkspace).toMatchObject({
     name: expectedDurableBranch,
     branchName: expectedDurableBranch,
-    providerRef: input.worktreePath,
   });
+  await expect(realpath(activeWorkspace!.providerRef!)).resolves.toBe(await realpath(input.worktreePath));
 
   const recoveryRows = await input.db
     .select()
