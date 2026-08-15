@@ -30,6 +30,8 @@ import {
 } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 
+const SOURCE_SCOPED_RECOVERY_WAKES_ENV = "PAPERCLIP_ENABLE_SOURCE_SCOPED_RECOVERY_WAKES";
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -136,6 +138,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   }, 30_000);
 
   afterEach(async () => {
+    delete process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV];
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);
     await db.delete(environmentLeases);
@@ -273,7 +276,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
   });
 
-  it("escalates stranded assigned work into a source action instead of a recovery issue", async () => {
+  it("escalates stranded assigned work into a source action and wakes the owner when explicitly enabled", async () => {
+    process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV] = "true";
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
@@ -341,6 +345,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   ] as const)(
     "routes %s recovery through the cause-keyed playbook",
     async (errorCode, explicitCause, expectedOwner) => {
+      process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV] = "true";
       const { managerId, coderId, sourceIssue } = await seedCompany();
       const enqueueWakeup = vi.fn(async () => null);
       const recovery = recoveryService(db, { enqueueWakeup });
@@ -760,6 +765,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it("blocks a cross-agent review participant with incomplete configuration", async () => {
+    process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV] = "true";
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     await db.update(issues).set({
@@ -958,22 +964,23 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       companyId,
       kind: "stranded_assigned_issue",
       status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
       attemptCount: 2,
+      wakePolicy: expect.objectContaining({
+        type: "board_escalation",
+        reason: "automatic_recovery_wakes_disabled",
+        routedOwnerAgentId: managerId,
+      }),
     });
     expect(actionRows[0]?.evidence).toMatchObject({ latestRunId: secondLatestRun.id });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[1]?.[1]?.payload).toMatchObject({
-      issueId: sourceIssue.id,
-      sourceIssueId: sourceIssue.id,
-      strandedRunId: secondLatestRun.id,
-      recoveryCause: "stranded_assigned_issue",
-    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
+  it("deduplicates workspace-incoherence recovery actions without automatic owner wakes by default", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
@@ -1058,22 +1065,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       }),
       nextAction: expect.stringContaining("git worktree branch incoherence"),
       wakePolicy: expect.objectContaining({
-        type: "wake_owner",
-        reason: "source_scoped_recovery_action",
-        ownerAgentId: expect.any(String),
+        type: "board_escalation",
+        reason: "automatic_recovery_wakes_disabled",
+        routedOwnerAgentId: expect.any(String),
       }),
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments.filter((comment) => comment.body.includes(`Recovery action: \`${actionRows[0]?.id}\``))).toHaveLength(1);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        reason: "source_scoped_recovery_action",
-        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
-      }),
-    );
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   // COM-335: the owner-wake path used to have no attempt cap, and its idempotency
@@ -1082,6 +1082,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   // MAX_OWNER_RECOVERY_WAKE_ATTEMPTS and the action must land on the board so the
   // stranded issue stays visible instead of going silent.
   it("stops waking the agent owner after the attempt cap and escalates the action to the board", async () => {
+    process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV] = "true";
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
