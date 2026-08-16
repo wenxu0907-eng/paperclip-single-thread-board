@@ -103,6 +103,20 @@ pnpm dev:list
 pnpm dev:stop
 ```
 
+Emergency local shutoffs:
+
+```sh
+HEARTBEAT_SCHEDULER_ENABLED=false \
+PAPERCLIP_ENABLE_AGENT_WAKEUPS=false \
+PAPERCLIP_ENABLE_AUTOMATIC_RUN_RETRIES=false \
+pnpm dev
+```
+
+`HEARTBEAT_SCHEDULER_ENABLED=false` stops periodic scheduler ticks. `PAPERCLIP_ENABLE_AGENT_WAKEUPS=false`
+skips explicit agent wake requests instead of queuing runs. `PAPERCLIP_ENABLE_AUTOMATIC_RUN_RETRIES=false`
+suppresses process-loss, missing-comment, and bounded scheduled retry queues. The equivalent emergency
+aliases are `PAPERCLIP_DISABLE_AGENT_WAKEUPS=true` and `PAPERCLIP_DISABLE_AUTOMATIC_RUN_RETRIES=true`.
+
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
 ## Hot-Restart Deploys

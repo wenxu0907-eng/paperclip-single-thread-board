@@ -5524,6 +5524,20 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
   return value === "true" || value === "1" || value === "yes" || value === "on";
 }
 
+export function resolveAutomaticRunRetriesEnabled(
+  env: Record<string, string | undefined> = process.env,
+) {
+  return env.PAPERCLIP_ENABLE_AUTOMATIC_RUN_RETRIES !== "false" &&
+    !isTruthyRuntimeEnvValue(env.PAPERCLIP_DISABLE_AUTOMATIC_RUN_RETRIES);
+}
+
+export function resolveAgentWakeupsEnabled(
+  env: Record<string, string | undefined> = process.env,
+) {
+  return env.PAPERCLIP_ENABLE_AGENT_WAKEUPS !== "false" &&
+    !isTruthyRuntimeEnvValue(env.PAPERCLIP_DISABLE_AGENT_WAKEUPS);
+}
+
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
@@ -5542,6 +5556,8 @@ export function resolveHeartbeatSchedulingSuppression(
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const configuredPublicBaseUrl = options.publicBaseUrl ?? readConfiguredPublicBaseUrl();
+  const automaticRunRetriesEnabled = resolveAutomaticRunRetriesEnabled(options.runtimeEnv ?? process.env);
+  const agentWakeupsEnabled = resolveAgentWakeupsEnabled(options.runtimeEnv ?? process.env);
 
   /**
    * Resolve the base URL for a company's run-lifecycle notification deep links.
@@ -8630,6 +8646,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     issueId: string,
   ) {
+    if (!automaticRunRetriesEnabled) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Missing-comment retry suppressed because automatic run retries are disabled",
+        payload: {
+          issueId,
+          retryReason: "missing_issue_comment",
+        },
+      });
+      return null;
+    }
+
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -8868,6 +8898,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    if (!automaticRunRetriesEnabled) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed because automatic run retries are disabled",
+        payload: {
+          retryReason: "process_lost",
+        },
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
+
     const existingRetry = await db
       .select()
       .from(heartbeatRuns)
@@ -9779,6 +9823,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!automaticRunRetriesEnabled) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Scheduled retry suppressed because automatic run retries are disabled",
+        payload: {
+          retryReason,
+          wakeReason,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "Scheduled retry suppressed because automatic run retries are disabled",
+        errorCode: "automatic_retries_disabled" as const,
+        issueId,
+      };
+    }
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const computedBaseSchedule = opts?.delayMs != null
@@ -9804,9 +9868,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
-    const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
-
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
@@ -15260,6 +15321,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         const shouldBlockReviewRecovery =
+          !automaticRunRetriesEnabled ||
           !recoveryAgentInvokable ||
           !recoveryAgent ||
           isExecutionReviewParticipantRecoveryRun(run);
@@ -15381,6 +15443,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const shouldBlockImmediately =
+        !automaticRunRetriesEnabled ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
@@ -15606,6 +15669,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     };
+
+    if (!agentWakeupsEnabled) {
+      await writeSkippedHeartbeatRequest("heartbeat.wakeups_disabled", {
+        reason: "agent_wakeups_disabled",
+      });
+      return null;
+    }
 
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {

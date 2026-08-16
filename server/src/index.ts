@@ -886,6 +886,7 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any, {
       pluginWorkerManager,
       publicBaseUrl: config.authPublicBaseUrl,
+      runtimeEnv: process.env,
     });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;

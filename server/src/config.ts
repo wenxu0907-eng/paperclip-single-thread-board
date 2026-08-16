@@ -85,6 +85,8 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  agentWakeupsEnabled: boolean;
+  automaticRunRetriesEnabled: boolean;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +333,12 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    agentWakeupsEnabled:
+      process.env.PAPERCLIP_ENABLE_AGENT_WAKEUPS !== "false" &&
+      process.env.PAPERCLIP_DISABLE_AGENT_WAKEUPS !== "true",
+    automaticRunRetriesEnabled:
+      process.env.PAPERCLIP_ENABLE_AUTOMATIC_RUN_RETRIES !== "false" &&
+      process.env.PAPERCLIP_DISABLE_AUTOMATIC_RUN_RETRIES !== "true",
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
