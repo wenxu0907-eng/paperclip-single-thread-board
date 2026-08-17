@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveAgentWakeupsEnabled,
+  resolveAutomaticRunRetriesEnabled,
   resolveHeartbeatSchedulingSuppression,
   resolveSkillTestRunCompletionForHeartbeatOutcome,
 } from "../services/heartbeat.ts";
@@ -28,6 +30,35 @@ describe("heartbeat scheduling suppression", () => {
       suppressed: false,
       reason: null,
     });
+  });
+
+  it("allows automatic run retries and agent wakeups by default", () => {
+    expect(resolveAutomaticRunRetriesEnabled({})).toBe(true);
+    expect(resolveAgentWakeupsEnabled({})).toBe(true);
+  });
+
+  it("disables automatic run retries with either emergency env switch", () => {
+    expect(resolveAutomaticRunRetriesEnabled({
+      PAPERCLIP_ENABLE_AUTOMATIC_RUN_RETRIES: "false",
+    })).toBe(false);
+    expect(resolveAutomaticRunRetriesEnabled({
+      PAPERCLIP_DISABLE_AUTOMATIC_RUN_RETRIES: "true",
+    })).toBe(false);
+    expect(resolveAutomaticRunRetriesEnabled({
+      PAPERCLIP_DISABLE_AUTOMATIC_RUN_RETRIES: "1",
+    })).toBe(false);
+  });
+
+  it("disables agent wakeups with either emergency env switch", () => {
+    expect(resolveAgentWakeupsEnabled({
+      PAPERCLIP_ENABLE_AGENT_WAKEUPS: "false",
+    })).toBe(false);
+    expect(resolveAgentWakeupsEnabled({
+      PAPERCLIP_DISABLE_AGENT_WAKEUPS: "true",
+    })).toBe(false);
+    expect(resolveAgentWakeupsEnabled({
+      PAPERCLIP_DISABLE_AGENT_WAKEUPS: "1",
+    })).toBe(false);
   });
 
   it("lifts worktree suppression when run execution is explicitly allowed", () => {
