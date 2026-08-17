@@ -764,6 +764,143 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     }));
   });
 
+  it("does not re-block an in_review issue while a review-participant recovery action is already active", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const reviewPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        id: stageId,
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+      }],
+    };
+    const reviewState = {
+      status: "pending",
+      currentStageId: stageId,
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: managerId, userId: null },
+      returnAssignee: { type: "agent", agentId: coderId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    };
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: reviewPolicy,
+      executionState: reviewState,
+    }).where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "review process exited unexpectedly",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        retryReason: "execution_review_participant_recovery",
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    // First pass escalates once: issue blocked, one recovery action, one owner wake.
+    const firstResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(firstResult).toMatchObject({ escalated: 1 });
+    const [blockedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(blockedIssue?.status).toBe("blocked");
+    const actionsAfterFirst = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actionsAfterFirst).toHaveLength(1);
+    expect(actionsAfterFirst[0]).toMatchObject({
+      cause: "execution_review_participant_recovery",
+      status: "active",
+      attemptCount: 1,
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+
+    // The reviewer/owner restores the intentional pending gate (CMP-554 pattern).
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: reviewState,
+    }).where(eq(issues.id, sourceIssueId));
+
+    // Second pass must NOT fight the restore: the active action is the escalation.
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondResult).toMatchObject({ escalated: 0, reviewParticipantRequeued: 0 });
+    const [restoredIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(restoredIssue?.status).toBe("in_review");
+    const actionsAfterSecond = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actionsAfterSecond).toHaveLength(1);
+    expect(actionsAfterSecond[0]?.attemptCount).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips review-participant recovery while the participant agent is paused", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    // CMP-554: the reviewer run succeeded and intentionally left the gate pending,
+    // then the board paused the participant agent.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 0, reviewParticipantRequeued: 0 });
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchangedIssue?.status).toBe("in_review");
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId))).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("blocks a cross-agent review participant with incomplete configuration", async () => {
     process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV] = "true";
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
