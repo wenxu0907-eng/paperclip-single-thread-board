@@ -767,6 +767,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it("does not re-block an in_review issue while a review-participant recovery action is already active", async () => {
+    process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV] = "true";
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     const reviewPolicy = {
