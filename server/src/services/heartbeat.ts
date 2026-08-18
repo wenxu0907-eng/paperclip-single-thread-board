@@ -207,6 +207,7 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
+import { issueHasLivePendingDecisionGate } from "./recovery/review-participant-decision-gate.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -15307,7 +15308,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           options.suppressImmediateRecovery ||
           existingReviewParticipantExecutionPath ||
           issueHasPersistedMonitor ||
-          await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)
+          await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc) ||
+          // COM-399: the review stage being `pending` is not itself abandonment —
+          // a real, live decision (board confirmation/approval) can still be
+          // outstanding and the participant correctly declined to approve yet.
+          await issueHasLivePendingDecisionGate(db, issue.companyId, issue.id)
         ) {
           return { kind: "released" as const };
         }
