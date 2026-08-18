@@ -8,6 +8,7 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  hasActiveMonitorToolWaitEvidence,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
@@ -52,6 +53,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
     hasPersistedMonitor: false,
+    hasActiveMonitorToolWait: false,
     hasExplicitBlockerPath: false,
     hasOpenDelegatedChildren: false,
     hasOpenRecoveryIssue: false,
@@ -126,10 +128,22 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "persisted issue monitor owns the next action",
     });
+    // COM-403: an agent that ended the heartbeat with an active Monitor-tool
+    // CI wait armed (e.g. watching for checks to go green before merging) has
+    // a real pending callback, even though the platform-native
+    // `issue.monitorNextCheckAt` monitor was never set for it.
+    expect(decide({ hasActiveMonitorToolWait: true })).toEqual({
+      kind: "skip",
+      reason: "active monitor tool wait owns the next action",
+    });
     expect(decide({ hasActiveExecutionPath: true })).toEqual({
       kind: "skip",
       reason: "issue already has an active execution path",
     });
+  });
+
+  it("treats an active Monitor-tool CI wait as a valid-path skip that resolves a stale required event (COM-403)", () => {
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasActiveMonitorToolWait: true }))).toBe(true);
   });
 
   it("identifies valid-path skips that can durably resolve a stale required event", () => {
@@ -404,5 +418,23 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+});
+
+describe("hasActiveMonitorToolWaitEvidence (COM-403)", () => {
+  it("recognizes a pendingMonitorToolWait record left by the ACPX adapter", () => {
+    expect(
+      hasActiveMonitorToolWaitEvidence({
+        pendingMonitorToolWait: { toolCallId: "call-1", toolName: "Monitor", status: "pending" },
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores resultJson without the field, or with a malformed/empty record", () => {
+    expect(hasActiveMonitorToolWaitEvidence(null)).toBe(false);
+    expect(hasActiveMonitorToolWaitEvidence({})).toBe(false);
+    expect(hasActiveMonitorToolWaitEvidence({ pendingMonitorToolWait: null })).toBe(false);
+    expect(hasActiveMonitorToolWaitEvidence({ pendingMonitorToolWait: "Monitor" })).toBe(false);
+    expect(hasActiveMonitorToolWaitEvidence({ pendingMonitorToolWait: { toolName: "" } })).toBe(false);
   });
 });

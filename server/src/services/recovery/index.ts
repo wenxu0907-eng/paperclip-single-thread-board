@@ -56,6 +56,7 @@ export {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
+  hasActiveMonitorToolWaitEvidence,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
 } from "./successful-run-handoff.js";
