@@ -7742,17 +7742,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  // Releases the checkout-lock column on every issue that still points at a
+  // run the instant that run lands in a terminal status, in the SAME
+  // statement/transaction as the status write. This closes the COM-406 race:
+  // without this, a run's terminal status and its issues' checkoutRunId
+  // clear were two separate, non-atomic facts, so a concurrent enqueueWakeup
+  // could spawn a brand-new run for the issue while checkoutRunId still
+  // pinned the old (now-terminal) run, and assertCheckoutOwner /
+  // adoptStaleCheckoutRun would 409 until reapOrphanedRuns eventually swept
+  // it (~5 min later).
+  //
+  // Deliberately scoped to checkoutRunId only, NOT executionRunId:
+  // process-loss/codex-transient retry scheduling (enqueueProcessLossRetry,
+  // scheduleBoundedRetryForRun, etc.) runs *after* the terminal status write
+  // and hands executionRunId off to the new retry run via an UPDATE gated on
+  // `executionRunId = <this run's id>` (see enqueueProcessLossRetry around
+  // heartbeat.ts:9070-9081). If this helper also cleared executionRunId
+  // eagerly here, that gate would already be false by the time the retry
+  // ran, silently dropping the handoff and leaving the retry run's issue
+  // pointer null. checkoutRunId has no such handoff — every retry/promotion
+  // path that touches it unconditionally sets it to null — so clearing it
+  // immediately here is always safe. executionRunId continues to be cleared
+  // by the existing lazy self-heal (issues.ts's clearExecutionRunIfTerminal)
+  // and by releaseIssueExecutionAndPromote once any retry decision is made.
+  async function clearIssueCheckoutRunIdForTerminalRun(
+    tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+  ) {
+    await tx
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.checkoutRunId, run.id)));
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx
+        .update(heartbeatRuns)
+        .set({ status, ...patch, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (row && isHeartbeatRunTerminalStatus(row.status)) {
+        await clearIssueCheckoutRunIdForTerminalRun(tx, row);
+      }
+      return row;
+    });
 
     if (updated) {
       if (isHeartbeatRunTerminalStatus(updated.status)) {
@@ -7784,12 +7826,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx
+        .update(heartbeatRuns)
+        .set({ status, ...patch, updatedAt: new Date() })
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (row && isHeartbeatRunTerminalStatus(row.status)) {
+        await clearIssueCheckoutRunIdForTerminalRun(tx, row);
+      }
+      return row;
+    });
 
     if (updated) {
       if (isHeartbeatRunTerminalStatus(updated.status)) {
