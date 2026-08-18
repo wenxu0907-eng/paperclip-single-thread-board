@@ -2988,6 +2988,56 @@ function issueChatMessageIsDeleted(message: ThreadMessage): boolean {
   return Boolean(custom.deletedAt);
 }
 
+// COM-382 (board pick B): the live "Running" work card and the user's own
+// in-flight comment that triggered it should render as a block *after* the
+// New divider, decoupled from strict chronological order — not merely kept
+// visible in their normal slot (that was the earlier COM-382 fix, still in
+// effect for everything else). Scoped tightly to the currently active
+// run(s) so nothing else in the thread's ordering is disturbed.
+function issueChatMessageIsActiveRunPinned(
+  message: ThreadMessage,
+  activeRunIds: ReadonlySet<string>,
+  activeRunTriggerCommentIds: ReadonlySet<string>,
+): boolean {
+  if (
+    issueChatMessageKind(message) === "live-run"
+    && issueChatMessageRunIsActive(message, activeRunIds)
+  ) {
+    return true;
+  }
+  const commentId = issueChatMessageCommentId(message);
+  return Boolean(commentId && activeRunTriggerCommentIds.has(commentId));
+}
+
+// Moves the pinned running-work block (see above) to the end of `messages`,
+// preserving their relative order, and leaves every other message's relative
+// order untouched. This is the single reordering point shared by the plain
+// and virtualized render paths (both simply render whatever `messages` this
+// returns) — no separate reorder step needed per path.
+//
+// The "New" divider position is unaffected: `findFirstUnreadCommentAnchorId`
+// already skips both the current user's own comments and non-comment kinds
+// like "live-run", so pulling the pinned tail out from under the remaining
+// messages never changes which anchor it lands on.
+export function reorderIssueChatMessagesForActiveRun(
+  messages: readonly ThreadMessage[],
+  activeRunIds: ReadonlySet<string>,
+  activeRunTriggerCommentIds: ReadonlySet<string>,
+): readonly ThreadMessage[] {
+  if (activeRunIds.size === 0 && activeRunTriggerCommentIds.size === 0) return messages;
+  const pinned: ThreadMessage[] = [];
+  const rest: ThreadMessage[] = [];
+  for (const message of messages) {
+    if (issueChatMessageIsActiveRunPinned(message, activeRunIds, activeRunTriggerCommentIds)) {
+      pinned.push(message);
+    } else {
+      rest.push(message);
+    }
+  }
+  if (pinned.length === 0) return messages;
+  return [...rest, ...pinned];
+}
+
 function issueChatMessageDeletedAt(message: ThreadMessage): string | null {
   const custom = issueChatMessageCustom(message);
   return typeof custom.deletedAt === "string" ? custom.deletedAt : null;
@@ -3017,8 +3067,7 @@ interface VirtualizedIssueChatThreadListProps {
   // and the imperative handle translates the message indices the parent passes
   // into row indices, so every existing scroll caller keeps working unchanged.
   firstUnreadAnchorId: string | null;
-  firstUnreadIndex: number;
-  canCollapseEarlier: boolean;
+  collapseEarlierCount: number;
   earlierExpanded: boolean;
   onToggleEarlier: () => void;
 }
@@ -3060,6 +3109,11 @@ function IssueChatNewDivider() {
 // COM-7 / 2b: collapses the resolved/old history that sits above the "New"
 // divider behind a toggle, so the live ask is what the viewer sees first.
 const ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD = 3;
+// COM-382: always keep this many messages immediately above the "New" divider
+// visible. That tail is the recent context (the comment the viewer just
+// posted, the currently-running work card) they almost always want to see;
+// only genuinely older history folds behind the toggle.
+const ISSUE_CHAT_EARLIER_KEEP_VISIBLE = 3;
 
 function IssueChatEarlierToggle({
   count,
@@ -3108,8 +3162,9 @@ type VirtualChatRow =
 
 interface IssueChatRowDecorations {
   firstUnreadAnchorId: string | null;
-  firstUnreadIndex: number;
-  canCollapseEarlier: boolean;
+  // COM-382: number of leading messages folded behind the earlier-toggle (0 =
+  // no collapse). Already accounts for the keep-visible context tail.
+  collapseEarlierCount: number;
   earlierExpanded: boolean;
 }
 
@@ -3117,17 +3172,17 @@ export function buildIssueChatVirtualRows(
   messages: readonly ThreadMessage[],
   decorations: IssueChatRowDecorations,
 ): VirtualChatRow[] {
-  const { firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded } =
+  const { firstUnreadAnchorId, collapseEarlierCount, earlierExpanded } =
     decorations;
   const rows: VirtualChatRow[] = [];
   messages.forEach((message, index) => {
-    const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+    const isEarlier = index < collapseEarlierCount;
     if (isEarlier && !earlierExpanded) {
       // Collapse the whole earlier block behind a single toggle row.
       if (index === 0) rows.push({ kind: "earlier-toggle" });
       return;
     }
-    if (canCollapseEarlier && earlierExpanded && index === 0) {
+    if (collapseEarlierCount > 0 && earlierExpanded && index === 0) {
       rows.push({ kind: "earlier-toggle" });
     }
     if (issueChatMessageAnchorId(message) === firstUnreadAnchorId) {
@@ -3403,8 +3458,7 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
   interruptingQueuedRunId,
   variant,
   firstUnreadAnchorId,
-  firstUnreadIndex,
-  canCollapseEarlier,
+  collapseEarlierCount,
   earlierExpanded,
   onToggleEarlier,
   mode,
@@ -3447,11 +3501,10 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     () =>
       buildIssueChatVirtualRows(messages, {
         firstUnreadAnchorId,
-        firstUnreadIndex,
-        canCollapseEarlier,
+        collapseEarlierCount,
         earlierExpanded,
       }),
-    [messages, firstUnreadAnchorId, firstUnreadIndex, canCollapseEarlier, earlierExpanded],
+    [messages, firstUnreadAnchorId, collapseEarlierCount, earlierExpanded],
   );
   // Map a message index (the unit the parent's scroll callers speak) to its
   // row index. Collapsed-earlier messages are absent — scrolling to one is a
@@ -3600,7 +3653,7 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
               <IssueChatNewDivider />
             ) : (
               <IssueChatEarlierToggle
-                count={firstUnreadIndex}
+                count={collapseEarlierCount}
                 expanded={earlierExpanded}
                 onToggle={onToggleEarlier}
               />
@@ -4514,6 +4567,19 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  // COM-382 (board pick B): comment(s) that triggered a currently active
+  // (queued/running) run — these, plus the run's own live card, get pinned
+  // below the New divider instead of rendering in their natural chronological
+  // slot. See reorderIssueChatMessagesForActiveRun.
+  const activeRunTriggerCommentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of displayLiveRuns) {
+      if ((run.status === "queued" || run.status === "running") && run.contextCommentId) {
+        ids.add(run.contextCommentId);
+      }
+    }
+    return ids;
+  }, [displayLiveRuns]);
   const hasActiveRun = useMemo(
     () => displayLiveRuns.some((run) => run.status === "running") || activeRun?.status === "running",
     [displayLiveRuns, activeRun],
@@ -4570,18 +4636,26 @@ export function IssueChatThread({
       userLabelMap,
     ],
   );
+  // COM-382 (board pick B): reorder before stabilizing, so this is the one
+  // place that decides render order — both the plain and virtualized paths
+  // (and every downstream index/anchor computation below) consume `messages`
+  // as-is, already carrying the pinned running-work block at the tail.
+  const orderedRawMessages = useMemo(
+    () => reorderIssueChatMessagesForActiveRun(rawMessages, activeRunIds, activeRunTriggerCommentIds),
+    [rawMessages, activeRunIds, activeRunTriggerCommentIds],
+  );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
   const stableMessageCacheRef = useRef<Map<string, StableThreadMessageCacheEntry>>(new Map());
   const messages = useMemo(() => {
     const stabilized = stabilizeThreadMessages(
-      rawMessages,
+      orderedRawMessages,
       stableMessagesRef.current,
       stableMessageCacheRef.current,
     );
     stableMessagesRef.current = stabilized.messages;
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
-  }, [rawMessages]);
+  }, [orderedRawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
   const firstUnreadAnchorIdRef = useRef<string | null>(null);
@@ -4632,7 +4706,16 @@ export function IssueChatThread({
   const firstUnreadIndex = firstUnreadAnchorId
     ? messageAnchorIndex.get(firstUnreadAnchorId) ?? -1
     : -1;
-  const canCollapseEarlier = firstUnreadIndex >= ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD;
+  // COM-382: fold only history older than the visible context tail above the
+  // "New" divider — the messages right above it (your own just-posted comment,
+  // the live work card) stay rendered. Count is the number of leading messages
+  // hidden behind the earlier-toggle; 0 disables the collapse.
+  const earlierFoldableCount = firstUnreadIndex > 0
+    ? Math.max(0, firstUnreadIndex - ISSUE_CHAT_EARLIER_KEEP_VISIBLE)
+    : 0;
+  const collapseEarlierCount = earlierFoldableCount >= ISSUE_CHAT_EARLIER_COLLAPSE_THRESHOLD
+    ? earlierFoldableCount
+    : 0;
 
   function scrollToThreadAnchor(
     anchorId: string,
@@ -5000,8 +5083,7 @@ export function IssueChatThread({
                   interruptingQueuedRunId={interruptingQueuedRunId}
                   variant={variant}
                   firstUnreadAnchorId={firstUnreadAnchorId}
-                  firstUnreadIndex={firstUnreadIndex}
-                  canCollapseEarlier={canCollapseEarlier}
+                  collapseEarlierCount={collapseEarlierCount}
                   earlierExpanded={earlierExpanded}
                   onToggleEarlier={() => setEarlierExpanded((prev) => !prev)}
                 />
@@ -5010,13 +5092,13 @@ export function IssueChatThread({
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
                 messages.map((message, index) => {
-                  const isEarlier = canCollapseEarlier && index < firstUnreadIndex;
+                  const isEarlier = index < collapseEarlierCount;
                   if (isEarlier && !earlierExpanded) {
                     // Render the toggle once in place of the whole collapsed block.
                     return index === 0 ? (
                       <IssueChatEarlierToggle
                         key="issue-chat-earlier-toggle"
-                        count={firstUnreadIndex}
+                        count={collapseEarlierCount}
                         expanded={false}
                         onToggle={() => setEarlierExpanded(true)}
                       />
@@ -5024,9 +5106,9 @@ export function IssueChatThread({
                   }
                   return (
                     <Fragment key={message.id}>
-                      {canCollapseEarlier && earlierExpanded && index === 0 ? (
+                      {collapseEarlierCount > 0 && earlierExpanded && index === 0 ? (
                         <IssueChatEarlierToggle
-                          count={firstUnreadIndex}
+                          count={collapseEarlierCount}
                           expanded
                           onToggle={() => setEarlierExpanded(false)}
                         />
