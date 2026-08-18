@@ -75,6 +75,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { issueHasLivePendingDecisionGate } from "./review-participant-decision-gate.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -3960,6 +3961,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         // repeatedly while the participant was paused. Skip quietly; the normal
         // review flow resumes when the agent is resumed.
         if (agent?.status === "paused") {
+          result.skipped += 1;
+          continue;
+        }
+
+        // COM-399: the review stage staying `pending` isn't itself abandonment —
+        // the participant can have correctly declined to approve yet because a
+        // separate, still-live decision (board confirmation/approval card) is
+        // outstanding. Escalating this to `blocked`/board-recovery on top of an
+        // already-tracked live decision is a false positive (CMP-588). Skip
+        // quietly; the pending interaction/approval remains the real liveness
+        // path and wakes the participant normally when it resolves.
+        if (await issueHasLivePendingDecisionGate(db, issue.companyId, issue.id)) {
           result.skipped += 1;
           continue;
         }

@@ -16,6 +16,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  issueThreadInteractions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -140,6 +141,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   afterEach(async () => {
     delete process.env[SOURCE_SCOPED_RECOVERY_WAKES_ENV];
     await db.delete(issueRecoveryActions);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
@@ -888,6 +890,75 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       contextSnapshot: { issueId: sourceIssueId },
     });
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 0, reviewParticipantRequeued: 0 });
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchangedIssue?.status).toBe("in_review");
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId))).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("skips review-participant recovery while a real board decision is still pending (COM-399)", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    // CMP-588: the reviewer run succeeded and intentionally left the gate pending
+    // because a separate, still-live board confirmation (a merge-go card) hasn't
+    // resolved yet -- not because the reviewer vanished.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId: sourceIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: managerId,
+      payload: {
+        version: 1,
+        prompt: "Merge PR#104?",
+        target: { type: "issue_document", issueId: sourceIssueId, key: "plan", revisionId: randomUUID() },
+      },
+    });
     const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
     const recovery = recoveryService(db, { enqueueWakeup });
 
