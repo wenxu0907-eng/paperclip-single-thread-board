@@ -506,6 +506,24 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(hold.held).toBe(false);
   });
 
+  it("skips the long-active trigger when PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEW_LONG_ACTIVE=1", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+
+    process.env["PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEW_LONG_ACTIVE"] = "1";
+    try {
+      const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      expect(result.created).toBe(0);
+      expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+    } finally {
+      delete process.env["PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEW_LONG_ACTIVE"];
+    }
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
