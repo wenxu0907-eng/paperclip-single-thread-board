@@ -96,4 +96,30 @@ describe("assignee selection helpers", () => {
       ),
     ).toBe("agent:agent-123");
   });
+
+  it("never suggests a different assignee while an execution stage is pending", () => {
+    expect(
+      suggestedCommentAssigneeValue(
+        { assigneeUserId: "board-user", executionState: { status: "pending" } },
+        [
+          { authorUserId: "board-user" },
+          { authorAgentId: "agent-123" },
+        ],
+        "board-user",
+      ),
+    ).toBe("user:board-user");
+  });
+
+  it("resumes the last-commenter suggestion once the stage is no longer pending", () => {
+    expect(
+      suggestedCommentAssigneeValue(
+        { assigneeUserId: "board-user", executionState: { status: "changes_requested" } },
+        [
+          { authorUserId: "board-user" },
+          { authorAgentId: "agent-123" },
+        ],
+        "board-user",
+      ),
+    ).toBe("agent:agent-123");
+  });
 });
