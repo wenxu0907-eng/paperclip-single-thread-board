@@ -2988,6 +2988,56 @@ function issueChatMessageIsDeleted(message: ThreadMessage): boolean {
   return Boolean(custom.deletedAt);
 }
 
+// COM-382 (board pick B): the live "Running" work card and the user's own
+// in-flight comment that triggered it should render as a block *after* the
+// New divider, decoupled from strict chronological order — not merely kept
+// visible in their normal slot (that was the earlier COM-382 fix, still in
+// effect for everything else). Scoped tightly to the currently active
+// run(s) so nothing else in the thread's ordering is disturbed.
+function issueChatMessageIsActiveRunPinned(
+  message: ThreadMessage,
+  activeRunIds: ReadonlySet<string>,
+  activeRunTriggerCommentIds: ReadonlySet<string>,
+): boolean {
+  if (
+    issueChatMessageKind(message) === "live-run"
+    && issueChatMessageRunIsActive(message, activeRunIds)
+  ) {
+    return true;
+  }
+  const commentId = issueChatMessageCommentId(message);
+  return Boolean(commentId && activeRunTriggerCommentIds.has(commentId));
+}
+
+// Moves the pinned running-work block (see above) to the end of `messages`,
+// preserving their relative order, and leaves every other message's relative
+// order untouched. This is the single reordering point shared by the plain
+// and virtualized render paths (both simply render whatever `messages` this
+// returns) — no separate reorder step needed per path.
+//
+// The "New" divider position is unaffected: `findFirstUnreadCommentAnchorId`
+// already skips both the current user's own comments and non-comment kinds
+// like "live-run", so pulling the pinned tail out from under the remaining
+// messages never changes which anchor it lands on.
+export function reorderIssueChatMessagesForActiveRun(
+  messages: readonly ThreadMessage[],
+  activeRunIds: ReadonlySet<string>,
+  activeRunTriggerCommentIds: ReadonlySet<string>,
+): readonly ThreadMessage[] {
+  if (activeRunIds.size === 0 && activeRunTriggerCommentIds.size === 0) return messages;
+  const pinned: ThreadMessage[] = [];
+  const rest: ThreadMessage[] = [];
+  for (const message of messages) {
+    if (issueChatMessageIsActiveRunPinned(message, activeRunIds, activeRunTriggerCommentIds)) {
+      pinned.push(message);
+    } else {
+      rest.push(message);
+    }
+  }
+  if (pinned.length === 0) return messages;
+  return [...rest, ...pinned];
+}
+
 function issueChatMessageDeletedAt(message: ThreadMessage): string | null {
   const custom = issueChatMessageCustom(message);
   return typeof custom.deletedAt === "string" ? custom.deletedAt : null;
@@ -4517,6 +4567,19 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  // COM-382 (board pick B): comment(s) that triggered a currently active
+  // (queued/running) run — these, plus the run's own live card, get pinned
+  // below the New divider instead of rendering in their natural chronological
+  // slot. See reorderIssueChatMessagesForActiveRun.
+  const activeRunTriggerCommentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of displayLiveRuns) {
+      if ((run.status === "queued" || run.status === "running") && run.contextCommentId) {
+        ids.add(run.contextCommentId);
+      }
+    }
+    return ids;
+  }, [displayLiveRuns]);
   const hasActiveRun = useMemo(
     () => displayLiveRuns.some((run) => run.status === "running") || activeRun?.status === "running",
     [displayLiveRuns, activeRun],
@@ -4573,18 +4636,26 @@ export function IssueChatThread({
       userLabelMap,
     ],
   );
+  // COM-382 (board pick B): reorder before stabilizing, so this is the one
+  // place that decides render order — both the plain and virtualized paths
+  // (and every downstream index/anchor computation below) consume `messages`
+  // as-is, already carrying the pinned running-work block at the tail.
+  const orderedRawMessages = useMemo(
+    () => reorderIssueChatMessagesForActiveRun(rawMessages, activeRunIds, activeRunTriggerCommentIds),
+    [rawMessages, activeRunIds, activeRunTriggerCommentIds],
+  );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
   const stableMessageCacheRef = useRef<Map<string, StableThreadMessageCacheEntry>>(new Map());
   const messages = useMemo(() => {
     const stabilized = stabilizeThreadMessages(
-      rawMessages,
+      orderedRawMessages,
       stableMessagesRef.current,
       stableMessageCacheRef.current,
     );
     stableMessagesRef.current = stabilized.messages;
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
-  }, [rawMessages]);
+  }, [orderedRawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
   const firstUnreadAnchorIdRef = useRef<string | null>(null);

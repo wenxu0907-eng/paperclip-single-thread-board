@@ -701,6 +701,105 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("pins the running work card and its triggering comment below the New divider (COM-382 board pick B)", () => {
+    const root = createRoot(container);
+    const mkComment = (id: string, iso: string, authorUserId: string) => ({
+      id,
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId,
+      authorType: "user" as const,
+      body: `body ${id}`,
+      presentation: null,
+      metadata: null,
+      createdAt: new Date(iso),
+      updatedAt: new Date(iso),
+    });
+    // "mine" is buried deep in the already-read history (well before
+    // myLastTouchAt, well outside the COM-382 keep-visible tail), but it is
+    // the comment that kicked off the currently active run. The board's
+    // ask (option B) is that the run card *and* this comment should still
+    // surface below the New divider, not stay folded with the rest of the
+    // old history.
+    // Six non-pinned old comments (old-1..old-6) so that even after "mine" is
+    // pulled out of the earlier block, enough genuinely old history remains
+    // to clear the collapse threshold and still exercise the toggle.
+    const comments = [
+      mkComment("old-1", "2026-04-06T11:00:00.000Z", "user-2"),
+      mkComment("old-2", "2026-04-06T11:01:00.000Z", "user-2"),
+      mkComment("mine", "2026-04-06T11:02:00.000Z", "user-1"),
+      mkComment("old-3", "2026-04-06T11:03:00.000Z", "user-2"),
+      mkComment("old-4", "2026-04-06T11:04:00.000Z", "user-2"),
+      mkComment("old-5", "2026-04-06T11:05:00.000Z", "user-2"),
+      mkComment("old-6", "2026-04-06T11:06:00.000Z", "user-2"),
+      mkComment("new-1", "2026-04-06T13:00:00.000Z", "user-2"),
+      mkComment("new-2", "2026-04-06T13:01:00.000Z", "user-2"),
+    ];
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={comments}
+            currentUserId="user-1"
+            myLastTouchAt={new Date("2026-04-06T12:00:00.000Z")}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              contextCommentId: "mine",
+              startedAt: "2026-04-06T11:01:05.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T11:01:05.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // The pinned comment + the running card are visible without expanding
+    // the earlier-history toggle, even though "mine" sorts chronologically
+    // deep inside the folded block.
+    const toggle = container.querySelector('[data-testid="issue-chat-earlier-toggle"] button') as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(container.textContent).not.toContain("body old-1");
+    expect(container.textContent).not.toContain("body old-2");
+    expect(container.textContent).not.toContain("body old-3");
+    expect(container.textContent).toContain("body old-6");
+    expect(container.textContent).toContain("body mine");
+    expect(container.textContent).toContain("Working");
+
+    // Ordering: the New divider still marks the true first-unread comment
+    // (new-1) — it has not moved. But the pinned block (the trigger comment
+    // and the running card) now renders *after* everything else, including
+    // the newest unread reply, instead of in its natural chronological slot.
+    const html = container.innerHTML;
+    const dividerIndex = html.indexOf('data-testid="issue-chat-new-divider"');
+    const mineIndex = html.indexOf("body mine");
+    const workingIndex = html.indexOf("Working");
+    const new1Index = html.indexOf("body new-1");
+    const new2Index = html.indexOf("body new-2");
+    expect(dividerIndex).toBeGreaterThan(-1);
+    expect(new1Index).toBeGreaterThan(dividerIndex);
+    expect(mineIndex).toBeGreaterThan(new2Index);
+    expect(workingIndex).toBeGreaterThan(new2Index);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the New divider + collapse toggle as synthetic rows on the virtualized path (COM-12)", () => {
     const root = createRoot(container);
     const mkComment = (id: string, iso: string, authorUserId: string) => ({
@@ -787,6 +886,105 @@ describe("IssueChatThread", () => {
     });
     expect(container.textContent).toContain("Hide earlier messages");
     expect(container.textContent).toContain("body old-1");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("pins the running work card and its triggering comment below the New divider on the virtualized path (COM-382 board pick B)", () => {
+    const root = createRoot(container);
+    const mkComment = (id: string, iso: string, authorUserId: string) => ({
+      id,
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId,
+      authorType: "user" as const,
+      body: `body ${id}`,
+      presentation: null,
+      metadata: null,
+      createdAt: new Date(iso),
+      updatedAt: new Date(iso),
+    });
+    // Same scenario as the plain-path test, but past the virtualization
+    // threshold, to prove the two render paths share the same reorder — no
+    // separate logic to drift between them.
+    const oldCount = 156;
+    const triggerIso = new Date(Date.UTC(2026, 3, 6, 9, 0, 5)).toISOString();
+    const comments = [
+      ...Array.from({ length: oldCount }, (_, index) => {
+        const iso = new Date(Date.UTC(2026, 3, 6, 9, 0, index)).toISOString();
+        // Bury the triggering comment (authored by the current user) deep in
+        // the old, foldable history — index 5, far from the divider.
+        return index === 5
+          ? mkComment("mine", iso, "user-1")
+          : mkComment(`old-${index + 1}`, iso, "user-2");
+      }),
+      ...Array.from({ length: 4 }, (_, index) =>
+        mkComment(`new-${index + 1}`, new Date(Date.UTC(2026, 3, 6, 13, 0, index)).toISOString(), "user-2"),
+      ),
+    ];
+    expect(comments.length).toBeGreaterThanOrEqual(VIRTUALIZED_THREAD_ROW_THRESHOLD);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={comments}
+            currentUserId="user-1"
+            myLastTouchAt={new Date("2026-04-06T12:00:00.000Z")}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              contextCommentId: "mine",
+              startedAt: triggerIso,
+              finishedAt: null,
+              createdAt: triggerIso,
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="issue-chat-thread-virtualizer"]')).not.toBeNull();
+    // "body old-2" is a safe substring check here (unlike "body old-1", which
+    // prefix-collides with "body old-10".."body old-19" etc.) — old-2 stands
+    // alone since the fixture only ever emits single "old-N" tokens per row
+    // and no other old id starts with "old-2" followed by another digit
+    // below old count 156... to stay collision-proof, assert on the toggle
+    // count and a known-folded id far from any prefix boundary instead.
+    const toggle = container.querySelector(
+      '[data-testid="issue-chat-earlier-toggle"] button',
+    ) as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(container.textContent).not.toContain("body old-153");
+    expect(container.textContent).toContain("body old-154");
+    // The pinned trigger comment and the running card are mounted despite
+    // "mine" sorting deep inside the folded block.
+    expect(container.textContent).toContain("body mine");
+    expect(container.textContent).toContain("Working");
+
+    const html = container.innerHTML;
+    const dividerIndex = html.indexOf('data-testid="issue-chat-new-divider"');
+    const mineIndex = html.indexOf("body mine");
+    const workingIndex = html.indexOf("Working");
+    const new4Index = html.indexOf("body new-4");
+    expect(dividerIndex).toBeGreaterThan(-1);
+    expect(mineIndex).toBeGreaterThan(new4Index);
+    expect(workingIndex).toBeGreaterThan(new4Index);
 
     act(() => {
       root.unmount();
