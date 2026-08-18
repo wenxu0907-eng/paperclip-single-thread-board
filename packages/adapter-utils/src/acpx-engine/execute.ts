@@ -1640,6 +1640,24 @@ async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeE
   }
 }
 
+const TERMINAL_TOOL_CALL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+// COM-403: a Monitor tool call is the agent's ad-hoc, in-process way to watch
+// a background condition (e.g. CI going green) and resume once it fires. If
+// the turn ends without a terminal update for it, there's a real pending
+// callback the platform doesn't otherwise know about — distinct from (and in
+// addition to) the platform-native `issue.monitorNextCheckAt` monitor.
+function findPendingMonitorToolWait(
+  toolCallStatuses: Map<string, { title?: string; status?: string }>,
+): { toolCallId: string; toolName: string; status: string } | null {
+  for (const [toolCallId, entry] of toolCallStatuses) {
+    if (!entry.title || !/monitor/i.test(entry.title)) continue;
+    if (entry.status && TERMINAL_TOOL_CALL_STATUSES.has(entry.status)) continue;
+    return { toolCallId, toolName: entry.title, status: entry.status ?? "pending" };
+  }
+  return null;
+}
+
 function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   if (result.status !== "failed") return null;
   return result.error.message;
@@ -2389,6 +2407,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
     let terminal: AcpRuntimeTurnResult;
+    // COM-403: track each tool_call's most recent status by toolCallId so a
+    // Monitor tool call still open (no completed/failed/cancelled update) when
+    // the turn ends can be surfaced as a live continuation path, distinct from
+    // the platform-persisted `issue.monitorNextCheckAt` monitor.
+    let toolCallStatuses = new Map<string, { title?: string; status?: string }>();
     // COM-322: this lane owns no killable child process (the acpx runtime
     // session is spawned/managed inside the acpx package, so onSpawn never
     // fires and the platform's cancel path finds no pid). Without this hook a
@@ -2431,6 +2454,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         textParts = [];
         eventBreakdown = null;
         eventCostUsd = null;
+        toolCallStatuses = new Map();
         controller = new AbortController();
         const remainingMs = deadlineAt !== undefined ? deadlineAt - now() : undefined;
         if (remainingMs !== undefined && remainingMs <= 0) {
@@ -2464,6 +2488,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+            }
+            if (event.type === "tool_call" && event.toolCallId) {
+              toolCallStatuses.set(event.toolCallId, { title: event.title, status: event.status });
             }
             await emitRuntimeEvent(ctx, event);
           }
@@ -2614,6 +2641,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...(turnUsage.cumulativeCostUsd != null
             ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
             : {}),
+          ...(() => {
+            const pendingMonitorToolWait = findPendingMonitorToolWait(toolCallStatuses);
+            return pendingMonitorToolWait ? { pendingMonitorToolWait } : {};
+          })(),
         },
         summary: textParts.join("").trim() || terminalStopReason || terminal.status,
         clearSession,

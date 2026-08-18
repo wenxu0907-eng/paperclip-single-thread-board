@@ -1306,6 +1306,145 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 });
 
+describe("ACPX Monitor tool wait detection (COM-403)", () => {
+  it("surfaces a still-open Monitor tool call as resultJson.pendingMonitorToolWait", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "tool_call",
+              text: "",
+              toolCallId: "call-1",
+              status: "pending",
+              title: "Monitor",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-monitor-wait",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect((result.resultJson as Record<string, unknown>)?.pendingMonitorToolWait).toEqual({
+      toolCallId: "call-1",
+      toolName: "Monitor",
+      status: "pending",
+    });
+  });
+
+  it("does not report a pending wait once the Monitor tool call reaches a terminal status", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "tool_call",
+              text: "",
+              toolCallId: "call-1",
+              status: "pending",
+              title: "Monitor",
+            };
+            yield {
+              type: "tool_call",
+              text: "",
+              toolCallId: "call-1",
+              status: "completed",
+              title: "Monitor",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-monitor-completed",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect((result.resultJson as Record<string, unknown>)?.pendingMonitorToolWait).toBeUndefined();
+  });
+
+  it("ignores unrelated tool calls left open at turn end", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "tool_call",
+              text: "",
+              toolCallId: "call-1",
+              status: "pending",
+              title: "Bash",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-unrelated-tool",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect((result.resultJson as Record<string, unknown>)?.pendingMonitorToolWait).toBeUndefined();
+  });
+});
+
 describe("findAncestorBin", () => {
   async function writeFakeBin(dir: string, name: string) {
     const binDir = path.join(dir, "node_modules", ".bin");
