@@ -8,6 +8,7 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -109,6 +110,18 @@ function issueRunScopeSql(issueId: string) {
     ${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
     or ${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}
     or ${heartbeatRuns.contextSnapshot}->>'taskKey' = ${issueId}
+  )`;
+}
+
+// A run that opened a confirmation/question interaction on the issue represents a
+// human-in-the-loop round trip (e.g. request_confirmation, ask_user_questions), not the
+// agent thrashing on its own — exclude these from high_churn counting so chronically
+// interactive threads (fast human<->agent Q&A) don't keep re-tripping the trigger.
+function excludeInteractionGatedRunsSql(issueId: string) {
+  return sql`not exists (
+    select 1 from ${issueThreadInteractions}
+    where ${issueThreadInteractions.sourceRunId} = ${heartbeatRuns.id}
+    and ${issueThreadInteractions.issueId} = ${issueId}
   )`;
 }
 
@@ -417,6 +430,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.agentId, agentId),
           issueRunScopeSql(issueId),
           sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
+          excludeInteractionGatedRunsSql(issueId),
         ),
       )
       .then((rows) => rows[0]?.count ?? 0);
@@ -436,6 +450,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.agentId, agentId),
           issueRunScopeSql(issueId),
           since ? sql`${issueComments.createdAt} >= ${since.toISOString()}::timestamptz` : undefined,
+          excludeInteractionGatedRunsSql(issueId),
         ),
       )
       .then((rows) => rows[0]?.count ?? 0);
