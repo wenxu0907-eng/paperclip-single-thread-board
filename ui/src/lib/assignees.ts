@@ -12,6 +12,7 @@ export interface AssigneeOption {
 interface CommentAssigneeSuggestionInput {
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  executionState?: { status?: string | null } | null;
 }
 
 interface CommentAssigneeSuggestionComment {
@@ -31,6 +32,13 @@ export function suggestedCommentAssigneeValue(
   currentUserId: string | null | undefined,
   currentAgentId?: string | null | undefined,
 ): string {
+  // A pending execution stage (review/approval) owns the assignee while it's active — plain
+  // comments must never suggest a different "Responsible" value, or the composer silently
+  // turns the comment into a reassignment request that the pending-stage gate rejects.
+  if (issue.executionState?.status === "pending") {
+    return assigneeValueFromSelection(issue);
+  }
+
   if (comments && comments.length > 0 && (currentUserId || currentAgentId)) {
     for (let i = comments.length - 1; i >= 0; i--) {
       const comment = comments[i];

@@ -2172,7 +2172,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   const suggestedAssigneeValue = useMemo(
     () =>
       suggestedCommentAssigneeValue(
-        starterAssigneeValue ? parseAssigneeValue(starterAssigneeValue) : activeConversationIssue ?? {},
+        starterAssigneeValue
+          ? { ...parseAssigneeValue(starterAssigneeValue), executionState: activeConversationIssue?.executionState }
+          : activeConversationIssue ?? {},
         conversationComments,
         currentUserId,
       ),
