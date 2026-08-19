@@ -16,6 +16,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -457,6 +458,100 @@ describeEmbeddedPostgres("execution lock orphan cleanup", () => {
       expect(contextAfter?.executionRunId).toBeNull();
       expect(unrelatedAfter?.executionRunId).toBe(unrelatedRunId);
       expect(unrelatedAfter?.executionAgentNameKey).toBe("se1");
+    });
+  });
+
+  describe("COM-406 checkout-ownership race", () => {
+    it("clears checkoutRunId synchronously when the owning run finalizes, so a new run can check out immediately without a separate sweep", async () => {
+      // Reproduces the COM-406 race: enqueueWakeup spawns a brand new run for
+      // an issue whose executionRunId already looks inactive, while
+      // checkoutRunId still points at an OLD run that is still "running" in
+      // heartbeat_runs. Historically, the terminal-status write on the old
+      // run (via setRunStatus) and the clearing of the issue's checkoutRunId
+      // were two separate, non-atomic facts — a new run's assertCheckoutOwner
+      // call could observe the run as terminal while the issue row still
+      // hadn't been cleared, or (worse) the clearing simply never ran for
+      // call sites that never called releaseIssueExecutionAndPromote (e.g.
+      // cancelQueuedRunForBlockedDependencies / cancelQueuedRunForStaleIssue,
+      // which only ever cleared executionRunId, never checkoutRunId). Now,
+      // setRunStatus/setRunStatusIfRunning clear checkoutRunId in the SAME
+      // transaction as the terminal status write, so there is no separate
+      // cleanup step required for the checkout lock specifically.
+      //
+      // executionRunId still ends up cleared below too, but via
+      // cancelRunInternal's subsequent releaseIssueExecutionAndPromote call —
+      // it is deliberately NOT part of the new atomic helper because
+      // process-loss/codex-transient retry scheduling needs to hand
+      // executionRunId off to a new retry run rather than have it clobbered
+      // to null (see the comment on clearIssueCheckoutRunIdForTerminalRun).
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, "SE1");
+
+      // assigneeUserId is set to a non-null placeholder so releaseIssueExecutionAndPromote's
+      // unrelated "issue needs immediate recovery" path (which requires
+      // resolving a responsible user and is out of scope for this race) does
+      // not trigger — it's gated on `!issue.assigneeUserId`.
+      const issueId = await seedIssue(companyId, {
+        assigneeAgentId: agentId,
+        assigneeUserId: "test-user",
+      });
+
+      const oldRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: oldRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: { issueId },
+      });
+
+      // Issue is checked out by the old run; executionRunId already looks
+      // desynced/absent (the exact COM-406 precondition described in the
+      // issue: enqueueWakeup sees no active executionRunId and spawns a new
+      // run even though checkoutRunId is still pinned to the old one).
+      await db
+        .update(issues)
+        .set({
+          checkoutRunId: oldRunId,
+          executionRunId: oldRunId,
+          executionAgentNameKey: "se1",
+          executionLockedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      const beforeFinalize = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(beforeFinalize?.checkoutRunId).toBe(oldRunId);
+
+      // Old run finalizes to a terminal status. This is the single call under
+      // test: no other cleanup step runs between this and the assertions
+      // below.
+      await heartbeatService(db).cancelRun(oldRunId);
+
+      const afterFinalize = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(afterFinalize?.checkoutRunId).toBeNull();
+      expect(afterFinalize?.executionRunId).toBeNull();
+      expect(afterFinalize?.executionAgentNameKey).toBeNull();
+      expect(afterFinalize?.executionLockedAt).toBeNull();
+
+      const [finalizedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, oldRunId));
+      expect(finalizedRun?.status).toBe("cancelled");
+
+      // A fresh run for the same issue must be able to check out immediately —
+      // no 409 "Issue run ownership conflict", no need to wait for
+      // reapOrphanedRuns to sweep the old run.
+      const newRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: newRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: { issueId },
+      });
+
+      const ownership = await issueService(db).assertCheckoutOwner(issueId, agentId, newRunId);
+      expect(ownership.checkoutRunId).toBe(newRunId);
     });
   });
 });

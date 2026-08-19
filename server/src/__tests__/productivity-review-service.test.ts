@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -506,6 +507,24 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(hold.held).toBe(false);
   });
 
+  it("skips the long-active trigger when PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEW_LONG_ACTIVE=1", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+
+    process.env["PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEW_LONG_ACTIVE"] = "1";
+    try {
+      const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      expect(result.created).toBe(0);
+      expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+    } finally {
+      delete process.env["PAPERCLIP_DISABLE_PRODUCTIVITY_REVIEW_LONG_ACTIVE"];
+    }
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
@@ -527,6 +546,42 @@ describeEmbeddedPostgres("productivity review service", () => {
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.description).toContain("Primary trigger: `high_churn`");
     expect(review?.description).toContain("Runs in rolling windows: 10/1h");
+  });
+
+  it("excludes runs gated on an issue-thread interaction from the high-churn count", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const runs = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      withRunComments: true,
+    });
+    // Every run in this window was a request_confirmation/ask_user_questions round trip
+    // (fast human<->agent Q&A), not the agent thrashing on its own.
+    await db.insert(issueThreadInteractions).values(
+      runs.map((run) => ({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        sourceRunId: run.id,
+        createdByAgentId: seeded.coderId,
+        payload: { message: "Proceed?" },
+        createdAt: run.createdAt as Date,
+        updatedAt: run.createdAt as Date,
+      })),
+    );
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("ignores non-assignee comments when evaluating high-churn productivity reviews", async () => {

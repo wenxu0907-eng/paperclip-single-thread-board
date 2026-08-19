@@ -4377,6 +4377,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     )).toBe(true);
   });
 
+  it("does not block a pending execution-review participant while a real decision is still live (COM-399)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedInReviewParticipantRunFixture();
+
+    // A separate, still-live board confirmation is why the reviewer correctly
+    // left the review stage pending — not because the reviewer vanished.
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: {
+        version: 1,
+        prompt: "Merge PR#104?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const finishedRun = await waitForValue(async () => {
+      const row = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null);
+      return row && row.status !== "queued" && row.status !== "running" ? row : null;
+    }, 8_000);
+    expect(finishedRun?.status).toBe("succeeded");
+
+    // Give any (incorrect) blocking recovery path a moment to fire, then assert it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("in_review");
+
+    const reviewRecoveryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(reviewRecoveryRuns.some((row) =>
+      (row.contextSnapshot as Record<string, unknown> | null)?.retryReason ===
+        "execution_review_participant_recovery"
+    )).toBe(false);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body.includes("pending execution-review participant"))).toBe(false);
+  });
+
   it("blocks failed execution-review recovery under the reviewer when the source assignee differs", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
       await seedInReviewParticipantRunFixture({

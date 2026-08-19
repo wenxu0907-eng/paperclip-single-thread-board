@@ -48,6 +48,23 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
   return IDEMPOTENT_HANDOFF_WAKE_STATUS_SET.has(status);
 }
 
+// COM-403: the Claude ACPX adapter records a still-open Monitor tool call (see
+// findPendingMonitorToolWait in the acpx-engine) as `resultJson.pendingMonitorToolWait`.
+// That's a real pending callback the run left armed — e.g. watching CI go green before
+// merging — distinct from (and in addition to) the platform-native
+// `issue.monitorNextCheckAt` monitor that `hasPersistedMonitor` already covers. Without
+// this, the sweep flagged these runs as missing a disposition even though nothing was
+// actually missing, and after PR #51 (COM-319) hard-gated status-only recovery comments,
+// the resulting recovery run could only re-choose "keep waiting" and get re-flagged
+// minutes later — a repeat-card burst (COM-402).
+export function hasActiveMonitorToolWaitEvidence(resultJson: unknown): boolean {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) return false;
+  const evidence = (resultJson as Record<string, unknown>).pendingMonitorToolWait;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return false;
+  const record = evidence as Record<string, unknown>;
+  return typeof record.toolName === "string" && record.toolName.trim().length > 0;
+}
+
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
@@ -109,6 +126,7 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
   "issue already has a queued or deferred wake",
   "pending interaction or approval owns the next action",
   "persisted issue monitor owns the next action",
+  "active monitor tool wait owns the next action",
   "explicit blocker path owns the next action",
   "open recovery issue owns the ambiguity",
   "issue is under an active pause hold",
@@ -386,6 +404,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasPersistedMonitor: boolean;
+  hasActiveMonitorToolWait: boolean;
   hasExplicitBlockerPath: boolean;
   hasOpenDelegatedChildren: boolean;
   hasOpenRecoveryIssue: boolean;
@@ -432,6 +451,9 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
   if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
+  if (input.hasActiveMonitorToolWait) {
+    return { kind: "skip", reason: "active monitor tool wait owns the next action" };
+  }
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenDelegatedChildren) {
     return { kind: "skip", reason: "issue has open delegated child issues owning the next action" };
