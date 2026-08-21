@@ -132,7 +132,7 @@ describeEmbeddedPostgres("fallback-chain engine (COM-413)", () => {
     expect(reloaded!.adapterType).toBe("claude_local");
   });
 
-  it("switches claude_local -> codex_local on a classified quota failure and updates the agent row", async () => {
+  it("does not switch into the unconfigured default Codex leg", async () => {
     const { agent } = await seedCompanyAgentIssue();
     const result = await evaluateFallbackChainSwitch(db, {
       agent,
@@ -140,19 +140,37 @@ describeEmbeddedPostgres("fallback-chain engine (COM-413)", () => {
       reason: "provider_quota_recovery",
     });
 
-    expect(result.outcome).toBe("switched");
-    if (result.outcome !== "switched") throw new Error("expected switched");
-    expect(result.fromStep.adapterType).toBe("claude_local");
-    expect(result.toStep.adapterType).toBe("codex_local");
-
+    expect(result.outcome).toBe("blocked");
     const [reloaded] = await db.select().from(agents).where(eq(agents.id, agent.id));
-    expect(reloaded!.adapterType).toBe("codex_local");
+    expect(reloaded!.adapterType).toBe("claude_local");
 
     const [state] = await db.select().from(agentFallbackChainState).where(eq(agentFallbackChainState.agentId, agent.id));
-    expect(state!.currentStepIndex).toBe(1);
-    expect(state!.blocked).toBe(false);
+    expect(state!.currentStepIndex).toBe(0);
+    expect(state!.blocked).toBe(true);
     expect(state!.exhaustedSteps).toHaveLength(1);
     expect((state!.exhaustedSteps as Array<{ stepIndex: number }>)[0]!.stepIndex).toBe(0);
+  });
+
+  it("switches on an expired Claude credential when the next leg is configured", async () => {
+    const { agent } = await seedCompanyAgentIssue();
+    await db.insert(agentFallbackChains).values({
+      companyId: agent.companyId,
+      agentId: agent.id,
+      steps: [
+        { adapterType: "claude_local", adapterConfig: {}, label: "primary" },
+        { adapterType: "codex_local", adapterConfig: { env: { OPENAI_API_KEY: "secret_ref" } }, label: "codex fallback" },
+      ],
+    });
+
+    const result = await evaluateFallbackChainSwitch(db, {
+      agent,
+      exitInfo: { errorCode: "configuration_incomplete", error: "authentication_error: OAuth token has expired" },
+      reason: "credential_exhausted_recovery",
+    });
+
+    expect(result.outcome).toBe("switched");
+    const [reloaded] = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect(reloaded!.adapterType).toBe("codex_local");
   });
 
   it("advances to a same-adapter-different-credential leg (claude_local -> claude_local alt binding)", async () => {
