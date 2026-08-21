@@ -76,6 +76,7 @@ import {
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { issueHasLivePendingDecisionGate } from "./review-participant-decision-gate.js";
+import { handleQuotaOrBillingFailureForRun, scheduleFallbackChainRetry } from "./fallback-chain.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -3821,6 +3822,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (adapterFailureClassification.kind === "provider_quota") {
+          // COM-413: before falling back to the same-adapter wait-for-quota-reset monitor,
+          // give the fallback-chain engine a chance to switch this agent to its next
+          // configured adapter/credential and retry immediately instead of waiting. Agents
+          // without a configured chain (or whose failure doesn't match a known quota/billing
+          // signature) fall straight through to the existing monitor path unchanged.
+          if (agent && agent.companyId === issue.companyId) {
+            const fallbackChainResult = await handleQuotaOrBillingFailureForRun(db, {
+              issueId: issue.id,
+              agent,
+              exitInfo: {
+                errorCode: latestRun.errorCode,
+                error: [latestRun.error ?? "", JSON.stringify(latestRun.resultJson ?? {})].join("\n"),
+              },
+              reason: "provider_quota_recovery",
+            });
+            if (fallbackChainResult.outcome === "switched") {
+              await scheduleFallbackChainRetry(db, {
+                issueId: issue.id,
+                companyId: issue.companyId,
+                agentId: agent.id,
+                previousRunId: latestRun.id,
+                toStepIndex: fallbackChainResult.toStepIndex,
+              });
+              latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
+              result.providerQuotaMonitored += 1;
+              result.issueIds.push(issue.id);
+              continue;
+            }
+            if (fallbackChainResult.outcome === "blocked") {
+              latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+              continue;
+            }
+            // outcome is "not_quota_failure" or "no_chain_configured" — fall through below.
+          }
+
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
             issue,
             latestRun,
