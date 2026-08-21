@@ -9,7 +9,7 @@ import {
 } from "@paperclipai/db";
 import { agentService } from "../agents.js";
 import { issueService } from "../issues.js";
-import { isQuotaOrBillingFailure, type AdapterRunExitInfo } from "../quota-windows.js";
+import { isFallbackEligibleAdapterFailure, type AdapterRunExitInfo } from "../quota-windows.js";
 import { applyMemoryBridgeForFallbackStep } from "./fallback-chain-memory-bridge.js";
 
 /**
@@ -55,9 +55,10 @@ export const FALLBACK_CHAIN_DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;
 /**
  * Fleet-wide default chain (COM-413 plan, wiring step 6): claude_local (agent's default
  * credential) -> codex_local (agent's codex credential, if configured) -> claude_local (Kimi K3
- * coding-plan credential) -> claude_local (a second Claude-CLI-compatible account). Legs 3 and 4
- * are placeholders — they only differ from leg 1 by which secret binding is active, and there is
- * no real Kimi/second-account credential to bind by default, so they're marked
+ * coding-plan credential) -> claude_local (a second Claude-CLI-compatible account). Legs 2–4
+ * are placeholders until configured with real credentials — they only differ from leg 1 by which
+ * secret binding is active, and there is no real Codex/Kimi/second-account credential to bind by
+ * default, so they're marked
  * `requiresConfiguration` until a company (or agent-specific override row in
  * `agent_fallback_chains`) supplies real `adapterConfig.env` secret refs for them.
  */
@@ -71,6 +72,7 @@ export const DEFAULT_FALLBACK_CHAIN: readonly FallbackChainStep[] = [
     adapterType: "codex_local",
     adapterConfig: {},
     label: "codex_local (agent's codex credential)",
+    requiresConfiguration: true,
   },
   {
     adapterType: "claude_local",
@@ -222,7 +224,7 @@ export async function evaluateFallbackChainSwitch(
     now?: Date;
   },
 ): Promise<FallbackChainSwitchResult> {
-  if (!isQuotaOrBillingFailure(input.agent.adapterType, input.exitInfo)) {
+  if (!isFallbackEligibleAdapterFailure(input.agent.adapterType, input.exitInfo)) {
     return { outcome: "not_quota_failure" };
   }
 
