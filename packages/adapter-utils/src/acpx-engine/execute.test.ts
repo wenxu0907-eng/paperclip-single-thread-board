@@ -391,6 +391,118 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
+  it("treats Codex unsupported-model JSON text as a non-retryable configuration failure", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text:
+                "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account.\"}}\n\n",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-codex-unsupported-model",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {},
+      config: { agent: "codex", model: "gpt-5.6", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("configuration_incomplete");
+    expect(result.errorMessage).toBe(
+      "The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account.",
+    );
+    expect(result.resultJson).toMatchObject({
+      errorFamily: "configuration_incomplete",
+      completedTurnTextFailure: {
+        errorCode: "configuration_incomplete",
+        category: "configuration",
+        providerErrorType: "invalid_request_error",
+      },
+    });
+    expect(logs.some((log) => log.text.includes('"type":"acpx.error"'))).toBe(true);
+  });
+
+  it("treats Codex newer-version model JSON text as a non-retryable configuration failure", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text:
+                "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.6-luna' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\"}}\n\n",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-codex-luna-newer-version",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {},
+      config: { agent: "codex", model: "gpt-5.6-luna", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("configuration_incomplete");
+    expect(result.errorMessage).toBe(
+      "The 'gpt-5.6-luna' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.",
+    );
+    expect(result.resultJson).toMatchObject({
+      errorFamily: "configuration_incomplete",
+      completedTurnTextFailure: {
+        errorCode: "configuration_incomplete",
+        category: "configuration",
+        providerErrorType: "invalid_request_error",
+      },
+    });
+  });
+
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

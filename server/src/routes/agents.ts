@@ -1292,8 +1292,16 @@ export function agentRoutes(
   ) {
     if (adapterType !== "codex_local") return;
     const env = asRecord(adapterConfig.env) ? adapterConfig.env as Record<string, unknown> : {};
+    if (!codexLocalEnvKeyConfigured(env.OPENAI_API_KEY)) return;
     const codexHome = asEnvBindingString(env.CODEX_HOME);
     if (!codexHome) return;
+    const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+      homeDir: asNonEmptyString(process.env.PAPERCLIP_HOME) ?? undefined,
+      instanceId: asNonEmptyString(process.env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+      env: process.env,
+    });
+    const relativeCodexHome = path.relative(instanceRoot, path.resolve(codexHome));
+    if (relativeCodexHome.startsWith("..") || path.isAbsolute(relativeCodexHome)) return;
     const source = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
     if (!(await codexLocalPathExists(source))) return;
     await ensureCodexLocalSymlink(path.join(codexHome, "auth.json"), source);
@@ -1305,7 +1313,7 @@ export function agentRoutes(
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
     if (adapterType === "codex_local") {
-      if (!asNonEmptyString(next.model)) {
+      if (!asNonEmptyString(next.model) && DEFAULT_CODEX_LOCAL_MODEL) {
         next.model = DEFAULT_CODEX_LOCAL_MODEL;
       }
       const hasBypassFlag =

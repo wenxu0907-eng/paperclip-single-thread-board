@@ -86,6 +86,12 @@ const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
+type CompletedTurnTextFailure = {
+  errorCode: string;
+  errorMessage: string;
+  errorMeta: Record<string, unknown>;
+};
+
 interface ChildStderrState {
   logPath: string | null;
   pendingLiveLine: string;
@@ -116,6 +122,69 @@ function flushChildStderr(state: ChildStderrState) {
     process.stderr.write(state.pendingLiveLine);
   }
   state.pendingLiveLine = "";
+}
+
+function parseJsonObjectLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parseObject(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function isCodexModelConfigurationErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  if (!normalized.includes("model")) return false;
+  return (
+    normalized.includes("not supported when using codex with a chatgpt account") ||
+    normalized.includes("requires a newer version of codex") ||
+    normalized.includes("not supported") ||
+    normalized.includes("not available") ||
+    normalized.includes("not found") ||
+    normalized.includes("does not exist") ||
+    normalized.includes("do not have access") ||
+    normalized.includes("don't have access") ||
+    normalized.includes("not enabled")
+  );
+}
+
+function classifyCodexCompletedTurnTextFailure(text: string): CompletedTurnTextFailure | null {
+  for (const line of text.split(/\r?\n/)) {
+    const parsed = parseJsonObjectLine(line);
+    if (!parsed || parsed.type !== "error") continue;
+    const error = parseObject(parsed.error);
+    const message = asString(error.message, "").trim();
+    const errorType = asString(error.type, "").trim();
+    const status = typeof parsed.status === "number" ? parsed.status : null;
+    if (
+      status === 400 &&
+      errorType === "invalid_request_error" &&
+      isCodexModelConfigurationErrorMessage(message)
+    ) {
+      return {
+        errorCode: "configuration_incomplete",
+        errorMessage: message || "Configured Codex model is not available in the current Codex runtime.",
+        errorMeta: {
+          category: "configuration",
+          provider: "openai",
+          providerStatus: status,
+          providerErrorType: errorType,
+        },
+      };
+    }
+  }
+  return null;
+}
+
+function classifyCompletedTurnTextFailure(input: {
+  prepared: Pick<AcpxPreparedRuntime, "acpxAgent">;
+  text: string;
+}): CompletedTurnTextFailure | null {
+  if (input.prepared.acpxAgent !== "codex") return null;
+  return classifyCodexCompletedTurnTextFailure(input.text);
 }
 
 type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
@@ -2544,20 +2613,32 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         eventBreakdown,
         eventCostUsd,
       });
-      if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
+      const outputText = textParts.join("").trim();
+      const completedTurnTextFailure = terminal.status === "completed"
+        ? classifyCompletedTurnTextFailure({ prepared, text: outputText })
+        : null;
+      if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut || completedTurnTextFailure) {
         const existing = warmHandles.get(prepared.sessionKey);
         if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
           await closeWarmHandle({
             handles: warmHandles,
             key: prepared.sessionKey,
             entry: existing,
-            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+            reason: timedOut
+              ? "paperclip timeout cleanup"
+              : completedTurnTextFailure
+                ? "paperclip completed turn contained provider error"
+                : `paperclip turn ${terminal.status}`,
             discardPersistentState: terminal.status === "cancelled" || timedOut,
           });
         } else {
           await runtime.close({
             handle: sessionHandle,
-            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+            reason: timedOut
+              ? "paperclip timeout cleanup"
+              : completedTurnTextFailure
+                ? "paperclip completed turn contained provider error"
+                : `paperclip turn ${terminal.status}`,
             discardPersistentState: terminal.status === "cancelled" || timedOut,
           }).catch(() => {});
         }
@@ -2606,22 +2687,25 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
       const errorMessage = timedOut
         ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-        : resultErrorMessage(terminal);
+        : completedTurnTextFailure?.errorMessage ?? resultErrorMessage(terminal);
       const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
       await emitAcpxLog(ctx, {
-        type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
-        summary: terminal.status,
+        type: terminal.status === "completed" && !completedTurnTextFailure ? "acpx.result" : "acpx.error",
+        summary: completedTurnTextFailure ? "failed" : terminal.status,
         stopReason: terminalStopReason,
         message: errorMessage,
+        ...(completedTurnTextFailure?.errorMeta ?? {}),
       });
       await cleanupRemoteBridges(prepared);
       flushChildStderr(childStderrState);
       return {
-        exitCode: terminal.status === "completed" ? 0 : 1,
+        exitCode: terminal.status === "completed" && !completedTurnTextFailure ? 0 : 1,
         signal: timedOut ? "SIGTERM" : null,
         timedOut,
         errorMessage,
-        errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+        errorCode: completedTurnTextFailure?.errorCode ??
+          (terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null),
+        errorMeta: completedTurnTextFailure?.errorMeta,
         sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -2641,12 +2725,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...(turnUsage.cumulativeCostUsd != null
             ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
             : {}),
+          ...(completedTurnTextFailure
+            ? {
+                errorFamily: "configuration_incomplete",
+                completedTurnTextFailure: {
+                  errorCode: completedTurnTextFailure.errorCode,
+                  message: completedTurnTextFailure.errorMessage,
+                  ...completedTurnTextFailure.errorMeta,
+                },
+              }
+            : {}),
           ...(() => {
             const pendingMonitorToolWait = findPendingMonitorToolWait(toolCallStatuses);
             return pendingMonitorToolWait ? { pendingMonitorToolWait } : {};
           })(),
         },
-        summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+        summary: outputText || terminalStopReason || terminal.status,
         clearSession,
       };
     } catch (err) {
