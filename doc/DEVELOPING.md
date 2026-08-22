@@ -103,6 +103,12 @@ pnpm dev:list
 pnpm dev:stop
 ```
 
+The dev server binds the configured port strictly by default. During restarts it
+retries the requested port for a short window and then fails loudly instead of
+silently moving to a different port behind a pinned local URL or tunnel. Set
+`PAPERCLIP_ALLOW_PORT_FALLBACK=1` only when you intentionally want the legacy
+"next free port" behavior for multiple local instances.
+
 Emergency local shutoffs:
 
 ```sh
