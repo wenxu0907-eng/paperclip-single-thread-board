@@ -5,6 +5,7 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_ALLOW_PORT_FALLBACK = process.env.PAPERCLIP_ALLOW_PORT_FALLBACK;
 
 const {
   createAppMock,
@@ -397,9 +398,16 @@ describe("startServer authenticated auth origin setup", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_ALLOW_PORT_FALLBACK;
   });
 
-  it("derives trusted origins from the detected listen port before auth initializes", async () => {
+  afterEach(() => {
+    if (ORIGINAL_PAPERCLIP_ALLOW_PORT_FALLBACK === undefined) delete process.env.PAPERCLIP_ALLOW_PORT_FALLBACK;
+    else process.env.PAPERCLIP_ALLOW_PORT_FALLBACK = ORIGINAL_PAPERCLIP_ALLOW_PORT_FALLBACK;
+  });
+
+  it("derives trusted origins from the fallback listen port before auth initializes", async () => {
+    process.env.PAPERCLIP_ALLOW_PORT_FALLBACK = "1";
     loadConfigMock.mockReturnValue(buildTestConfig({
       port: 3210,
       allowedHostnames: ["board.example.test"],
@@ -442,6 +450,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_ALLOW_PORT_FALLBACK;
   });
 
   afterEach(() => {
@@ -462,6 +471,9 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
     else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+
+    if (ORIGINAL_PAPERCLIP_ALLOW_PORT_FALLBACK === undefined) delete process.env.PAPERCLIP_ALLOW_PORT_FALLBACK;
+    else process.env.PAPERCLIP_ALLOW_PORT_FALLBACK = ORIGINAL_PAPERCLIP_ALLOW_PORT_FALLBACK;
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
@@ -499,7 +511,8 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     );
   });
 
-  it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
+  it("rewrites explicit-port auth public URLs when port fallback selects a new port", async () => {
+    process.env.PAPERCLIP_ALLOW_PORT_FALLBACK = "1";
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
@@ -514,7 +527,8 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
   });
 
-  it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
+  it("keeps no-port auth public URLs stable when port fallback selects a new port", async () => {
+    process.env.PAPERCLIP_ALLOW_PORT_FALLBACK = "1";
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
