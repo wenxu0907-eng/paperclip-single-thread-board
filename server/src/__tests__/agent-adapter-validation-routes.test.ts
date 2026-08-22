@@ -295,7 +295,7 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
     vi.unstubAllEnvs();
     if (tempRoot) {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       tempRoot = null;
       sharedCodexHome = null;
     }
@@ -335,7 +335,7 @@ describe("agent routes adapter validation", () => {
     const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
     const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
-    expect(adapterConfig.model).toBe("gpt-5.6");
+    expect(adapterConfig.model).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.CODEX_HOME).toBeUndefined();
   });
@@ -377,7 +377,7 @@ describe("agent routes adapter validation", () => {
     const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const adapterConfig = patch.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
-    expect(adapterConfig.model).toBe("gpt-5.6");
+    expect(adapterConfig.model).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
     const authPath = path.join(String(env.CODEX_HOME), "auth.json");
@@ -387,7 +387,8 @@ describe("agent routes adapter validation", () => {
 
   it("allows codex_local agents to share the host Codex home", async () => {
     const app = await createApp();
-    const sharedHome = path.join(os.homedir(), ".codex");
+    const sharedHome = path.join(tempRoot!, "explicit-shared-codex-home");
+    await fs.mkdir(sharedHome, { recursive: true });
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .post("/api/companies/company-1/agents")
@@ -407,6 +408,7 @@ describe("agent routes adapter validation", () => {
     const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
     const env = adapterConfig.env as Record<string, unknown>;
     expect(env.CODEX_HOME).toBe(sharedHome);
+    await expect(fs.lstat(path.join(sharedHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("isolates CODEX_HOME when a codex_local agent sets its own OPENAI_API_KEY", async () => {
