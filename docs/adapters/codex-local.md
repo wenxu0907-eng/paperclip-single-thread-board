@@ -14,6 +14,11 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
   `auth.json`, not directly from the process environment — for a self-managed
   external `CODEX_HOME`, write `auth.json` there directly instead)
 
+The built-in fallback chain treats the Codex leg as usable with empty adapter config
+when this host-login prerequisite is available. If neither host auth nor an API key
+exists, the adapter fails fast with a clear configuration error rather than running
+unauthenticated.
+
 ## Configuration Fields
 
 | Field | Type | Required | Description |
