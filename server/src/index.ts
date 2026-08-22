@@ -33,6 +33,7 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { resolveListenPort } from "./resolve-listen-port.js";
 import {
   getManagedInstanceConfig,
   type ManagedInstanceConfig,
@@ -526,7 +527,15 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   const requestedListenPort = config.port;
-  const listenPort = await detectPort(requestedListenPort);
+  const allowPortFallback = /^(1|true|yes)$/i.test(
+    process.env.PAPERCLIP_ALLOW_PORT_FALLBACK?.trim() ?? "",
+  );
+  const listenPort = await resolveListenPort(requestedListenPort, {
+    host: config.host,
+    allowFallback: allowPortFallback,
+    detect: detectPort,
+    log: logger,
+  });
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -1285,6 +1294,8 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      server.close();
+
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
