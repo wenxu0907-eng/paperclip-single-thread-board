@@ -132,21 +132,29 @@ describeEmbeddedPostgres("fallback-chain engine (COM-413)", () => {
     expect(reloaded!.adapterType).toBe("claude_local");
   });
 
-  it("does not switch into the unconfigured default Codex leg", async () => {
+  it("switches into the built-in Codex leg for host-login provisioning", async () => {
     const { agent } = await seedCompanyAgentIssue();
+    const steps = await resolveFallbackChainSteps(db, agent);
+    expect(steps[1]).toMatchObject({ adapterType: "codex_local", adapterConfig: {} });
+    expect(steps[1]!.requiresConfiguration).toBeUndefined();
+
     const result = await evaluateFallbackChainSwitch(db, {
       agent,
       exitInfo: QUOTA_EXIT_INFO,
       reason: "provider_quota_recovery",
     });
 
-    expect(result.outcome).toBe("blocked");
+    expect(result.outcome).toBe("switched");
+    if (result.outcome !== "switched") throw new Error("expected switched");
+    expect(result.toStepIndex).toBe(1);
+    expect(result.toStep.adapterType).toBe("codex_local");
+    expect(result.toStep.adapterConfig).toEqual({});
     const [reloaded] = await db.select().from(agents).where(eq(agents.id, agent.id));
-    expect(reloaded!.adapterType).toBe("claude_local");
+    expect(reloaded!.adapterType).toBe("codex_local");
 
     const [state] = await db.select().from(agentFallbackChainState).where(eq(agentFallbackChainState.agentId, agent.id));
-    expect(state!.currentStepIndex).toBe(0);
-    expect(state!.blocked).toBe(true);
+    expect(state!.currentStepIndex).toBe(1);
+    expect(state!.blocked).toBe(false);
     expect(state!.exhaustedSteps).toHaveLength(1);
     expect((state!.exhaustedSteps as Array<{ stepIndex: number }>)[0]!.stepIndex).toBe(0);
   });
