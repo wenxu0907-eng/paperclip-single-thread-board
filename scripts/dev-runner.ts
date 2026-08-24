@@ -183,6 +183,7 @@ if (tailscaleAuth || bindMode) {
 }
 
 const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
+let effectiveServerPort = serverPort;
 const devService = createDevServiceIdentity({
   mode,
   forwardedArgs,
@@ -289,6 +290,8 @@ function writeDevServerStatus() {
       changedPathsSample: changedPaths.slice(0, changedPathSampleLimit),
       pendingMigrations,
       lastRestartAt,
+      requestedPort: serverPort,
+      listenPort: effectiveServerPort,
     }, null, 2)}\n`,
     "utf8",
   );
@@ -316,7 +319,7 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
     cwd: repoRoot,
     envFingerprint: devService.envFingerprint,
     port: serverPort,
-    url: `http://127.0.0.1:${serverPort}`,
+    url: `http://127.0.0.1:${effectiveServerPort}`,
     pid: process.pid,
     processGroupId: null,
     provider: "local_process",
@@ -328,7 +331,9 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
       repoRoot,
       mode,
       childPid: child?.pid ?? null,
-      url: `http://127.0.0.1:${serverPort}`,
+      requestedPort: serverPort,
+      listenPort: effectiveServerPort,
+      url: `http://127.0.0.1:${effectiveServerPort}`,
       ...extra,
     },
   });
@@ -514,13 +519,36 @@ async function scanForBackendChanges() {
 }
 
 async function getDevHealthPayload() {
-  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, {
-    headers: devServerStatusToken ? { [devServerStatusTokenHeader]: devServerStatusToken } : undefined,
-  });
-  if (!response.ok) {
-    throw new Error(`Health request failed (${response.status})`);
+  const candidatePorts = [
+    effectiveServerPort,
+    serverPort,
+    ...Array.from({ length: 10 }, (_entry, index) => serverPort + index + 1),
+  ].filter((port, index, ports) => ports.indexOf(port) === index);
+  let lastError: unknown = null;
+  for (const port of candidatePorts) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+        headers: devServerStatusToken ? { [devServerStatusTokenHeader]: devServerStatusToken } : undefined,
+      });
+      if (!response.ok) {
+        lastError = new Error(`Health request failed on port ${port} (${response.status})`);
+        continue;
+      }
+      const payload = await parseJsonResponseWithLimit(response);
+      const listenPort = typeof payload?.devServer?.listenPort === "number"
+        ? payload.devServer.listenPort
+        : port;
+      if (Number.isInteger(listenPort) && listenPort > 0 && listenPort !== effectiveServerPort) {
+        effectiveServerPort = listenPort;
+        writeDevServerStatus();
+        await updateDevServiceRecord();
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return await parseJsonResponseWithLimit(response);
+  throw toError(lastError, "Health request failed");
 }
 
 async function waitForChildExit() {
@@ -568,7 +596,9 @@ async function startServerChild() {
           repoRoot,
           mode,
           childPid: null,
-          url: `http://127.0.0.1:${serverPort}`,
+          requestedPort: serverPort,
+          listenPort: effectiveServerPort,
+          url: `http://127.0.0.1:${effectiveServerPort}`,
         },
       });
       resolve({ code: code ?? 0, signal });
@@ -622,6 +652,7 @@ async function maybeAutoRestartChild() {
       exitOnDecline: false,
     });
     await stopChildForRestart();
+    effectiveServerPort = serverPort;
     await startServerChild();
   } catch (error) {
     const err = toError(error, "Auto-restart failed");

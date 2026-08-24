@@ -34,6 +34,8 @@ describe("dev server status helpers", () => {
       changedPathsSample: ["server/src/app.ts", "packages/shared/src/index.ts"],
       pendingMigrations: ["0040_restart_banner.sql"],
       lastRestartAt: "2026-03-20T11:30:00.000Z",
+      requestedPort: 3100,
+      listenPort: 3101,
     });
 
     expect(readPersistedDevServerStatus({ PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath })).toEqual({
@@ -43,6 +45,8 @@ describe("dev server status helpers", () => {
       changedPathsSample: ["server/src/app.ts", "packages/shared/src/index.ts"],
       pendingMigrations: ["0040_restart_banner.sql"],
       lastRestartAt: "2026-03-20T11:30:00.000Z",
+      requestedPort: 3100,
+      listenPort: 3101,
     });
   });
 
@@ -55,6 +59,8 @@ describe("dev server status helpers", () => {
         changedPathsSample: ["server/src/app.ts"],
         pendingMigrations: [],
         lastRestartAt: "2026-03-20T11:30:00.000Z",
+        requestedPort: 3100,
+        listenPort: 3101,
       },
       { autoRestartEnabled: true, activeRunCount: 3 },
     );
@@ -66,6 +72,8 @@ describe("dev server status helpers", () => {
       autoRestartEnabled: true,
       activeRunCount: 3,
       waitingForIdle: true,
+      requestedPort: 3100,
+      listenPort: 3101,
     });
   });
 

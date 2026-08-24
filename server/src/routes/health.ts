@@ -196,6 +196,13 @@ export function healthRoutes(
         autoRestartEnabled: experimentalSettings.autoRestartDevServerWhenIdle ?? false,
         activeRunCount,
       });
+      const listenPort = Number.parseInt(process.env.PAPERCLIP_LISTEN_PORT ?? "", 10);
+      if (Number.isInteger(listenPort) && listenPort > 0) {
+        devServer = {
+          ...devServer,
+          listenPort,
+        };
+      }
     }
 
     const databaseBackup = opts.databaseBackupHealth
