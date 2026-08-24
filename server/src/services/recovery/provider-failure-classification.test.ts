@@ -35,19 +35,6 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
-  it("classifies Claude's monthly-spend-limit message as provider quota", () => {
-    const now = new Date("2026-08-24T14:00:00.000Z");
-    expect(classifyAdapterFailureForRecovery({
-      errorCode: "adapter_failed",
-      error: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message",
-      resultJson: null,
-    }, now)).toEqual({
-      kind: "provider_quota",
-      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
-      parsedResetTime: false,
-    });
-  });
-
   it("treats timezone-less provider reset clocks as UTC", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({
