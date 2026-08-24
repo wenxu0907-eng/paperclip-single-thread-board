@@ -54,13 +54,13 @@ export const FALLBACK_CHAIN_DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;
 
 /**
  * Fleet-wide default chain (COM-413 plan, wiring step 6): claude_local (agent's default
- * credential) -> codex_local (host Codex login or agent API credential) -> claude_local (Kimi K3
- * coding-plan credential) -> claude_local (a second Claude-CLI-compatible account). The Codex
- * leg is usable with empty adapter config because codex_local automatically seeds a managed home
- * from the host Codex login; its execute-time credential gate still fails fast when neither host
- * auth nor an API key is available. Legs 3 and 4 remain placeholders until a company (or
- * agent-specific override row in `agent_fallback_chains`) supplies real `adapterConfig.env`
- * secret refs.
+ * credential) -> codex_local (agent's codex credential, if configured) -> claude_local (Kimi K3
+ * coding-plan credential) -> claude_local (a second Claude-CLI-compatible account). Legs 2–4
+ * are placeholders until configured with real credentials — they only differ from leg 1 by which
+ * secret binding is active, and there is no real Codex/Kimi/second-account credential to bind by
+ * default, so they're marked
+ * `requiresConfiguration` until a company (or agent-specific override row in
+ * `agent_fallback_chains`) supplies real `adapterConfig.env` secret refs for them.
  */
 export const DEFAULT_FALLBACK_CHAIN: readonly FallbackChainStep[] = [
   {
@@ -71,7 +71,8 @@ export const DEFAULT_FALLBACK_CHAIN: readonly FallbackChainStep[] = [
   {
     adapterType: "codex_local",
     adapterConfig: {},
-    label: "codex_local (host login or agent credential)",
+    label: "codex_local (agent's codex credential)",
+    requiresConfiguration: true,
   },
   {
     adapterType: "claude_local",
