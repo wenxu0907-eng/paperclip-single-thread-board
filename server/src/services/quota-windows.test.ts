@@ -11,6 +11,15 @@ describe("isQuotaOrBillingFailure", () => {
     ).toBe(true);
   });
 
+  it("classifies Claude's monthly-spend-limit message as quota/billing", () => {
+    expect(
+      isQuotaOrBillingFailure("claude_local", {
+        errorCode: "adapter_failed",
+        error: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message",
+      }),
+    ).toBe(true);
+  });
+
   it("classifies a claude_local low-credit-balance message as quota/billing", () => {
     expect(
       isQuotaOrBillingFailure("claude_local", {

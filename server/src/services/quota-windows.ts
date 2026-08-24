@@ -34,7 +34,7 @@ const ADAPTER_FAMILY_QUOTA_BILLING_PATTERNS: Record<string, RegExp> = {
   // Anthropic (claude_local and any claude-family adapter, e.g. a second
   // claude_local leg on an alternate account, or a Claude-CLI-compatible
   // credential such as a Kimi K3 coding-plan key routed through claude_local).
-  claude: /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|rate[_ ]limit(?:_error)?|rate limited|credit balance is too low|insufficient credits?|billing (?:issue|error|hard limit)|quota (?:limit )?exceeded|429 too many requests|purchase additional credits)/i,
+  claude: /(?:you(?:'|’)ve hit your (?:monthly )?spend limit|you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|rate[_ ]limit(?:_error)?|rate limited|credit balance is too low|insufficient credits?|billing (?:issue|error|hard limit)|quota (?:limit )?exceeded|429 too many requests|purchase additional credits)/i,
   // OpenAI / Codex.
   codex: /(?:insufficient_quota|rate_limit_exceeded|you exceeded your current quota|billing (?:hard limit|issue)|429 too many requests|please check your plan and billing|exceeded your current quota)/i,
   // Generic fallback for adapter families without a bespoke pattern above.
@@ -42,7 +42,7 @@ const ADAPTER_FAMILY_QUOTA_BILLING_PATTERNS: Record<string, RegExp> = {
 };
 
 const CREDENTIAL_EXHAUSTION_PATTERNS: Record<string, RegExp> = {
-  claude: /(?:authentication[_ ]error|invalid (?:api )?key|invalid bearer token|oauth token (?:has )?expired|token expired|subscription (?:has )?expired|account .*?(?:disabled|suspended)|no (?:[a-z]+ )?(?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|credit balance is too low|billing (?:issue|error)|usage limit)/i,
+  claude: /(?:authentication[_ ]error|invalid (?:api )?key|invalid bearer token|oauth token (?:has )?expired|token expired|subscription (?:has )?expired|account .*?(?:disabled|suspended)|no (?:[a-z]+ )?(?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|credit balance is too low|billing (?:issue|error)|(?:monthly )?spend limit|usage limit)/i,
   codex: /(?:authentication[_ ]error|invalid (?:api )?key|api key .*?(?:expired|invalid)|oauth token (?:has )?expired|token expired|subscription (?:has )?expired|account .*?(?:disabled|suspended)|no (?:[a-z]+ )?(?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|insufficient_quota|billing (?:hard limit|issue))/i,
   generic: /(?:authentication[_ ]error|invalid (?:api )?key|oauth token (?:has )?expired|token expired|subscription (?:has )?expired|account .*?(?:disabled|suspended)|no (?:[a-z]+ )?(?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing)/i,
 };
