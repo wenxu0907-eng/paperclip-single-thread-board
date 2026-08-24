@@ -37,7 +37,15 @@ describe("resolveServerDevWatchIgnorePaths", () => {
     expect(ignorePaths).toContain(path.join(worktreeUiRoot, "dist"));
     expect(ignorePaths).toContain(fs.realpathSync(path.join(sharedUiRoot, "dist")));
     expect(ignorePaths).toContain("**/{node_modules,bower_components,vendor}/**");
+    expect(ignorePaths).toContain("**/dist/**");
     expect(ignorePaths).toContain("**/.vite-temp/**");
+  });
+
+  it("excludes repo-local workspace package dist output so SDK rebuilds do not restart the server", () => {
+    const serverRoot = path.join(os.tmpdir(), "paperclip-dev-watch-server-root");
+    const ignorePaths = resolveServerDevWatchIgnorePaths(serverRoot);
+
+    expect(ignorePaths).toContain("**/dist/**");
   });
 
   it("excludes the managed runtime plugins dir so a plugin dist install does not restart the server (COM-145)", () => {
