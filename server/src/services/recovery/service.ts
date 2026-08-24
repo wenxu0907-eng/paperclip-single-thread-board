@@ -3821,8 +3821,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (adapterFailureClassification.kind === "provider_quota" || adapterFailureClassification.kind === "configuration_incomplete") {
-          // COM-413: before falling back to the same-adapter wait/block path,
+        if (adapterFailureClassification.kind === "provider_quota") {
+          // COM-413: before falling back to the same-adapter wait-for-quota-reset monitor,
           // give the fallback-chain engine a chance to switch this agent to its next
           // configured adapter/credential and retry immediately instead of waiting. Agents
           // without a configured chain (or whose failure doesn't match a known quota/billing
@@ -3835,9 +3835,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 errorCode: latestRun.errorCode,
                 error: [latestRun.error ?? "", JSON.stringify(latestRun.resultJson ?? {})].join("\n"),
               },
-              reason: adapterFailureClassification.kind === "provider_quota"
-                ? "provider_quota_recovery"
-                : "credential_exhausted_recovery",
+              reason: "provider_quota_recovery",
             });
             if (fallbackChainResult.outcome === "switched") {
               await scheduleFallbackChainRetry(db, {
@@ -3848,7 +3846,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 toStepIndex: fallbackChainResult.toStepIndex,
               });
               latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
-              if (adapterFailureClassification.kind === "provider_quota") result.providerQuotaMonitored += 1;
+              result.providerQuotaMonitored += 1;
               result.issueIds.push(issue.id);
               continue;
             }
@@ -3859,26 +3857,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               continue;
             }
             // outcome is "not_quota_failure" or "no_chain_configured" — fall through below.
-          }
-
-          if (adapterFailureClassification.kind === "configuration_incomplete") {
-            const updated = await escalateStrandedAssignedIssue({
-              issue,
-              previousStatus: issue.status as StrandedPreviousStatus,
-              latestRun,
-              recoveryCause: "configuration_incomplete",
-              comment:
-                "Paperclip could not match this credential failure to a configured fallback leg. " +
-                "The current adapter remains blocked until a credential is provisioned or the fallback chain is configured.",
-            });
-            if (updated) {
-              latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-            } else {
-              result.skipped += 1;
-            }
-            continue;
           }
 
           const monitored = await scheduleProviderQuotaRecoveryMonitor({

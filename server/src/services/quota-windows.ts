@@ -41,12 +41,6 @@ const ADAPTER_FAMILY_QUOTA_BILLING_PATTERNS: Record<string, RegExp> = {
   generic: /(?:quota exceeded|rate limit|429 too many requests|payment required|billing (?:issue|error)|insufficient (?:credits?|balance)|usage limit)/i,
 };
 
-const CREDENTIAL_EXHAUSTION_PATTERNS: Record<string, RegExp> = {
-  claude: /(?:authentication[_ ]error|invalid (?:api )?key|invalid bearer token|oauth token (?:has )?expired|token expired|subscription (?:has )?expired|account .*?(?:disabled|suspended)|no (?:[a-z]+ )?(?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|credit balance is too low|billing (?:issue|error)|usage limit)/i,
-  codex: /(?:authentication[_ ]error|invalid (?:api )?key|api key .*?(?:expired|invalid)|oauth token (?:has )?expired|token expired|subscription (?:has )?expired|account .*?(?:disabled|suspended)|no (?:[a-z]+ )?(?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|insufficient_quota|billing (?:hard limit|issue))/i,
-  generic: /(?:authentication[_ ]error|invalid (?:api )?key|oauth token (?:has )?expired|token expired|subscription (?:has )?expired|account .*?(?:disabled|suspended)|no (?:[a-z]+ )?(?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing)/i,
-};
-
 function adapterFamilyForQuotaPattern(adapterType: string): keyof typeof ADAPTER_FAMILY_QUOTA_BILLING_PATTERNS {
   const normalized = adapterType.toLowerCase();
   if (normalized.startsWith("claude")) return "claude";
@@ -82,13 +76,6 @@ export function isQuotaOrBillingFailure(adapterType: string, exitInfo: AdapterRu
   const scrapedStatusMatch = text.match(/\b(?:http\s*)?(?:status(?:\s*code)?\s*[:=]?\s*)?(402|429)\b/i);
   if (scrapedStatusMatch) return true;
   return false;
-}
-
-export function isFallbackEligibleAdapterFailure(adapterType: string, exitInfo: AdapterRunExitInfo): boolean {
-  if (isQuotaOrBillingFailure(adapterType, exitInfo)) return true;
-  const text = combinedExitInfoText(exitInfo);
-  if (!text.trim()) return false;
-  return CREDENTIAL_EXHAUSTION_PATTERNS[adapterFamilyForQuotaPattern(adapterType)]!.test(text);
 }
 
 function providerSlugForAdapterType(type: string): string {

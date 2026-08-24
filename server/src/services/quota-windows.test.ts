@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isFallbackEligibleAdapterFailure, isQuotaOrBillingFailure } from "./quota-windows.js";
+import { isQuotaOrBillingFailure } from "./quota-windows.js";
 
 describe("isQuotaOrBillingFailure", () => {
   it("classifies a claude_local usage-limit message as quota/billing", () => {
@@ -67,32 +67,5 @@ describe("isQuotaOrBillingFailure", () => {
     expect(
       isQuotaOrBillingFailure("claude_local_alt_account", { error: "usage limit reached" }),
     ).toBe(true);
-  });
-
-  it("classifies expired Claude credentials as fallback-eligible", () => {
-    expect(
-      isFallbackEligibleAdapterFailure("claude_local", {
-        errorCode: "configuration_incomplete",
-        error: "authentication_error: OAuth token has expired",
-      }),
-    ).toBe(true);
-  });
-
-  it("classifies missing Codex credentials as fallback-eligible", () => {
-    expect(
-      isFallbackEligibleAdapterFailure("codex_local", {
-        errorCode: "configuration_incomplete",
-        error: "configuration incomplete: no Codex credentials available",
-      }),
-    ).toBe(true);
-  });
-
-  it("does not make an unrelated configuration error fallback-eligible", () => {
-    expect(
-      isFallbackEligibleAdapterFailure("claude_local", {
-        errorCode: "configuration_incomplete",
-        error: "model claude-unknown not found",
-      }),
-    ).toBe(false);
   });
 });
