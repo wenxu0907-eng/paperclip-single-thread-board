@@ -111,6 +111,8 @@ describe("GET /health dev-server supervisor access", () => {
           activeRunCount: 0,
           waitingForIdle: false,
           lastRestartAt: "2026-03-20T11:30:00.000Z",
+          requestedPort: null,
+          listenPort: null,
         },
       });
     } finally {

@@ -10,6 +10,8 @@ export type PersistedDevServerStatus = {
   changedPathsSample: string[];
   pendingMigrations: string[];
   lastRestartAt: string | null;
+  requestedPort: number | null;
+  listenPort: number | null;
 };
 
 export type DevServerHealthStatus = {
@@ -24,6 +26,8 @@ export type DevServerHealthStatus = {
   activeRunCount: number;
   waitingForIdle: boolean;
   lastRestartAt: string | null;
+  requestedPort: number | null;
+  listenPort: number | null;
 };
 
 export type DevServerRestartRequest = {
@@ -65,6 +69,11 @@ function normalizeTimestamp(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizePort(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) return null;
+  return value;
+}
+
 export function readPersistedDevServerStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): PersistedDevServerStatus | null {
@@ -96,6 +105,8 @@ export function readPersistedDevServerStatus(
       changedPathsSample,
       pendingMigrations,
       lastRestartAt: normalizeTimestamp(raw.lastRestartAt),
+      requestedPort: normalizePort(raw.requestedPort),
+      listenPort: normalizePort(raw.listenPort),
     };
   } catch {
     return null;
@@ -130,5 +141,7 @@ export function toDevServerHealthStatus(
     activeRunCount: opts.activeRunCount,
     waitingForIdle: restartRequired && opts.autoRestartEnabled && opts.activeRunCount > 0,
     lastRestartAt: persisted.lastRestartAt,
+    requestedPort: persisted.requestedPort,
+    listenPort: persisted.listenPort,
   };
 }
