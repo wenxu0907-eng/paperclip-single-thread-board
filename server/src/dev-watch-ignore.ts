@@ -20,7 +20,6 @@ function addIgnorePath(target: Set<string>, candidate: string): void {
 export function resolveServerDevWatchIgnorePaths(serverRoot: string): string[] {
   const ignorePaths = new Set<string>([
     "**/{node_modules,bower_components,vendor}/**",
-    "**/dist/**",
     "**/.vite-temp/**",
   ]);
 

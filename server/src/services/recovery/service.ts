@@ -76,7 +76,6 @@ import {
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { issueHasLivePendingDecisionGate } from "./review-participant-decision-gate.js";
-import { handleQuotaOrBillingFailureForRun, scheduleFallbackChainRetry } from "./fallback-chain.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -354,7 +353,7 @@ const PRODUCTIVE_CONTINUATION_MAX_BACKOFF_MS = 30 * 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your (?:monthly )?spend limit|you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -3821,66 +3820,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (adapterFailureClassification.kind === "provider_quota" || adapterFailureClassification.kind === "configuration_incomplete") {
-          // COM-413: before falling back to the same-adapter wait/block path,
-          // give the fallback-chain engine a chance to switch this agent to its next
-          // configured adapter/credential and retry immediately instead of waiting. Agents
-          // without a configured chain (or whose failure doesn't match a known quota/billing
-          // signature) fall straight through to the existing monitor path unchanged.
-          if (agent && agent.companyId === issue.companyId) {
-            const fallbackChainResult = await handleQuotaOrBillingFailureForRun(db, {
-              issueId: issue.id,
-              agent,
-              exitInfo: {
-                errorCode: latestRun.errorCode,
-                error: [latestRun.error ?? "", JSON.stringify(latestRun.resultJson ?? {})].join("\n"),
-              },
-              reason: adapterFailureClassification.kind === "provider_quota"
-                ? "provider_quota_recovery"
-                : "credential_exhausted_recovery",
-            });
-            if (fallbackChainResult.outcome === "switched") {
-              await scheduleFallbackChainRetry(db, {
-                issueId: issue.id,
-                companyId: issue.companyId,
-                agentId: agent.id,
-                previousRunId: latestRun.id,
-                toStepIndex: fallbackChainResult.toStepIndex,
-              });
-              latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
-              if (adapterFailureClassification.kind === "provider_quota") result.providerQuotaMonitored += 1;
-              result.issueIds.push(issue.id);
-              continue;
-            }
-            if (fallbackChainResult.outcome === "blocked") {
-              latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-              continue;
-            }
-            // outcome is "not_quota_failure" or "no_chain_configured" — fall through below.
-          }
-
-          if (adapterFailureClassification.kind === "configuration_incomplete") {
-            const updated = await escalateStrandedAssignedIssue({
-              issue,
-              previousStatus: issue.status as StrandedPreviousStatus,
-              latestRun,
-              recoveryCause: "configuration_incomplete",
-              comment:
-                "Paperclip could not match this credential failure to a configured fallback leg. " +
-                "The current adapter remains blocked until a credential is provisioned or the fallback chain is configured.",
-            });
-            if (updated) {
-              latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-            } else {
-              result.skipped += 1;
-            }
-            continue;
-          }
-
+        if (adapterFailureClassification.kind === "provider_quota") {
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
             issue,
             latestRun,

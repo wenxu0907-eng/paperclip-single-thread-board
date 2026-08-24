@@ -211,7 +211,6 @@ function buildConnectionErrorMessage(input: {
   causeMessage?: string;
 }): string {
   const healthUrl = buildHealthCheckUrl(input.url);
-  const sandboxLoopbackBlocked = isSandboxLoopbackBlocked(input.url, input.causeMessage);
   const lines = [
     "Could not reach the Paperclip API.",
     "",
@@ -219,18 +218,6 @@ function buildConnectionErrorMessage(input: {
   ];
   if (input.causeMessage) {
     lines.push(`Cause: ${input.causeMessage}`);
-  }
-  if (sandboxLoopbackBlocked) {
-    lines.push(
-      "",
-      "The request appears to be running inside a sandbox that blocks direct localhost access. In that case Paperclip may be running normally on the host, but 127.0.0.1/localhost is not reachable from this runtime.",
-      "",
-      "Try:",
-      `- From the host, verify Paperclip with \`curl ${healthUrl}\`.`,
-      "- Configure the runtime to use Paperclip's sandbox bridge URL, or pass an API base that is reachable from inside the sandbox.",
-      `- If this command must contact the host directly, rerun it with network/localhost access instead of restarting Paperclip.`,
-    );
-    return lines.join("\n");
   }
   lines.push(
     "",
@@ -255,25 +242,10 @@ function buildHealthCheckUrl(requestUrl: string): string {
 function formatConnectionCause(error: unknown): string | undefined {
   if (!error) return undefined;
   if (error instanceof Error) {
-    const message = error.message.trim() || error.name;
-    const causeMessage = formatConnectionCause((error as { cause?: unknown }).cause);
-    if (causeMessage && causeMessage !== message) return `${message}: ${causeMessage}`;
-    return message;
+    return error.message.trim() || error.name;
   }
   const message = String(error).trim();
   return message || undefined;
-}
-
-function isSandboxLoopbackBlocked(requestUrl: string, causeMessage: string | undefined): boolean {
-  if (!causeMessage) return false;
-  const host = new URL(requestUrl).hostname.toLowerCase();
-  const isLoopback =
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "[::1]";
-  if (!isLoopback) return false;
-  return /\b(operation not permitted|eperm|permission denied|not permitted)\b/i.test(causeMessage);
 }
 
 function toStringRecord(headers: HeadersInit | undefined): Record<string, string> {
