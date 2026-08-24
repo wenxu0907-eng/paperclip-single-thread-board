@@ -83,6 +83,28 @@ describe("PaperclipApiClient", () => {
     );
   });
 
+  it("explains sandbox localhost denial separately from a stopped server", async () => {
+    const fetchError = Object.assign(new TypeError("fetch failed"), {
+      cause: new Error("connect EPERM 127.0.0.1:3100 - Operation not permitted"),
+    });
+    const fetchMock = vi.fn().mockRejectedValue(fetchError);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({ apiBase: "http://127.0.0.1:3100" });
+
+    await expect(client.get("/api/health")).rejects.toMatchObject({
+      url: "http://127.0.0.1:3100/api/health",
+      method: "GET",
+      causeMessage: "fetch failed: connect EPERM 127.0.0.1:3100 - Operation not permitted",
+    } satisfies Partial<ApiConnectionError>);
+    await expect(client.get("/api/health")).rejects.toThrow(
+      /sandbox that blocks direct localhost access/,
+    );
+    await expect(client.get("/api/health")).rejects.toThrow(
+      /rerun it with network\/localhost access instead of restarting Paperclip/,
+    );
+  });
+
   it("retries once after interactive auth recovery", async () => {
     const fetchMock = vi
       .fn()
