@@ -391,6 +391,121 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
+  it("keeps thought-channel deltas out of the turn summary (COM-423)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Let me read the current state and understand what needs to be done.",
+              stream: "thought",
+              tag: "agent_thought_chunk",
+            };
+            yield {
+              type: "text_delta",
+              text: "Done: merged PR #460.",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield {
+              type: "text_delta",
+              text: "Actually, the start condition says PR #460 must be merged first.",
+              stream: "thought",
+              tag: "agent_thought_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-thought-channel-summary",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    // The summary is posted verbatim as the run's issue comment.
+    expect(result.summary).toBe("Done: merged PR #460.");
+    expect(result.summary).not.toContain("Let me read the current state");
+    expect(result.summary).not.toContain("Actually, the start condition");
+    // Thoughts are still streamed to the run log/UI on their own channel.
+    expect(
+      logs.some((entry) => entry.text.includes('"channel":"thought"')),
+    ).toBe(true);
+  });
+
+  it("reports a thought-only turn instead of publishing reasoning as the summary (COM-423)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Let me check if PR #460 is merged.",
+              stream: "thought",
+              tag: "agent_thought_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-thought-only-turn",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.summary).not.toContain("Let me check if PR #460 is merged.");
+    expect(
+      logs.some((entry) => entry.text.includes('"acpx.thought_only_turn"')),
+    ).toBe(true);
+  });
+
   it("treats Codex unsupported-model JSON text as a non-retryable configuration failure", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
