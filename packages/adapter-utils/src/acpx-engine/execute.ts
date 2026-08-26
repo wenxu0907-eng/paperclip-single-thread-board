@@ -2472,7 +2472,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let controller: AbortController | null = null;
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
+    // COM-423: keep the model's thought channel out of `textParts`. The turn
+    // summary built from `textParts` is posted verbatim as the run's issue
+    // comment, so mixing in `agent_thought_chunk` deltas leaked raw reasoning
+    // ("Let me read the current state…", "Actually, …") onto the board.
+    // Thoughts are still emitted to the run log/UI via `emitRuntimeEvent`,
+    // which tags them `channel: "thought"`; they are accumulated separately
+    // here only for diagnostics on a thought-only turn.
     let textParts: string[] = [];
+    let thoughtParts: string[] = [];
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
     let terminal: AcpRuntimeTurnResult;
@@ -2521,6 +2529,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Reset per-attempt accumulators so a successful retry's output is not
         // contaminated by the failed attempt's partial text/usage deltas.
         textParts = [];
+        thoughtParts = [];
         eventBreakdown = null;
         eventCostUsd = null;
         toolCallStatuses = new Map();
@@ -2553,7 +2562,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             await turn.cancel({ reason });
           };
           for await (const event of turn.events) {
-            if (event.type === "text_delta") textParts.push(event.text);
+            if (event.type === "text_delta") {
+              if (event.stream === "thought") thoughtParts.push(event.text);
+              else textParts.push(event.text);
+            }
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
@@ -2614,6 +2626,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         eventCostUsd,
       });
       const outputText = textParts.join("").trim();
+      // COM-423: a turn that produced only thought deltas now yields an empty
+      // summary (previously it silently published reasoning). Record it so the
+      // empty summary is diagnosable from the run log instead of looking like
+      // lost output.
+      if (!outputText && thoughtParts.length > 0) {
+        await emitAcpxLog(ctx, {
+          type: "acpx.thought_only_turn",
+          thoughtChars: thoughtParts.join("").length,
+          status: terminal.status,
+        });
+      }
       const completedTurnTextFailure = terminal.status === "completed"
         ? classifyCompletedTurnTextFailure({ prepared, text: outputText })
         : null;
