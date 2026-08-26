@@ -167,7 +167,7 @@ describeEmbeddedPostgres("heartbeat initial run binding", () => {
     const { agentId, projectId, issueId } = await seedFixture();
     const heartbeat = heartbeatService(db);
 
-    const run = await heartbeat.enqueueWakeup(agentId, {
+    const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -196,7 +196,7 @@ describeEmbeddedPostgres("heartbeat initial run binding", () => {
     const { agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
 
-    const run = await heartbeat.enqueueWakeup(agentId, {
+    const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -210,7 +210,22 @@ describeEmbeddedPostgres("heartbeat initial run binding", () => {
     expect(wake?.reason).toBe("initial_run_issue_binding_missing");
   });
 
-  it("rejects cross-company, missing-project, stale, and mismatched-project bindings", async () => {
+  it("does not manufacture issue candidates out of UUID substrings", async () => {
+    const { companyId, projectId } = await seedFixture();
+
+    // "a040f860-8a7f-4c3d-…" contains "A040F860-8" and "A7F-4", which look like
+    // issue identifiers to the free-text scanner. A project-scoped wake carrying
+    // only a UUID must not be blocked by those phantom references.
+    await expect(resolveInitialRunBinding({
+      db,
+      companyId,
+      reason: null,
+      contextSnapshot: { projectId },
+      payload: null,
+    })).resolves.toBeNull();
+  });
+
+  it("rejects cross-company, stale, and mismatched-project bindings", async () => {
     const { companyId, projectId, otherProjectId, issueId } = await seedFixture();
 
     await expect(resolveInitialRunBinding({
@@ -221,6 +236,8 @@ describeEmbeddedPostgres("heartbeat initial run binding", () => {
       payload: null,
     })).resolves.toMatchObject({ ok: false, code: "initial_run_issue_binding_unresolved" });
 
+    // issues.project_id is nullable, so a project-less issue is still exactly
+    // one binding — it must resolve, not fail closed.
     await db.update(issues).set({ projectId: null }).where(eq(issues.id, issueId));
     await expect(resolveInitialRunBinding({
       db,
@@ -228,7 +245,16 @@ describeEmbeddedPostgres("heartbeat initial run binding", () => {
       reason: "issue_assigned",
       contextSnapshot: { issueId },
       payload: null,
-    })).resolves.toMatchObject({ ok: false, code: "initial_run_project_binding_missing" });
+    })).resolves.toMatchObject({ ok: true, projectId: null, issue: { id: issueId } });
+
+    // …but a project reference that the project-less issue cannot satisfy is a conflict.
+    await expect(resolveInitialRunBinding({
+      db,
+      companyId,
+      reason: "issue_assigned",
+      contextSnapshot: { issueId, projectId: otherProjectId },
+      payload: null,
+    })).resolves.toMatchObject({ ok: false, code: "initial_run_project_binding_conflict" });
 
     await db.update(issues).set({ projectId, status: "cancelled" }).where(eq(issues.id, issueId));
     await expect(resolveInitialRunBinding({

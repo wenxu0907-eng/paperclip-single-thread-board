@@ -4376,11 +4376,14 @@ type RunBindingCandidateSource =
   | "text.issueReference"
   | "text.projectMention";
 
+const UUID_TOKEN_PATTERN =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
 type ResolvedRunBinding =
   | {
       ok: true;
-      issue: { id: string; identifier: string | null; projectId: string; createdAt: Date };
-      projectId: string;
+      issue: { id: string; identifier: string | null; projectId: string | null; createdAt: Date };
+      projectId: string | null;
       issueCandidateValues: string[];
       projectCandidateValues: string[];
     }
@@ -4439,7 +4442,7 @@ function shouldRequireIssueBindingForWake(input: {
 }) {
   if (input.reason && ISSUE_BINDING_REQUIRED_WAKE_REASONS.has(input.reason)) return true;
   if (input.reason?.startsWith("issue_")) return true;
-  return input.issueCandidateCount > 0 || input.projectCandidateCount > 0;
+  return input.issueCandidateCount > 0;
 }
 
 export async function resolveInitialRunBinding(input: {
@@ -4473,7 +4476,13 @@ export async function resolveInitialRunBinding(input: {
     collectBindingText(input.contextSnapshot, textParts);
   }
   const text = textParts.join("\n");
-  for (const identifier of extractIssueReferenceIdentifiers(text)) {
+  // A bare UUID contains substrings that look like issue identifiers
+  // ("a040f860-8a7f-4c3d-…" yields "A040F860-8" and "A7F-4"), which would
+  // otherwise manufacture phantom candidates and fail an otherwise valid wake
+  // closed. Mask UUIDs before scanning for issue references; project mentions
+  // are extracted from the unmasked text because they *are* UUIDs.
+  const textWithoutUuids = text.replace(UUID_TOKEN_PATTERN, " ");
+  for (const identifier of extractIssueReferenceIdentifiers(textWithoutUuids)) {
     addUniqueBindingCandidate(issueCandidates, identifier, "text.issueReference");
   }
   for (const projectId of extractProjectMentionIds(text)) {
@@ -4571,17 +4580,10 @@ export async function resolveInitialRunBinding(input: {
       sources,
     };
   }
-  if (!issue.projectId) {
-    return {
-      ok: false,
-      code: "initial_run_project_binding_missing",
-      message: `Paperclip blocked this wake before dispatch because issue ${issue.identifier ?? issue.id} is missing a project.`,
-      issueCandidateValues,
-      projectCandidateValues,
-      sources,
-    };
-  }
-
+  // issues.project_id is nullable: an issue with no project is a legitimate,
+  // unambiguous binding (project = null), not an ambiguity. Only *conflicting*
+  // project references below fail closed — including a payload that names a
+  // project while the issue has none.
   if (projectCandidateValues.length > 0) {
     const projectRows = await input.db
       .select({ id: projects.id, archivedAt: projects.archivedAt })
@@ -4601,7 +4603,7 @@ export async function resolveInitialRunBinding(input: {
       };
     }
     const uniqueProjectIds = new Set(projectCandidateValues);
-    if (uniqueProjectIds.size !== 1 || !uniqueProjectIds.has(issue.projectId)) {
+    if (uniqueProjectIds.size !== 1 || !issue.projectId || !uniqueProjectIds.has(issue.projectId)) {
       return {
         ok: false,
         code: "initial_run_project_binding_conflict",
