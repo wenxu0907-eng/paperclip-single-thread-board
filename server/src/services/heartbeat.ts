@@ -26,6 +26,8 @@ import {
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
   type SourceTrustMetadata,
+  extractIssueReferenceIdentifiers,
+  extractProjectMentionIds,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -4344,6 +4346,286 @@ function enrichWakeContextSnapshot(input: {
     commentIdFromPayload,
     taskKey,
     wakeCommentId,
+  };
+}
+
+const ISSUE_BINDING_REQUIRED_WAKE_REASONS = new Set([
+  "issue_assigned",
+  "issue_commented",
+  "issue_comment_mentioned",
+  "issue_comment_user_input",
+  "issue_status_changed",
+  "issue_dependencies_resolved",
+  "issue_blockers_resolved",
+  "issue_continuation_needed",
+  "issue_assignment_recovery",
+  "issue_recovery_action_restored",
+  "issue_execution_deferred",
+]);
+
+type RunBindingCandidateSource =
+  | "context.issueId"
+  | "context.taskId"
+  | "context.projectId"
+  | "payload.issueId"
+  | "payload.taskId"
+  | "payload.projectId"
+  | "payload._paperclipWakeContext.issueId"
+  | "payload._paperclipWakeContext.taskId"
+  | "payload._paperclipWakeContext.projectId"
+  | "text.issueReference"
+  | "text.projectMention";
+
+const UUID_TOKEN_PATTERN =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+type ResolvedRunBinding =
+  | {
+      ok: true;
+      issue: { id: string; identifier: string | null; projectId: string | null; createdAt: Date };
+      projectId: string | null;
+      issueCandidateValues: string[];
+      projectCandidateValues: string[];
+    }
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      issueCandidateValues: string[];
+      projectCandidateValues: string[];
+      sources: RunBindingCandidateSource[];
+    };
+
+function addUniqueBindingCandidate(
+  candidates: Map<string, Set<RunBindingCandidateSource>>,
+  value: unknown,
+  source: RunBindingCandidateSource,
+) {
+  const normalized = readNonEmptyString(value);
+  if (!normalized) return;
+  const sources = candidates.get(normalized) ?? new Set<RunBindingCandidateSource>();
+  sources.add(source);
+  candidates.set(normalized, sources);
+}
+
+function collectBindingText(value: unknown, output: string[], seen = new Set<unknown>()) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) output.push(trimmed);
+    return;
+  }
+  if (!value || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) collectBindingText(item, output, seen);
+    return;
+  }
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === "env" || lowerKey.includes("secret") || lowerKey.includes("token")) continue;
+    collectBindingText(nested, output, seen);
+  }
+}
+
+function collectExplicitBindingText(value: unknown, output: string[]) {
+  const object = parseObject(value);
+  for (const key of ["text", "message", "body", "prompt", "instructions", "userText", "input"]) {
+    const candidate = readNonEmptyString(object[key]);
+    if (candidate) output.push(candidate);
+  }
+}
+
+function shouldRequireIssueBindingForWake(input: {
+  reason: string | null;
+  issueCandidateCount: number;
+  projectCandidateCount: number;
+}) {
+  if (input.reason && ISSUE_BINDING_REQUIRED_WAKE_REASONS.has(input.reason)) return true;
+  if (input.reason?.startsWith("issue_")) return true;
+  return input.issueCandidateCount > 0;
+}
+
+export async function resolveInitialRunBinding(input: {
+  db: Db;
+  companyId: string;
+  contextSnapshot: Record<string, unknown>;
+  payload: Record<string, unknown> | null;
+  reason: string | null;
+}): Promise<ResolvedRunBinding | null> {
+  const issueCandidates = new Map<string, Set<RunBindingCandidateSource>>();
+  const projectCandidates = new Map<string, Set<RunBindingCandidateSource>>();
+  const nestedWakeContext = parseObject(input.payload?.[DEFERRED_WAKE_CONTEXT_KEY]);
+
+  addUniqueBindingCandidate(issueCandidates, input.contextSnapshot.issueId, "context.issueId");
+  addUniqueBindingCandidate(issueCandidates, input.contextSnapshot.taskId, "context.taskId");
+  addUniqueBindingCandidate(projectCandidates, input.contextSnapshot.projectId, "context.projectId");
+  addUniqueBindingCandidate(issueCandidates, input.payload?.issueId, "payload.issueId");
+  addUniqueBindingCandidate(issueCandidates, input.payload?.taskId, "payload.taskId");
+  addUniqueBindingCandidate(projectCandidates, input.payload?.projectId, "payload.projectId");
+  addUniqueBindingCandidate(issueCandidates, nestedWakeContext.issueId, "payload._paperclipWakeContext.issueId");
+  addUniqueBindingCandidate(issueCandidates, nestedWakeContext.taskId, "payload._paperclipWakeContext.taskId");
+  addUniqueBindingCandidate(projectCandidates, nestedWakeContext.projectId, "payload._paperclipWakeContext.projectId");
+
+  const hasStructuredIssueCandidate = issueCandidates.size > 0;
+  const textParts: string[] = [];
+  if (hasStructuredIssueCandidate) {
+    collectExplicitBindingText(input.payload, textParts);
+    collectExplicitBindingText(input.contextSnapshot, textParts);
+  } else {
+    collectBindingText(input.payload, textParts);
+    collectBindingText(input.contextSnapshot, textParts);
+  }
+  const text = textParts.join("\n");
+  // A bare UUID contains substrings that look like issue identifiers
+  // ("a040f860-8a7f-4c3d-…" yields "A040F860-8" and "A7F-4"), which would
+  // otherwise manufacture phantom candidates and fail an otherwise valid wake
+  // closed. Mask UUIDs before scanning for issue references; project mentions
+  // are extracted from the unmasked text because they *are* UUIDs.
+  const textWithoutUuids = text.replace(UUID_TOKEN_PATTERN, " ");
+  for (const identifier of extractIssueReferenceIdentifiers(textWithoutUuids)) {
+    addUniqueBindingCandidate(issueCandidates, identifier, "text.issueReference");
+  }
+  for (const projectId of extractProjectMentionIds(text)) {
+    addUniqueBindingCandidate(projectCandidates, projectId, "text.projectMention");
+  }
+
+  const issueCandidateValues = [...issueCandidates.keys()];
+  const projectCandidateValues = [...projectCandidates.keys()];
+  const sources = [
+    ...[...issueCandidates.values()].flatMap((candidateSources) => [...candidateSources]),
+    ...[...projectCandidates.values()].flatMap((candidateSources) => [...candidateSources]),
+  ];
+
+  if (!shouldRequireIssueBindingForWake({
+    reason: input.reason,
+    issueCandidateCount: issueCandidateValues.length,
+    projectCandidateCount: projectCandidateValues.length,
+  })) {
+    return null;
+  }
+
+  if (issueCandidateValues.length === 0) {
+    return {
+      ok: false,
+      code: "initial_run_issue_binding_missing",
+      message: "Paperclip blocked this wake before dispatch because it did not identify exactly one issue.",
+      issueCandidateValues,
+      projectCandidateValues,
+      sources,
+    };
+  }
+
+  const resolvedIssues = new Map<string, {
+    id: string;
+    identifier: string | null;
+    projectId: string | null;
+    status: string;
+    hiddenAt: Date | null;
+    createdAt: Date;
+  }>();
+  const unresolvedIssueCandidates: string[] = [];
+  for (const candidate of issueCandidateValues) {
+    const lookupIsUuid = isUuidLike(candidate);
+    const idMatch = lookupIsUuid
+      ? or(eq(issues.id, candidate), eq(issues.identifier, candidate.toUpperCase()))
+      : eq(issues.identifier, candidate.toUpperCase());
+    const row = await input.db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        projectId: issues.projectId,
+        status: issues.status,
+        hiddenAt: issues.hiddenAt,
+        createdAt: issues.createdAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), idMatch))
+      .then((rows) => rows[0] ?? null);
+    if (!row) {
+      unresolvedIssueCandidates.push(candidate);
+      continue;
+    }
+    resolvedIssues.set(row.id, row);
+  }
+
+  if (unresolvedIssueCandidates.length > 0) {
+    return {
+      ok: false,
+      code: "initial_run_issue_binding_unresolved",
+      message: `Paperclip blocked this wake before dispatch because issue reference ${unresolvedIssueCandidates.join(", ")} did not resolve in this company.`,
+      issueCandidateValues,
+      projectCandidateValues,
+      sources,
+    };
+  }
+  if (resolvedIssues.size !== 1) {
+    return {
+      ok: false,
+      code: "initial_run_issue_binding_ambiguous",
+      message: "Paperclip blocked this wake before dispatch because multiple issue references resolved to different issues.",
+      issueCandidateValues,
+      projectCandidateValues,
+      sources,
+    };
+  }
+
+  const issue = [...resolvedIssues.values()][0]!;
+  if (issue.hiddenAt || issue.status === "done" || issue.status === "cancelled") {
+    return {
+      ok: false,
+      code: "initial_run_issue_binding_stale",
+      message: `Paperclip blocked this wake before dispatch because issue ${issue.identifier ?? issue.id} is no longer runnable.`,
+      issueCandidateValues,
+      projectCandidateValues,
+      sources,
+    };
+  }
+  // issues.project_id is nullable: an issue with no project is a legitimate,
+  // unambiguous binding (project = null), not an ambiguity. Only *conflicting*
+  // project references below fail closed — including a payload that names a
+  // project while the issue has none.
+  if (projectCandidateValues.length > 0) {
+    const projectRows = await input.db
+      .select({ id: projects.id, archivedAt: projects.archivedAt })
+      .from(projects)
+      .where(and(eq(projects.companyId, input.companyId), inArray(projects.id, projectCandidateValues)));
+    const projectById = new Map(projectRows.map((row) => [row.id, row]));
+    const unresolvedProjectIds = projectCandidateValues.filter((projectId) => !projectById.has(projectId));
+    const archivedProjectIds = projectRows.filter((row) => row.archivedAt).map((row) => row.id);
+    if (unresolvedProjectIds.length > 0 || archivedProjectIds.length > 0) {
+      return {
+        ok: false,
+        code: "initial_run_project_binding_unresolved",
+        message: "Paperclip blocked this wake before dispatch because a project reference is missing, archived, or outside this company.",
+        issueCandidateValues,
+        projectCandidateValues,
+        sources,
+      };
+    }
+    const uniqueProjectIds = new Set(projectCandidateValues);
+    if (uniqueProjectIds.size !== 1 || !issue.projectId || !uniqueProjectIds.has(issue.projectId)) {
+      return {
+        ok: false,
+        code: "initial_run_project_binding_conflict",
+        message: `Paperclip blocked this wake before dispatch because project references do not match issue ${issue.identifier ?? issue.id}.`,
+        issueCandidateValues,
+        projectCandidateValues,
+        sources,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    issue: {
+      id: issue.id,
+      identifier: issue.identifier,
+      projectId: issue.projectId,
+      createdAt: issue.createdAt,
+    },
+    projectId: issue.projectId,
+    issueCandidateValues,
+    projectCandidateValues,
   };
 }
 
@@ -15777,6 +16059,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
+    const initialRunBinding = await resolveInitialRunBinding({
+      db,
+      companyId: agent.companyId,
+      contextSnapshot: enrichedContextSnapshot,
+      payload,
+      reason,
+    });
+    if (initialRunBinding?.ok === false) {
+      await writeSkippedHeartbeatRequest(initialRunBinding.code, {
+        code: initialRunBinding.code,
+        reason: initialRunBinding.message,
+        issueCandidates: initialRunBinding.issueCandidateValues,
+        projectCandidates: initialRunBinding.projectCandidateValues,
+        sources: initialRunBinding.sources,
+      });
+      if (opts.requestedByActorType === "user") {
+        throw conflict(initialRunBinding.message, {
+          code: initialRunBinding.code,
+          issueCandidates: initialRunBinding.issueCandidateValues,
+          projectCandidates: initialRunBinding.projectCandidateValues,
+          sources: initialRunBinding.sources,
+        });
+      }
+      return null;
+    }
+    if (initialRunBinding?.ok === true) {
+      issueId = initialRunBinding.issue.id;
+      enrichedContextSnapshot.issueId = initialRunBinding.issue.id;
+      enrichedContextSnapshot.taskId = initialRunBinding.issue.id;
+      enrichedContextSnapshot.projectId = initialRunBinding.projectId;
+    }
     const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
@@ -15796,7 +16109,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
-    let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
+    let projectId = initialRunBinding?.ok === true
+      ? initialRunBinding.projectId
+      : readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
       // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
       // by companyId so a row from another tenant can never be returned even
