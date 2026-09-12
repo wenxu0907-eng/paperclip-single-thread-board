@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-15T22:20:53.895Z",
+  "generatedAt": "2026-08-19T20:37:00.296Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -486,6 +486,1468 @@
         }
       ],
       "contentHash": "sha256:276d85e98a4732f278204e26438aa95fde158dd2d15c1e427c4c7c7d492e769d"
+    },
+    {
+      "id": "paperclipai:optional:gstack:autoplan",
+      "key": "paperclipai/optional/gstack/autoplan",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "autoplan",
+      "name": "autoplan",
+      "description": "Auto-review pipeline — reads the full CEO, design, eng, and DX review skills from disk and runs them sequentially with auto-decisions using 6 decision principles. Surfaces taste decisions (close approaches, borderline scope, codex disagreements) at a final approval gate.",
+      "path": "catalog/optional/gstack/autoplan",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "founder",
+        "engineer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "planning",
+        "review",
+        "automation"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 88974,
+          "sha256": "95dda84dab21ea2d67473f0a51e41069f98b75e6f6accf5d1478a9542368a35c"
+        }
+      ],
+      "contentHash": "sha256:c494b731a7610438725ea732ef232b6337990346907f7343b455333317715344"
+    },
+    {
+      "id": "paperclipai:optional:gstack:benchmark",
+      "key": "paperclipai/optional/gstack/benchmark",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "benchmark",
+      "name": "benchmark",
+      "description": "Performance regression detection using the browse daemon. Establishes baselines for page load times, Core Web Vitals, and resource sizes. Compares before/after on every PR. Tracks performance trends over time.",
+      "path": "catalog/optional/gstack/benchmark",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "performance",
+        "browser",
+        "testing"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 32410,
+          "sha256": "3f404e6528ca0a3ab4a64ed083f5b0d7dfdb4c6f9b8ff8608bc86418d3bba0f7"
+        }
+      ],
+      "contentHash": "sha256:36c7c36691eb1591c66d75ea3a4b5edc0e3a4c17243e78593ff7ee8f6e5b998d"
+    },
+    {
+      "id": "paperclipai:optional:gstack:benchmark-models",
+      "key": "paperclipai/optional/gstack/benchmark-models",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "benchmark-models",
+      "name": "benchmark-models",
+      "description": "Cross-model benchmark for gstack skills. Runs the same prompt through Claude, GPT (via Codex CLI), and Gemini side-by-side — compares latency, tokens, cost, and optionally quality via LLM judge. Answers \"which model is actually best for this skill?\" with data instead of vibes.",
+      "path": "catalog/optional/gstack/benchmark-models",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "benchmarking",
+        "llm",
+        "evaluation"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 28377,
+          "sha256": "4abf54904d5139afe6534b1e3ebec2d4f9fa43f3132d9c154d2949030127fe6e"
+        }
+      ],
+      "contentHash": "sha256:c1a6c7397f1ce665da6a5090755bdeee214ac87b6eb81f61a3647f9532662ed4"
+    },
+    {
+      "id": "paperclipai:optional:gstack:browse",
+      "key": "paperclipai/optional/gstack/browse",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "browse",
+      "name": "browse",
+      "description": "Fast headless browser for QA testing and site dogfooding. Navigate any URL, interact with elements, verify page state, diff before/after actions, take annotated screenshots, check responsive layouts, test forms and uploads, handle dialogs, and assert element states.",
+      "path": "catalog/optional/gstack/browse",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "qa-engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "browser",
+        "qa",
+        "testing"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 47132,
+          "sha256": "65b5701f825370eb6b7b4adce2e9aad620fa380e54d2dac46f7518c0ee13f641"
+        }
+      ],
+      "contentHash": "sha256:ac438d1f095610771420257f57027b2f01c0c4b358618e0f4208a3accfa3e2ac"
+    },
+    {
+      "id": "paperclipai:optional:gstack:canary",
+      "key": "paperclipai/optional/gstack/canary",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "canary",
+      "name": "canary",
+      "description": "Post-deploy canary monitoring. Watches the live app for console errors, performance regressions, and page failures using the browse daemon. Takes periodic screenshots, compares against pre-deploy baselines, and alerts on anomalies.",
+      "path": "catalog/optional/gstack/canary",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "deployment",
+        "monitoring",
+        "browser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 45467,
+          "sha256": "ac64eb84c712f7091f166fd5e43fab0017ca254260b87eacec28ee1c53e20010"
+        }
+      ],
+      "contentHash": "sha256:521e3e2f5783cec570dfe8369d8feef2c7b48f9254d8b9489637a7bea9f2cced"
+    },
+    {
+      "id": "paperclipai:optional:gstack:careful",
+      "key": "paperclipai/optional/gstack/careful",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "careful",
+      "name": "careful",
+      "description": "Safety guardrails for destructive commands. Warns before rm -rf, DROP TABLE, force-push, git reset --hard, kubectl delete, and similar destructive operations. User can override each warning. Use when touching prod, debugging live systems, or working in a shared environment.",
+      "path": "catalog/optional/gstack/careful",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "safety",
+        "guardrails"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 2497,
+          "sha256": "18644ef3d788f3234aa14199cf2f109256545656c83cff9b2f64f20f6de91356"
+        }
+      ],
+      "contentHash": "sha256:47c864caa7d92f4068e96f21555c762b32b40d858df268db558624260b392aff"
+    },
+    {
+      "id": "paperclipai:optional:gstack:codex",
+      "key": "paperclipai/optional/gstack/codex",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "codex",
+      "name": "codex",
+      "description": "OpenAI Codex CLI wrapper — three modes. Code review: independent diff review via codex review with pass/fail gate. Challenge: adversarial mode that tries to break your code. Consult: ask codex anything with session continuity for follow-ups.",
+      "path": "catalog/optional/gstack/codex",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "code-review",
+        "openai",
+        "tooling"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 76187,
+          "sha256": "187fe93d538a98f1f7ed16e21c433afe8e6ddbaf1a9d818d4c0655af57b315fd"
+        }
+      ],
+      "contentHash": "sha256:6a68b1d9746d78c9ba0c6912670c5923e32ef30ab7cf3bef785ae205887fcc21"
+    },
+    {
+      "id": "paperclipai:optional:gstack:context-restore",
+      "key": "paperclipai/optional/gstack/context-restore",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "context-restore",
+      "name": "context-restore",
+      "description": "Restore working context saved earlier by /context-save. Loads the most recent saved state (across all branches by default) so you can pick up where you left off — even across Conductor workspace handoffs.",
+      "path": "catalog/optional/gstack/context-restore",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "productivity",
+        "session-continuity"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 39702,
+          "sha256": "b5c1f1f39625193be49d3feb6ed01c9ee17018ad3d2aa36d94502012e612ee69"
+        }
+      ],
+      "contentHash": "sha256:eefe69e8a1278284c088fe42abbfa5abf67cbdf8e60983c58eabff6b9a78751c"
+    },
+    {
+      "id": "paperclipai:optional:gstack:context-save",
+      "key": "paperclipai/optional/gstack/context-save",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "context-save",
+      "name": "context-save",
+      "description": "Save working context. Captures git state, decisions made, and remaining work so any future session can pick up without losing a beat. Use when asked to \"save progress\", \"save state\", \"context save\", or \"save my work\". Pair with /context-restore to resume later.",
+      "path": "catalog/optional/gstack/context-save",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "productivity",
+        "session-continuity"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 43992,
+          "sha256": "0343eb3f8fae023a3c07fe13296393e4cb7ed0b534b97e48941e9079ff59d5a5"
+        }
+      ],
+      "contentHash": "sha256:4180e4d81afa76bbdd98f2b389d690e32752603a572d45b1633a6c8ad41fc9d1"
+    },
+    {
+      "id": "paperclipai:optional:gstack:cso",
+      "key": "paperclipai/optional/gstack/cso",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "cso",
+      "name": "cso",
+      "description": "Chief Security Officer mode. Infrastructure-first security audit: secrets archaeology, dependency supply chain, CI/CD pipeline security, LLM/AI security, skill supply chain scanning, plus OWASP Top 10, STRIDE threat modeling, and active verification.",
+      "path": "catalog/optional/gstack/cso",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "security"
+      ],
+      "requires": [],
+      "tags": [
+        "security",
+        "audit",
+        "compliance"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 73232,
+          "sha256": "127fa62c96c2a384d574c378a373b3f1960e9a96c4d9e7c9739c6a8cd32264f1"
+        }
+      ],
+      "contentHash": "sha256:0ccf87267c1680aed7f3ec29c5265d5ed8585c09f24b66cfe9c67ee4eed89f0b"
+    },
+    {
+      "id": "paperclipai:optional:gstack:design-consultation",
+      "key": "paperclipai/optional/gstack/design-consultation",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "design-consultation",
+      "name": "design-consultation",
+      "description": "Design consultation: understands your product, researches the landscape, proposes a complete design system (aesthetic, typography, color, layout, spacing, motion), and generates font+color preview pages. Creates DESIGN.md as your project's design source of truth.",
+      "path": "catalog/optional/gstack/design-consultation",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "design",
+        "branding"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 76764,
+          "sha256": "bb7400e7076447e2f773981e1aedbd76f12c3648d7194a6a56d718203b14d9da"
+        }
+      ],
+      "contentHash": "sha256:bd8964251053186509fe2168f5cd5d196ca7ccc2ea71da119ab71d5f972b94f2"
+    },
+    {
+      "id": "paperclipai:optional:gstack:design-html",
+      "key": "paperclipai/optional/gstack/design-html",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "design-html",
+      "name": "design-html",
+      "description": "Design finalization: generates production-quality Pretext-native HTML/CSS. Works with approved mockups from /design-shotgun, CEO plans from /plan-ceo-review, design review context from /plan-design-review, or from scratch with a user description.",
+      "path": "catalog/optional/gstack/design-html",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "design",
+        "frontend"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 64534,
+          "sha256": "ac1e511b0bb8224afee908372ad0894c7796ff425e9439e5945a1e62ff59fdc6"
+        }
+      ],
+      "contentHash": "sha256:b8f067dca4ca19f3b6a91495364392505b64f95b6606f2569347f2c27d3ea80e"
+    },
+    {
+      "id": "paperclipai:optional:gstack:design-review",
+      "key": "paperclipai/optional/gstack/design-review",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "design-review",
+      "name": "design-review",
+      "description": "Designer's eye QA: finds visual inconsistency, spacing issues, hierarchy problems, AI slop patterns, and slow interactions — then fixes them. Iteratively fixes issues in source code, committing each fix atomically and re-verifying with before/after screenshots.",
+      "path": "catalog/optional/gstack/design-review",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "design",
+        "qa",
+        "browser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 93819,
+          "sha256": "d4f2ceafc364c1edeffafb5c12d51fbb918203a255655f5c242df2915bd84a31"
+        }
+      ],
+      "contentHash": "sha256:cd38fc054aa105d2dfffa78afb9e9286a8ac707500ae439b2c29ad8e86221e65"
+    },
+    {
+      "id": "paperclipai:optional:gstack:design-shotgun",
+      "key": "paperclipai/optional/gstack/design-shotgun",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "design-shotgun",
+      "name": "design-shotgun",
+      "description": "Design shotgun: generate multiple AI design variants, open a comparison board, collect structured feedback, and iterate. Standalone design exploration you can run anytime.",
+      "path": "catalog/optional/gstack/design-shotgun",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "design",
+        "exploration"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 60415,
+          "sha256": "5c39b3bca8e7e0f26223d917489093324667438737548943bea9c456b5fddf2e"
+        }
+      ],
+      "contentHash": "sha256:fccbb8a3e837e7dec39f94daa4de3cf12ef53d852c2552d304fc76073a685ca1"
+    },
+    {
+      "id": "paperclipai:optional:gstack:devex-review",
+      "key": "paperclipai/optional/gstack/devex-review",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "devex-review",
+      "name": "devex-review",
+      "description": "Live developer experience audit. Uses the browse tool to actually TEST the developer experience: navigates docs, tries the getting started flow, times TTHW, screenshots error messages, evaluates CLI help text. Produces a DX scorecard with evidence.",
+      "path": "catalog/optional/gstack/devex-review",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "developer-experience",
+        "documentation",
+        "browser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 62473,
+          "sha256": "0ecd08b86b4e9c7dd99ed31cb89e37c6793dca426643d300b568965887537aba"
+        }
+      ],
+      "contentHash": "sha256:c87162add143b9a9cd617d933a5fee4d78e585223d9733ae30814d49d2199e9e"
+    },
+    {
+      "id": "paperclipai:optional:gstack:document-generate",
+      "key": "paperclipai/optional/gstack/document-generate",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "document-generate",
+      "name": "document-generate",
+      "description": "Generate missing documentation from scratch for a feature, module, or entire project. Uses the Diataxis framework (tutorial / how-to / reference / explanation) to produce complete, structured documentation.",
+      "path": "catalog/optional/gstack/document-generate",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "documentation"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 51225,
+          "sha256": "bcc0d16da64cdb9e9bf1c9912fa9512a6fa80d15a4e3ba95bf6fe8a86fee11d1"
+        }
+      ],
+      "contentHash": "sha256:550020a4b6a8ac312a514f5c8680efc6aa8b52cd4b7b0f59146310f282de0ac9"
+    },
+    {
+      "id": "paperclipai:optional:gstack:document-release",
+      "key": "paperclipai/optional/gstack/document-release",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "document-release",
+      "name": "document-release",
+      "description": "Post-ship documentation update. Reads all project docs, cross-references the diff, builds a Diataxis coverage map (reference/how-to/tutorial/explanation), updates README/ARCHITECTURE/CONTRIBUTING/CLAUDE.md to match what shipped, detects architecture diagram drift, polishes…",
+      "path": "catalog/optional/gstack/document-release",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "documentation",
+        "release"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 56447,
+          "sha256": "3aeb27e05c77a2747ea94917e4aa1b9eb38c3f810a60ab3c709b6aa37e50cf2a"
+        }
+      ],
+      "contentHash": "sha256:d251cb27b4a5c0c79ef1637c1fc18b9b378a5ea411074d2c8695e503803ef0d4"
+    },
+    {
+      "id": "paperclipai:optional:gstack:freeze",
+      "key": "paperclipai/optional/gstack/freeze",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "freeze",
+      "name": "freeze",
+      "description": "Restrict file edits to a specific directory for the session. Blocks Edit and Write outside the allowed path. Use when debugging to prevent accidentally \"fixing\" unrelated code, or when you want to scope changes to one module.",
+      "path": "catalog/optional/gstack/freeze",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "safety",
+        "guardrails"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3086,
+          "sha256": "9db73d110ff1a8f719485260452fd70fe1b4806b441f9ebd72398c0c1311060f"
+        }
+      ],
+      "contentHash": "sha256:3e631949d36707ba62b63e557f5387d40324d66ecfd1539010e88ef8c04c5782"
+    },
+    {
+      "id": "paperclipai:optional:gstack:gstack-upgrade",
+      "key": "paperclipai/optional/gstack/gstack-upgrade",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "gstack-upgrade",
+      "name": "gstack-upgrade",
+      "description": "Upgrade gstack to the latest version. Detects global vs vendored install, runs the upgrade, and shows what's new. Use when asked to \"upgrade gstack\", \"update gstack\", or \"get latest version\".",
+      "path": "catalog/optional/gstack/gstack-upgrade",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "tooling",
+        "maintenance"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 10730,
+          "sha256": "6f3b92f2516880f5e82b9d9c2c46c3208090803759fa5f274acca94f5c0e2f2b"
+        }
+      ],
+      "contentHash": "sha256:2083589ed52943261de0e250e50d179a156d4d5db6d69bb0161c0c337fb1b509"
+    },
+    {
+      "id": "paperclipai:optional:gstack:guard",
+      "key": "paperclipai/optional/gstack/guard",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "guard",
+      "name": "guard",
+      "description": "Full safety mode: destructive command warnings + directory-scoped edits. Combines /careful (warns before rm -rf, DROP TABLE, force-push, etc.) with /freeze (blocks edits outside a specified directory). Use for maximum safety when touching prod or debugging live systems.",
+      "path": "catalog/optional/gstack/guard",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "safety",
+        "guardrails"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3238,
+          "sha256": "57e4ba077968dbae2939da42761ee06615f999ea090d42398fa1b4bd2d6bc057"
+        }
+      ],
+      "contentHash": "sha256:b128f64950a7874d124c3f713097b541f064b80901dcc68e8d2eb8d1161c71e9"
+    },
+    {
+      "id": "paperclipai:optional:gstack:health",
+      "key": "paperclipai/optional/gstack/health",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "health",
+      "name": "health",
+      "description": "Code quality dashboard. Wraps existing project tools (type checker, linter, test runner, dead code detector, shell linter), computes a weighted composite 0-10 score, and tracks trends over time.",
+      "path": "catalog/optional/gstack/health",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "code-quality",
+        "metrics"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 46253,
+          "sha256": "9ce615b6010e308045171c38a88b535e049567af94c0ae0d192226942c20e509"
+        }
+      ],
+      "contentHash": "sha256:3f5e34431c36c7dd93f844c6991bdbc9e1d23301aacf5141f0561673f20c821e"
+    },
+    {
+      "id": "paperclipai:optional:gstack:investigate",
+      "key": "paperclipai/optional/gstack/investigate",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "investigate",
+      "name": "investigate",
+      "description": "Systematic debugging with root cause investigation. Four phases: investigate, analyze, hypothesize, implement. Iron Law: no fixes without root cause. Use when asked to \"debug this\", \"fix this bug\", \"why is this broken\", \"investigate this error\", or \"root cause analysis\".",
+      "path": "catalog/optional/gstack/investigate",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "debugging",
+        "root-cause-analysis"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 48268,
+          "sha256": "d093c1017e4f7aaedee002dc616b17e2a5d0b0011f91ae1079bb79a572dec94a"
+        }
+      ],
+      "contentHash": "sha256:b26d06acd4fa7d30861f535a6e76b64b435b1c3e10d763fbfd91d2c165c11ecd"
+    },
+    {
+      "id": "paperclipai:optional:gstack:land-and-deploy",
+      "key": "paperclipai/optional/gstack/land-and-deploy",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "land-and-deploy",
+      "name": "land-and-deploy",
+      "description": "Land and deploy workflow. Merges the PR, waits for CI and deploy, verifies production health via canary checks. Takes over after /ship creates the PR. Use when: \"merge\", \"land\", \"deploy\", \"merge and verify\", \"land it\", \"ship it to production\". (gstack)",
+      "path": "catalog/optional/gstack/land-and-deploy",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "deployment",
+        "release",
+        "ci-cd"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 88284,
+          "sha256": "bb50858fe6237040512b5f0f0918c8f71fd51cf524e4cf867f00a61d22771b67"
+        }
+      ],
+      "contentHash": "sha256:c7a61a05de901da2ace07e277e6db5ef83979c55f65a21074439d6c389352ab2"
+    },
+    {
+      "id": "paperclipai:optional:gstack:landing-report",
+      "key": "paperclipai/optional/gstack/landing-report",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "landing-report",
+      "name": "landing-report",
+      "description": "Read-only queue dashboard for workspace-aware ship. Shows which VERSION slots are currently claimed by open PRs, which sibling Conductor workspaces have WIP work likely to ship soon, and what slot /ship would pick next. No mutations — just a snapshot.",
+      "path": "catalog/optional/gstack/landing-report",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "release",
+        "dashboard"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 42332,
+          "sha256": "f7aa2a7ed2d2080429e3fea5b95c087fc9788019ae3a97030b52559e2c917625"
+        }
+      ],
+      "contentHash": "sha256:a6cde9393d7e5faeee3298a8d711b94497e865389245a57212b1d7bf636a9456"
+    },
+    {
+      "id": "paperclipai:optional:gstack:learn",
+      "key": "paperclipai/optional/gstack/learn",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "learn",
+      "name": "learn",
+      "description": "Manage project learnings. Review, search, prune, and export what gstack has learned across sessions. Use when asked to \"what have we learned\", \"show learnings\", \"prune stale learnings\", or \"export learnings\".",
+      "path": "catalog/optional/gstack/learn",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "knowledge-management",
+        "productivity"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 40090,
+          "sha256": "9cb103db6679c00a12a2182fe318538906f9bf8d5086ea79beba2bc3f6e07350"
+        }
+      ],
+      "contentHash": "sha256:8111eff624eeb6fad0c32beaf2f9f11d0b2817708dbb277554de543b9ed8a43a"
+    },
+    {
+      "id": "paperclipai:optional:gstack:make-pdf",
+      "key": "paperclipai/optional/gstack/make-pdf",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "make-pdf",
+      "name": "make-pdf",
+      "description": "Turn any markdown file into a publication-quality PDF. Proper 1in margins, intelligent page breaks, page numbers, cover pages, running headers, curly quotes and em dashes, clickable TOC, diagonal DRAFT watermark. Not a draft artifact — a finished artifact.",
+      "path": "catalog/optional/gstack/make-pdf",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "documentation",
+        "pdf"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 28467,
+          "sha256": "85c704fe0e987df45da78620e9e657b7b3daca3ce7e00b6afa71fa0c37750b29"
+        }
+      ],
+      "contentHash": "sha256:b6b2214f72f79c74d30b10d8b76f2065231f110c4d225501155a7a5bdc1e7da8"
+    },
+    {
+      "id": "paperclipai:optional:gstack:office-hours",
+      "key": "paperclipai/optional/gstack/office-hours",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "office-hours",
+      "name": "office-hours",
+      "description": "YC Office Hours — two modes. Startup mode: six forcing questions that expose demand reality, status quo, desperate specificity, narrowest wedge, observation, and future-fit. Builder mode: design thinking brainstorming for side projects, hackathons, learning, and open source.",
+      "path": "catalog/optional/gstack/office-hours",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "founder",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "product-strategy",
+        "yc"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 110479,
+          "sha256": "cce0cf75a05c57a4847915eaabfec4adbe9b90f6c4de54d495b2071c86df0aab"
+        }
+      ],
+      "contentHash": "sha256:97558519839ec61bb633486e2d9204bfffc00140ca215704ef5d49fbd54a7415"
+    },
+    {
+      "id": "paperclipai:optional:gstack:open-gstack-browser",
+      "key": "paperclipai/optional/gstack/open-gstack-browser",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "open-gstack-browser",
+      "name": "open-gstack-browser",
+      "description": "Launch GStack Browser — AI-controlled Chromium with the sidebar extension baked in. Opens a visible browser window where you can watch every action in real time. The sidebar shows a live activity feed and chat. Anti-bot stealth built in.",
+      "path": "catalog/optional/gstack/open-gstack-browser",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "qa-engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "browser",
+        "tooling"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 44367,
+          "sha256": "a9fb2e07d23b407ff2b1d81586205254c46e9772e25cb55b9dc0e0bbdf325d75"
+        }
+      ],
+      "contentHash": "sha256:f0ec7f51d75f74e07d5d31593a666dbb82c587ad5ffb582d7261a362b26a1bef"
+    },
+    {
+      "id": "paperclipai:optional:gstack:pair-agent",
+      "key": "paperclipai/optional/gstack/pair-agent",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "pair-agent",
+      "name": "pair-agent",
+      "description": "Pair a remote AI agent with your browser. One command generates a setup key and prints instructions the other agent can follow to connect. Works with OpenClaw, Hermes, Codex, Cursor, or any agent that can make HTTP requests.",
+      "path": "catalog/optional/gstack/pair-agent",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "collaboration",
+        "browser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 45025,
+          "sha256": "7c647aa16b1a5b7f513f0baccfb2a96a60bd412fec207b5861da3df609455a4c"
+        }
+      ],
+      "contentHash": "sha256:0d191a4065c11ad3d449ee27cfcd8e00b4720beba9574a8839ecfcdf99fdef80"
+    },
+    {
+      "id": "paperclipai:optional:gstack:plan-ceo-review",
+      "key": "paperclipai/optional/gstack/plan-ceo-review",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "plan-ceo-review",
+      "name": "plan-ceo-review",
+      "description": "CEO/founder-mode plan review. Rethink the problem, find the 10-star product, challenge premises, expand scope when it creates a better product.",
+      "path": "catalog/optional/gstack/plan-ceo-review",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "founder",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "planning",
+        "review"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 130520,
+          "sha256": "a436d2b31d1444ffe24afa84ec3d81dd5fd7349393f471bce1af70a17ebc3964"
+        }
+      ],
+      "contentHash": "sha256:730ce2d333a5fe3233d3fdda2447ed5a2162627f7fd15168fdc56011121b1bbb"
+    },
+    {
+      "id": "paperclipai:optional:gstack:plan-design-review",
+      "key": "paperclipai/optional/gstack/plan-design-review",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "plan-design-review",
+      "name": "plan-design-review",
+      "description": "Designer's eye plan review — interactive, like CEO and Eng review. Rates each design dimension 0-10, explains what would make it a 10, then fixes the plan to get there. Works in plan mode. For live site visual audits, use /design-review.",
+      "path": "catalog/optional/gstack/plan-design-review",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "product-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "planning",
+        "design",
+        "review"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 105474,
+          "sha256": "ce9288fe0089a56d9b3ad8c28e2bc2e0dc5e3ea00a92e33e1b25c8279473dcde"
+        }
+      ],
+      "contentHash": "sha256:5d7fd4494babe6bb4af504540b97cba33b7cd7636508c904e2a12931ec0c74f7"
+    },
+    {
+      "id": "paperclipai:optional:gstack:plan-devex-review",
+      "key": "paperclipai/optional/gstack/plan-devex-review",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "plan-devex-review",
+      "name": "plan-devex-review",
+      "description": "Interactive developer experience plan review. Explores developer personas, benchmarks against competitors, designs magical moments, and traces friction points before scoring.",
+      "path": "catalog/optional/gstack/plan-devex-review",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "planning",
+        "developer-experience",
+        "review"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 104115,
+          "sha256": "ca364ffcbed3fdd54a39412f6bd123065a2756cb6d5371a90757b8272e9fe63c"
+        }
+      ],
+      "contentHash": "sha256:ffc2284d52e2ef6e205277cf7599669791cd53a03c7eb0a6faad86263681844e"
+    },
+    {
+      "id": "paperclipai:optional:gstack:plan-eng-review",
+      "key": "paperclipai/optional/gstack/plan-eng-review",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "plan-eng-review",
+      "name": "plan-eng-review",
+      "description": "Eng manager-mode plan review. Lock in the execution plan — architecture, data flow, diagrams, edge cases, test coverage, performance. Walks through issues interactively with opinionated recommendations.",
+      "path": "catalog/optional/gstack/plan-eng-review",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "planning",
+        "architecture",
+        "review"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 98844,
+          "sha256": "69a92d3e1e8c68d1a0413c45b95903ef6b74183ffcde49baa615725ae9cd4a96"
+        }
+      ],
+      "contentHash": "sha256:559a1c4e897deaf135a8b374dc105c82518afae377e48c8c5eb98ed33c04c75d"
+    },
+    {
+      "id": "paperclipai:optional:gstack:plan-tune",
+      "key": "paperclipai/optional/gstack/plan-tune",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "plan-tune",
+      "name": "plan-tune",
+      "description": "Self-tuning question sensitivity + developer psychographic for gstack (v1: observational). Review which AskUserQuestion prompts fire across gstack skills, set per-question preferences (never-ask / always-ask / ask-only-for-one-way), inspect the dual-track profile (what you…",
+      "path": "catalog/optional/gstack/plan-tune",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "tooling",
+        "personalization"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 49678,
+          "sha256": "9b3bf235e23327f540706e062ee4037f304523c04338e65d951a6cd45571f9b0"
+        }
+      ],
+      "contentHash": "sha256:f243c0925082eb9c309eaa18bfe21b92eecffe9a2b0f466968df20e66606ffbc"
+    },
+    {
+      "id": "paperclipai:optional:gstack:qa",
+      "key": "paperclipai/optional/gstack/qa",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "qa",
+      "name": "qa",
+      "description": "Systematically QA test a web application and fix bugs found. Runs QA testing, then iteratively fixes bugs in source code, committing each fix atomically and re-verifying. Use when asked to \"qa\", \"QA\", \"test this site\", \"find bugs\", \"test and fix\", or \"fix what's broken\".",
+      "path": "catalog/optional/gstack/qa",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "qa-engineer",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "qa",
+        "testing",
+        "browser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 71940,
+          "sha256": "4880bc935cdafcde4a8ea13334073be8a644a1a7e9e223cf6ed3c65922960212"
+        }
+      ],
+      "contentHash": "sha256:6cef022f9fe12c460d457a688bcbcb8feeba56bb7b404ae7a0f34528ffcba5a7"
+    },
+    {
+      "id": "paperclipai:optional:gstack:qa-only",
+      "key": "paperclipai/optional/gstack/qa-only",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "qa-only",
+      "name": "qa-only",
+      "description": "Report-only QA testing. Systematically tests a web application and produces a structured report with health score, screenshots, and repro steps — but never fixes anything. Use when asked to \"just report bugs\", \"qa report only\", or \"test but don't fix\".",
+      "path": "catalog/optional/gstack/qa-only",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "qa-engineer",
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "qa",
+        "testing",
+        "browser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 54674,
+          "sha256": "7f096056738569358b8da36de0e4b10f8ec5bda470c1f3f192180064ce2599ec"
+        }
+      ],
+      "contentHash": "sha256:1056acaf6bcce928470a2c376fab8c282ba372d33aa24a81dc5d9f6c9f1f9f87"
+    },
+    {
+      "id": "paperclipai:optional:gstack:retro",
+      "key": "paperclipai/optional/gstack/retro",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "retro",
+      "name": "retro",
+      "description": "Weekly engineering retrospective. Analyzes commit history, work patterns, and code quality metrics with persistent history and trend tracking. Team-aware: breaks down per-person contributions with praise and growth areas.",
+      "path": "catalog/optional/gstack/retro",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "engineering-manager"
+      ],
+      "requires": [],
+      "tags": [
+        "retrospective",
+        "team"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 77643,
+          "sha256": "2df1d1eb69957b07d879f446b960a7a94e5098867a3b3ff03ee1e1fe94142e6e"
+        }
+      ],
+      "contentHash": "sha256:310d7dcba64fdeec5e28d447f844cb04f01f6b5c85cd8f5fbb9f059433150ccc"
+    },
+    {
+      "id": "paperclipai:optional:gstack:review",
+      "key": "paperclipai/optional/gstack/review",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "review",
+      "name": "review",
+      "description": "Pre-landing PR review. Analyzes diff against the base branch for SQL safety, LLM trust boundary violations, conditional side effects, and other structural issues. Use when asked to \"review this PR\", \"code review\", \"pre-landing review\", or \"check my diff\".",
+      "path": "catalog/optional/gstack/review",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "code-review",
+        "pull-requests"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 89476,
+          "sha256": "dd004a3fd0b8e22bba06bac5c8b3d76f40ec3d83f30561b24d98eadfe8992728"
+        }
+      ],
+      "contentHash": "sha256:9125fc607b26d2a72d60182fca876c775e4a4f7da22a873cab3369cb58cedbe8"
+    },
+    {
+      "id": "paperclipai:optional:gstack:scrape",
+      "key": "paperclipai/optional/gstack/scrape",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "scrape",
+      "name": "scrape",
+      "description": "Pull data from a web page. First call on a new intent prototypes the flow via $B primitives and returns JSON. Subsequent calls on a matching intent route to a codified browser-skill and return in ~200ms.",
+      "path": "catalog/optional/gstack/scrape",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "browser",
+        "data-extraction"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 41914,
+          "sha256": "0a16a7eb8ee58b8149c2b7a4d26eef3fcad3c687eea11bbad13032e373120ccd"
+        }
+      ],
+      "contentHash": "sha256:d42eabf036ede068ab94933a389786e4b36455b04437e25855311f4d9691de02"
+    },
+    {
+      "id": "paperclipai:optional:gstack:setup-browser-cookies",
+      "key": "paperclipai/optional/gstack/setup-browser-cookies",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "setup-browser-cookies",
+      "name": "setup-browser-cookies",
+      "description": "Import cookies from your real Chromium browser into the headless browse session. Opens an interactive picker UI where you select which cookie domains to import. Use before QA testing authenticated pages.",
+      "path": "catalog/optional/gstack/setup-browser-cookies",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "qa-engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "browser",
+        "qa",
+        "auth"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 25863,
+          "sha256": "d6b5c1df64aadbfa584646a7813b54de46e17fd5524035cc0a9019a98db9559a"
+        }
+      ],
+      "contentHash": "sha256:2334f101c72c78bf1621437ade5790db6236f3aca2fe876abc4b03254cd35ee9"
+    },
+    {
+      "id": "paperclipai:optional:gstack:setup-deploy",
+      "key": "paperclipai/optional/gstack/setup-deploy",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "setup-deploy",
+      "name": "setup-deploy",
+      "description": "Configure deployment settings for /land-and-deploy. Detects your deploy platform (Fly.io, Render, Vercel, Netlify, Heroku, GitHub Actions, custom), production URL, health check endpoints, and deploy status commands.",
+      "path": "catalog/optional/gstack/setup-deploy",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "deployment",
+        "configuration"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 42182,
+          "sha256": "155c56ce1ecfb181b46e141e87f593117db193fec61a0063b4c34088e93a3b31"
+        }
+      ],
+      "contentHash": "sha256:26e927598dfe0f1e4934292b06f6eb7253f0a84449a9447dabf1ef1c59f34779"
+    },
+    {
+      "id": "paperclipai:optional:gstack:setup-gbrain",
+      "key": "paperclipai/optional/gstack/setup-gbrain",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "setup-gbrain",
+      "name": "setup-gbrain",
+      "description": "Set up gbrain for this coding agent: install the CLI, initialize a local PGLite or Supabase brain, register MCP, capture per-remote trust policy.",
+      "path": "catalog/optional/gstack/setup-gbrain",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "knowledge-base",
+        "tooling"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 75268,
+          "sha256": "0b7e55b71b7d9e044f13407e6a811b3de284ec3e548e71232cd869afb87ae8bc"
+        }
+      ],
+      "contentHash": "sha256:7d798bef0af310b33b7d20e0386bf8e17c4b12ba42e6505fd3c7e24ea426b2f8"
+    },
+    {
+      "id": "paperclipai:optional:gstack:ship",
+      "key": "paperclipai/optional/gstack/ship",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "ship",
+      "name": "ship",
+      "description": "Ship workflow: detect + merge base branch, run tests, review diff, bump VERSION, update CHANGELOG, commit, push, create PR. Use when asked to \"ship\", \"deploy\", \"push to main\", \"create a PR\", \"merge and push\", or \"get it deployed\".",
+      "path": "catalog/optional/gstack/ship",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "release",
+        "pull-requests",
+        "git"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 160700,
+          "sha256": "5f213c42e30c67f88e0e9200ef4e286e563285612da5d8021438786d87590951"
+        }
+      ],
+      "contentHash": "sha256:bbce481c5af2f2e95fa81db404fd28a216386d759a54ebe03f6a09f0b965c61f"
+    },
+    {
+      "id": "paperclipai:optional:gstack:skillify",
+      "key": "paperclipai/optional/gstack/skillify",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "skillify",
+      "name": "skillify",
+      "description": "Codify the most recent successful /scrape flow into a permanent browser-skill on disk. Future /scrape calls with the same intent run the codified script in ~200ms instead of re-driving the page.",
+      "path": "catalog/optional/gstack/skillify",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "automation",
+        "browser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 51747,
+          "sha256": "308bed50f1a01585887db7c887b3046dd76ea4a122ffdec95f9c5ac6828dad7a"
+        }
+      ],
+      "contentHash": "sha256:61348d0e37a7ae70fe13aa8fff6d04d2a24968c20babec2b964eeb324e434fdf"
+    },
+    {
+      "id": "paperclipai:optional:gstack:sync-gbrain",
+      "key": "paperclipai/optional/gstack/sync-gbrain",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "sync-gbrain",
+      "name": "sync-gbrain",
+      "description": "Keep gbrain current with this repo's code and refresh agent search guidance in CLAUDE.md. Wraps the gstack-gbrain-sync orchestrator with state probing, native code-surface registration, capability checks, and a verdict block. Re-runnable, idempotent.",
+      "path": "catalog/optional/gstack/sync-gbrain",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "knowledge-base",
+        "tooling"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 47749,
+          "sha256": "04d44b2f9b613fb323d346d7a90b900d09c56c2ba3ac3a4856c219074b0e89ff"
+        }
+      ],
+      "contentHash": "sha256:9922b546ef9d57b9d6428f71de9d0880b7c1b7f12f870a03be85d6557cbbaa8a"
+    },
+    {
+      "id": "paperclipai:optional:gstack:unfreeze",
+      "key": "paperclipai/optional/gstack/unfreeze",
+      "kind": "optional",
+      "category": "gstack",
+      "slug": "unfreeze",
+      "name": "unfreeze",
+      "description": "Clear the freeze boundary set by /freeze, allowing edits to all directories again. Use when you want to widen edit scope without ending the session. Use when asked to \"unfreeze\", \"unlock edits\", \"remove freeze\", or \"allow all edits\". (gstack)",
+      "path": "catalog/optional/gstack/unfreeze",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "safety",
+        "guardrails"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 1538,
+          "sha256": "fff9283e231b0bcae0bd89e7e6e3e7f147af6fa1def8c40be4367b8d4de9e4c5"
+        }
+      ],
+      "contentHash": "sha256:7c0b1ed901a203bb7262a73ab074e4c108b827ffaf6878b8233d4b73c0418a99"
     },
     {
       "id": "paperclipai:optional:product:design-critique",
