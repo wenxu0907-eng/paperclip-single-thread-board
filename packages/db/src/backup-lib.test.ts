@@ -4,7 +4,15 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  normalizeBackupRetention,
+  planBackupPruning,
+  runDatabaseBackup,
+  runDatabaseRestore,
+  type BackupFileEntry,
+} from "./backup-lib.js";
+import { DEFAULT_BACKUP_RETENTION } from "@paperclipai/shared";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -528,4 +536,130 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+});
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const MB = 1024 * 1024;
+const NOW = Date.parse("2026-09-15T12:00:00.000Z");
+const DEFAULT_MAX_FILES = DEFAULT_BACKUP_RETENTION.maxTotalCount;
+const DEFAULT_MAX_BYTES = DEFAULT_BACKUP_RETENTION.maxTotalGb * 1024 * MB;
+
+function entry(ageMs: number, sizeBytes = 500 * MB): BackupFileEntry {
+  const mtimeMs = NOW - ageMs;
+  const name = `paperclip-${new Date(mtimeMs).toISOString().replace(/[-:.]/g, "")}.sql.gz`;
+  return { name, fullPath: `/backups/${name}`, mtimeMs, sizeBytes };
+}
+
+/** Hourly backups running back `days` days, newest first. */
+function hourlySeries(days: number, sizeBytes = 500 * MB): BackupFileEntry[] {
+  return Array.from({ length: days * 24 }, (_, i) => entry(i * HOUR_MS, sizeBytes));
+}
+
+describe("planBackupPruning", () => {
+  const roomy = { maxTotalCount: 200, maxTotalGb: 100 } as const;
+
+  it("keeps every backup inside the hourly window", () => {
+    const entries = hourlySeries(1);
+    const plan = planBackupPruning(entries, { hourlyHours: 12, ...roomy }, NOW);
+
+    const hourly = plan.keep.filter((k) => k.reason === "hourly" || k.reason === "latest");
+    // 12h window plus the newest backup, which is always retained.
+    expect(hourly).toHaveLength(13);
+  });
+
+  it("thins to one backup per day past the hourly window", () => {
+    const plan = planBackupPruning(
+      hourlySeries(5),
+      { hourlyHours: 12, dailyDays: 7, ...roomy },
+      NOW,
+    );
+
+    const dailyKeeps = plan.keep.filter((k) => k.reason === "daily");
+    const days = new Set(dailyKeeps.map((k) => new Date(k.mtimeMs).toDateString()));
+    expect(days.size).toBe(dailyKeeps.length);
+    expect(plan.delete.every((d) => d.reason === "superseded_within_day")).toBe(true);
+  });
+
+  it("bounds a month of hourly backups to a handful of files", () => {
+    // The pre-fix policy kept every backup inside the daily window, which is
+    // how the directory reached 77 files / 39G.
+    const entries = hourlySeries(30);
+    const plan = planBackupPruning(entries, {}, NOW);
+
+    expect(entries).toHaveLength(720);
+    expect(plan.keptCount).toBeLessThanOrEqual(DEFAULT_MAX_FILES);
+    expect(plan.keptBytes).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+    expect(plan.keep.length + plan.delete.length).toBe(entries.length);
+  });
+
+  it("never deletes the newest backup, even when every cap is exceeded", () => {
+    const entries = hourlySeries(10, 40 * 1024 * MB); // 40GB each
+    const plan = planBackupPruning(entries, { maxTotalCount: 24, maxTotalGb: 10 }, NOW);
+
+    expect(plan.keptCount).toBe(1);
+    expect(plan.keep[0]!.reason).toBe("latest");
+    expect(plan.keep[0]!.mtimeMs).toBe(NOW);
+    expect(plan.delete.map((d) => d.fullPath)).not.toContain(plan.keep[0]!.fullPath);
+  });
+
+  it("applies the file-count cap oldest-first", () => {
+    const plan = planBackupPruning(hourlySeries(2), { hourlyHours: 48, maxTotalCount: 24, maxTotalGb: 100 }, NOW);
+
+    expect(plan.keptCount).toBe(24);
+    const capped = plan.delete.filter((d) => d.reason === "max_total_count_exceeded");
+    expect(capped.length).toBeGreaterThan(0);
+    // Everything retained is newer than everything the cap dropped.
+    const oldestKept = Math.min(...plan.keep.map((k) => k.mtimeMs));
+    expect(Math.max(...capped.map((d) => d.mtimeMs))).toBeLessThan(oldestKept);
+  });
+
+  it("applies the total-size cap oldest-first", () => {
+    // 1GB dumps, 10GB cap => 10 files survive.
+    const plan = planBackupPruning(
+      hourlySeries(2, 1024 * MB),
+      { hourlyHours: 48, maxTotalCount: 200, maxTotalGb: 10 },
+      NOW,
+    );
+
+    expect(plan.keptBytes).toBeLessThanOrEqual(10 * 1024 * MB);
+    expect(plan.keptCount).toBe(10);
+    expect(plan.delete.some((d) => d.reason === "max_total_size_exceeded")).toBe(true);
+  });
+
+  it("deletes backups older than every retention tier", () => {
+    const plan = planBackupPruning(
+      [entry(0), entry(200 * DAY_MS)],
+      { monthlyMonths: 1, ...roomy },
+      NOW,
+    );
+
+    expect(plan.delete).toHaveLength(1);
+    expect(plan.delete[0]!.reason).toBe("beyond_retention_window");
+  });
+
+  it("labels each deletion with a reason", () => {
+    const plan = planBackupPruning(hourlySeries(30), {}, NOW);
+
+    for (const deleted of plan.delete) {
+      expect(deleted.reason).toBeTruthy();
+      expect(deleted.name).toMatch(/^paperclip-/);
+      expect(deleted.sizeBytes).toBeGreaterThan(0);
+    }
+  });
+
+  it("is a no-op on an empty directory", () => {
+    const plan = planBackupPruning([], {}, NOW);
+    expect(plan).toEqual({ keep: [], delete: [], keptCount: 0, keptBytes: 0 });
+  });
+
+  it("backfills a policy stored before the hourly and cap tiers existed", () => {
+    // Settings persisted by the previous version only carry these three fields.
+    const legacy = normalizeBackupRetention({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+
+    expect(legacy.dailyDays).toBe(7);
+    expect(legacy.hourlyHours).toBeGreaterThan(0);
+    expect(legacy.maxTotalCount).toBeGreaterThan(0);
+    expect(legacy.maxTotalGb).toBeGreaterThan(0);
+  });
 });

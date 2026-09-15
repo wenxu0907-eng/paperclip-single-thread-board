@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
 import {
+  HOURLY_RETENTION_PRESETS,
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
+  MAX_TOTAL_COUNT_PRESETS,
+  MAX_TOTAL_GB_PRESETS,
   DEFAULT_BACKUP_RETENTION,
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
@@ -20,6 +23,53 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+
+function RetentionPresetRow({
+  title,
+  description,
+  presets,
+  value,
+  formatLabel,
+  disabled,
+  onSelect,
+}: {
+  title: string;
+  description: string;
+  presets: readonly number[];
+  value: number;
+  formatLabel: (preset: number) => string;
+  disabled: boolean;
+  onSelect: (preset: number) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{title}</h3>
+      <p className="max-w-2xl text-xs text-muted-foreground">{description}</p>
+      <div className="flex flex-wrap gap-2">
+        {presets.map((preset) => {
+          const active = value === preset;
+          return (
+            <button
+              key={preset}
+              type="button"
+              disabled={disabled}
+              aria-pressed={active}
+              className={cn(
+                "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                active
+                  ? "border-foreground bg-accent text-foreground"
+                  : "border-border bg-background hover:bg-accent/50",
+              )}
+              onClick={() => onSelect(preset)}
+            >
+              <div className="text-sm font-medium">{formatLabel(preset)}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -180,99 +230,102 @@ export function InstanceGeneralSettings() {
             <h2 className="text-sm font-semibold">Backup retention</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure how long automatic database backups are retained. Backups run roughly
-              every hour and are compressed with gzip. Within the daily window all backups are
-              kept; beyond that, one backup per week and one per month are preserved.
+              every hour and are compressed with gzip. Retention thins backups out as they age:
+              every backup inside the hourly window is kept, then one per day, one per week, and
+              one per month. The total-files and total-size caps are hard limits applied after
+              that, so the backup directory stays bounded even as the database grows. The most
+              recent backup is never deleted.
             </p>
           </div>
 
-          <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
-            <div className="flex flex-wrap gap-2">
-              {DAILY_RETENTION_PRESETS.map((days) => {
-                const active = backupRetention.dailyDays === days;
-                return (
-                  <button
-                    key={days}
-                    type="button"
-                    disabled={updateGeneralMutation.isPending}
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                      active
-                        ? "border-foreground bg-accent text-foreground"
-                        : "border-border bg-background hover:bg-accent/50",
-                    )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, dailyDays: days },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{days} days</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <RetentionPresetRow
+            title="Hourly"
+            description="Keep every backup taken within this window."
+            presets={HOURLY_RETENTION_PRESETS}
+            value={backupRetention.hourlyHours}
+            formatLabel={(hours) => (hours === 1 ? "1 hour" : `${hours} hours`)}
+            disabled={updateGeneralMutation.isPending}
+            onSelect={(hours) =>
+              updateGeneralMutation.mutate({
+                backupRetention: { ...backupRetention, hourlyHours: hours as BackupRetentionPolicy["hourlyHours"] },
+              })
+            }
+          />
 
-          <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
-            <div className="flex flex-wrap gap-2">
-              {WEEKLY_RETENTION_PRESETS.map((weeks) => {
-                const active = backupRetention.weeklyWeeks === weeks;
-                const label = weeks === 1 ? "1 week" : `${weeks} weeks`;
-                return (
-                  <button
-                    key={weeks}
-                    type="button"
-                    disabled={updateGeneralMutation.isPending}
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                      active
-                        ? "border-foreground bg-accent text-foreground"
-                        : "border-border bg-background hover:bg-accent/50",
-                    )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, weeklyWeeks: weeks },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{label}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <RetentionPresetRow
+            title="Daily"
+            description="Past the hourly window, keep one backup per day for this long."
+            presets={DAILY_RETENTION_PRESETS}
+            value={backupRetention.dailyDays}
+            formatLabel={(days) => (days === 1 ? "1 day" : `${days} days`)}
+            disabled={updateGeneralMutation.isPending}
+            onSelect={(days) =>
+              updateGeneralMutation.mutate({
+                backupRetention: { ...backupRetention, dailyDays: days as BackupRetentionPolicy["dailyDays"] },
+              })
+            }
+          />
 
-          <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
-            <div className="flex flex-wrap gap-2">
-              {MONTHLY_RETENTION_PRESETS.map((months) => {
-                const active = backupRetention.monthlyMonths === months;
-                const label = months === 1 ? "1 month" : `${months} months`;
-                return (
-                  <button
-                    key={months}
-                    type="button"
-                    disabled={updateGeneralMutation.isPending}
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                      active
-                        ? "border-foreground bg-accent text-foreground"
-                        : "border-border bg-background hover:bg-accent/50",
-                    )}
-                    onClick={() =>
-                      updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, monthlyMonths: months },
-                      })
-                    }
-                  >
-                    <div className="text-sm font-medium">{label}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <RetentionPresetRow
+            title="Weekly"
+            description="Past the daily window, keep one backup per week for this long."
+            presets={WEEKLY_RETENTION_PRESETS}
+            value={backupRetention.weeklyWeeks}
+            formatLabel={(weeks) => (weeks === 1 ? "1 week" : `${weeks} weeks`)}
+            disabled={updateGeneralMutation.isPending}
+            onSelect={(weeks) =>
+              updateGeneralMutation.mutate({
+                backupRetention: { ...backupRetention, weeklyWeeks: weeks as BackupRetentionPolicy["weeklyWeeks"] },
+              })
+            }
+          />
+
+          <RetentionPresetRow
+            title="Monthly"
+            description="Past the weekly window, keep one backup per month for this long."
+            presets={MONTHLY_RETENTION_PRESETS}
+            value={backupRetention.monthlyMonths}
+            formatLabel={(months) => (months === 1 ? "1 month" : `${months} months`)}
+            disabled={updateGeneralMutation.isPending}
+            onSelect={(months) =>
+              updateGeneralMutation.mutate({
+                backupRetention: { ...backupRetention, monthlyMonths: months as BackupRetentionPolicy["monthlyMonths"] },
+              })
+            }
+          />
+
+          <RetentionPresetRow
+            title="Maximum files"
+            description="Hard cap on retained backup files. Oldest backups are removed first."
+            presets={MAX_TOTAL_COUNT_PRESETS}
+            value={backupRetention.maxTotalCount}
+            formatLabel={(count) => `${count} files`}
+            disabled={updateGeneralMutation.isPending}
+            onSelect={(count) =>
+              updateGeneralMutation.mutate({
+                backupRetention: { ...backupRetention, maxTotalCount: count as BackupRetentionPolicy["maxTotalCount"] },
+              })
+            }
+          />
+
+          <RetentionPresetRow
+            title="Maximum total size"
+            description="Hard cap on the backup directory. Oldest backups are removed first."
+            presets={MAX_TOTAL_GB_PRESETS}
+            value={backupRetention.maxTotalGb}
+            formatLabel={(gb) => `${gb} GB`}
+            disabled={updateGeneralMutation.isPending}
+            onSelect={(gb) =>
+              updateGeneralMutation.mutate({
+                backupRetention: { ...backupRetention, maxTotalGb: gb as BackupRetentionPolicy["maxTotalGb"] },
+              })
+            }
+          />
+
+          <p className="max-w-2xl text-xs text-muted-foreground">
+            Pruning runs automatically after every backup. Deleted backups are recorded in the
+            server log with the reason each one was removed.
+          </p>
         </div>
       </Card>
 

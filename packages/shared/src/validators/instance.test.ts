@@ -1,8 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
+  backupRetentionPolicySchema,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
 } from "./instance.js";
+import { DEFAULT_BACKUP_RETENTION } from "../types/instance.js";
+
+describe("backup retention policy validator", () => {
+  it("backfills the hourly and cap tiers for a policy stored before they existed", () => {
+    // The shape the running instance already has persisted in instance settings.
+    const legacy = { dailyDays: 14, weeklyWeeks: 2, monthlyMonths: 3 };
+
+    expect(backupRetentionPolicySchema.parse(legacy)).toEqual({
+      hourlyHours: DEFAULT_BACKUP_RETENTION.hourlyHours,
+      dailyDays: 14,
+      weeklyWeeks: 2,
+      monthlyMonths: 3,
+      maxTotalCount: DEFAULT_BACKUP_RETENTION.maxTotalCount,
+      maxTotalGb: DEFAULT_BACKUP_RETENTION.maxTotalGb,
+    });
+  });
+
+  it("defaults an absent policy to the full default", () => {
+    expect(backupRetentionPolicySchema.parse({})).toEqual(DEFAULT_BACKUP_RETENTION);
+  });
+
+  it("rejects values outside the offered presets", () => {
+    expect(backupRetentionPolicySchema.safeParse({ hourlyHours: 7 }).success).toBe(false);
+    expect(backupRetentionPolicySchema.safeParse({ maxTotalGb: 999 }).success).toBe(false);
+    expect(backupRetentionPolicySchema.safeParse({ maxTotalCount: 0 }).success).toBe(false);
+  });
+});
 
 describe("instance experimental settings validators", () => {
   it("defaults the server info debug view off", () => {

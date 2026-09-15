@@ -1,22 +1,44 @@
 import type { FeedbackDataSharingPreference } from "./feedback.js";
 
+export const HOURLY_RETENTION_PRESETS = [6, 12, 24, 48] as const;
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
+export const MAX_TOTAL_COUNT_PRESETS = [24, 48, 96, 200] as const;
+export const MAX_TOTAL_GB_PRESETS = [10, 20, 50, 100] as const;
 export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
 export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
 export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
 
+/**
+ * Backup retention policy. Backups thin out as they age: every backup inside
+ * the hourly window is kept, then one per calendar day, then one per calendar
+ * week, then one per calendar month. `maxTotalCount` / `maxTotalGb` are hard
+ * backstops applied after the tiers so the backup directory has a bounded
+ * footprint even as individual dumps grow. The newest backup is never deleted.
+ */
 export interface BackupRetentionPolicy {
+  /** Keep every backup taken within this many hours. */
+  hourlyHours: (typeof HOURLY_RETENTION_PRESETS)[number];
+  /** Keep one backup per calendar day back to this many days. */
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
+  /** Keep one backup per calendar week back to this many weeks. */
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
+  /** Keep one backup per calendar month back to this many months. */
   monthlyMonths: (typeof MONTHLY_RETENTION_PRESETS)[number];
+  /** Hard cap on retained backup files; oldest are dropped first. */
+  maxTotalCount: (typeof MAX_TOTAL_COUNT_PRESETS)[number];
+  /** Hard cap on total retained size in GiB; oldest are dropped first. */
+  maxTotalGb: (typeof MAX_TOTAL_GB_PRESETS)[number];
 }
 
 export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
+  hourlyHours: 12,
   dailyDays: 7,
   weeklyWeeks: 4,
   monthlyMonths: 1,
+  maxTotalCount: 48,
+  maxTotalGb: 20,
 };
 
 /**
