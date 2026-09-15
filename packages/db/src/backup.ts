@@ -84,6 +84,10 @@ async function main() {
     });
 
     console.log(`Backup saved: ${formatDatabaseBackupResult(result)}`);
+    for (const pruned of result.prunedFiles) {
+      console.log(`Pruned ${pruned.name} (${pruned.sizeBytes} bytes) — ${pruned.reason}`);
+    }
+    console.log(`Retained ${result.retainedCount} backup(s), ${result.retainedBytes} bytes total`);
   } catch (err) {
     console.error("Backup failed.");
     if (err instanceof Error) {

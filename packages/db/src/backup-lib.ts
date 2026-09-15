@@ -6,17 +6,27 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { DEFAULT_BACKUP_RETENTION, type BackupRetentionPolicy } from "@paperclipai/shared";
 
-export type BackupRetentionPolicy = {
-  dailyDays: number;
-  weeklyWeeks: number;
-  monthlyMonths: number;
-};
+export type { BackupRetentionPolicy };
+
+/**
+ * Retention as supplied by a caller. Every field is optional and filled from
+ * `DEFAULT_BACKUP_RETENTION`, so policies persisted before a tier was added
+ * keep working.
+ *
+ * Fields are plain numbers rather than the preset unions of
+ * `BackupRetentionPolicy`: the presets constrain what the settings UI offers,
+ * but the CLI reads arbitrary values out of `paperclip.config.json`. Any
+ * positive number is a valid policy here; non-positive or missing values fall
+ * back to the default for that tier.
+ */
+export type BackupRetentionPolicyInput = Partial<Record<keyof BackupRetentionPolicy, number>>;
 
 export type RunDatabaseBackupOptions = {
   connectionString: string;
   backupDir: string;
-  retention: BackupRetentionPolicy;
+  retention: BackupRetentionPolicyInput;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   /**
@@ -34,6 +44,12 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  /** Backups deleted by this run's retention sweep, with the reason for each. */
+  prunedFiles: DeletedBackupFile[];
+  /** Backup files remaining in the directory after pruning. */
+  retainedCount: number;
+  /** Total size of the remaining backup files, in bytes. */
+  retainedBytes: number;
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -107,76 +123,209 @@ function monthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function dayKey(date: Date): string {
+  return `${monthKey(date)}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/** Why a backup file was retained. */
+export type BackupKeepReason = "latest" | "hourly" | "daily" | "weekly" | "monthly";
+
+/** Why a backup file was deleted. */
+export type BackupDeleteReason =
+  | "superseded_within_day"
+  | "superseded_within_week"
+  | "superseded_within_month"
+  | "beyond_retention_window"
+  | "max_total_count_exceeded"
+  | "max_total_size_exceeded";
+
+export type BackupFileEntry = {
+  name: string;
+  fullPath: string;
+  mtimeMs: number;
+  sizeBytes: number;
+};
+
+export type KeptBackupFile = BackupFileEntry & { reason: BackupKeepReason };
+export type DeletedBackupFile = BackupFileEntry & { reason: BackupDeleteReason };
+
+export type BackupPrunePlan = {
+  keep: KeptBackupFile[];
+  delete: DeletedBackupFile[];
+  keptCount: number;
+  keptBytes: number;
+};
+
+const BYTES_PER_GIB = 1024 * 1024 * 1024;
+
+function positive(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 /**
- * Tiered backup pruning:
- * - Daily tier: keep ALL backups from the last `dailyDays` days
- * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
- * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
- * - Everything else is deleted
+ * Fill in any retention fields the caller omitted. Settings persisted before
+ * the hourly/cap tiers existed only carry the daily/weekly/monthly fields, so
+ * normalizing here keeps old callers and old stored policies working.
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
-  if (!existsSync(backupDir)) return 0;
+export function normalizeBackupRetention(
+  retention: BackupRetentionPolicyInput | undefined,
+): BackupRetentionPolicy {
+  const d = DEFAULT_BACKUP_RETENTION;
+  return {
+    hourlyHours: positive(retention?.hourlyHours, d.hourlyHours),
+    dailyDays: positive(retention?.dailyDays, d.dailyDays),
+    weeklyWeeks: positive(retention?.weeklyWeeks, d.weeklyWeeks),
+    monthlyMonths: positive(retention?.monthlyMonths, d.monthlyMonths),
+    maxTotalCount: positive(retention?.maxTotalCount, d.maxTotalCount),
+    maxTotalGb: positive(retention?.maxTotalGb, d.maxTotalGb),
+  } as BackupRetentionPolicy;
+}
 
-  const now = Date.now();
-  const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
-  const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
-  const monthlyCutoff = now - Math.max(1, retention.monthlyMonths) * 30 * 24 * 60 * 60 * 1000;
+/**
+ * Decide which backups to keep and which to delete. Pure (no filesystem
+ * access) so the policy can be unit-tested directly.
+ *
+ * Backups thin out as they age:
+ * - Hourly tier: keep EVERY backup taken within `hourlyHours`
+ * - Daily tier: keep the NEWEST backup per calendar day back to `dailyDays`
+ * - Weekly tier: keep the NEWEST backup per calendar week back to `weeklyWeeks`
+ * - Monthly tier: keep the NEWEST backup per calendar month back to `monthlyMonths`
+ * - Anything older is deleted
+ *
+ * Then `maxTotalCount` / `maxTotalGb` are applied as hard backstops, dropping
+ * the oldest survivors first. This is what bounds the directory even when
+ * backups run far more often than the tiers assume.
+ *
+ * The single newest backup is always retained, regardless of every cap.
+ */
+export function planBackupPruning(
+  entries: BackupFileEntry[],
+  retentionInput: BackupRetentionPolicyInput,
+  nowMs: number,
+): BackupPrunePlan {
+  const retention = normalizeBackupRetention(retentionInput);
 
-  type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
-  const entries: BackupEntry[] = [];
+  const hourlyCutoff = nowMs - retention.hourlyHours * 60 * 60 * 1000;
+  const dailyCutoff = nowMs - retention.dailyDays * 24 * 60 * 60 * 1000;
+  const weeklyCutoff = nowMs - retention.weeklyWeeks * 7 * 24 * 60 * 60 * 1000;
+  const monthlyCutoff = nowMs - retention.monthlyMonths * 30 * 24 * 60 * 60 * 1000;
 
+  // Newest first, so the first entry in each day/week/month bucket is the keeper.
+  const sorted = [...entries].sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const keep: KeptBackupFile[] = [];
+  const toDelete: DeletedBackupFile[] = [];
+  const seenDays = new Set<string>();
+  const seenWeeks = new Set<string>();
+  const seenMonths = new Set<string>();
+
+  const retain = (entry: BackupFileEntry, reason: BackupKeepReason) => {
+    const date = new Date(entry.mtimeMs);
+    // A retained backup represents its day, week and month for the coarser
+    // tiers below, so those tiers don't keep a redundant second copy.
+    seenDays.add(dayKey(date));
+    seenWeeks.add(isoWeekKey(date));
+    seenMonths.add(monthKey(date));
+    keep.push({ ...entry, reason });
+  };
+
+  sorted.forEach((entry, index) => {
+    // The newest backup is never a deletion candidate.
+    if (index === 0) {
+      retain(entry, "latest");
+      return;
+    }
+
+    if (entry.mtimeMs >= hourlyCutoff) {
+      retain(entry, "hourly");
+      return;
+    }
+
+    const date = new Date(entry.mtimeMs);
+
+    if (entry.mtimeMs >= dailyCutoff) {
+      if (seenDays.has(dayKey(date))) toDelete.push({ ...entry, reason: "superseded_within_day" });
+      else retain(entry, "daily");
+      return;
+    }
+
+    if (entry.mtimeMs >= weeklyCutoff) {
+      if (seenWeeks.has(isoWeekKey(date))) toDelete.push({ ...entry, reason: "superseded_within_week" });
+      else retain(entry, "weekly");
+      return;
+    }
+
+    if (entry.mtimeMs >= monthlyCutoff) {
+      if (seenMonths.has(monthKey(date))) toDelete.push({ ...entry, reason: "superseded_within_month" });
+      else retain(entry, "monthly");
+      return;
+    }
+
+    toDelete.push({ ...entry, reason: "beyond_retention_window" });
+  });
+
+  // Hard backstops. `keep` is newest-first, so pop() drops the oldest survivor.
+  // The `length > 1` guard keeps the newest backup even if it alone exceeds a cap.
+  const maxBytes = retention.maxTotalGb * BYTES_PER_GIB;
+  let keptBytes = keep.reduce((total, entry) => total + entry.sizeBytes, 0);
+
+  while (keep.length > 1 && keep.length > retention.maxTotalCount) {
+    const victim = keep.pop()!;
+    keptBytes -= victim.sizeBytes;
+    toDelete.push({ ...victim, reason: "max_total_count_exceeded" });
+  }
+
+  while (keep.length > 1 && keptBytes > maxBytes) {
+    const victim = keep.pop()!;
+    keptBytes -= victim.sizeBytes;
+    toDelete.push({ ...victim, reason: "max_total_size_exceeded" });
+  }
+
+  return { keep, delete: toDelete, keptCount: keep.length, keptBytes };
+}
+
+/** Read the backup files this policy manages out of `backupDir`. */
+export function readBackupEntries(backupDir: string, filenamePrefix: string): BackupFileEntry[] {
+  if (!existsSync(backupDir)) return [];
+
+  const entries: BackupFileEntry[] = [];
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
-    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs, sizeBytes: stat.size });
   }
+  return entries;
+}
 
-  // Sort newest first so the first entry per week/month bucket is the one we keep
-  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+/**
+ * Apply the retention policy to `backupDir`, deleting the backups the plan
+ * rejects. Returns the files actually removed so the caller can log exactly
+ * what was deleted and why.
+ */
+function pruneOldBackups(
+  backupDir: string,
+  retention: BackupRetentionPolicyInput,
+  filenamePrefix: string,
+  nowMs: number = Date.now(),
+): { deleted: DeletedBackupFile[]; retainedCount: number; retainedBytes: number } {
+  if (!existsSync(backupDir)) return { deleted: [], retainedCount: 0, retainedBytes: 0 };
 
-  const keepWeekBuckets = new Set<string>();
-  const keepMonthBuckets = new Set<string>();
-  const toDelete: string[] = [];
+  const plan = planBackupPruning(readBackupEntries(backupDir, filenamePrefix), retention, nowMs);
 
-  for (const entry of entries) {
-    // Daily tier — keep everything within dailyDays
-    if (entry.mtimeMs >= dailyCutoff) continue;
-
-    const date = new Date(entry.mtimeMs);
-    const week = isoWeekKey(date);
-    const month = monthKey(date);
-
-    // Weekly tier — keep newest per calendar week
-    if (entry.mtimeMs >= weeklyCutoff) {
-      if (keepWeekBuckets.has(week)) {
-        toDelete.push(entry.fullPath);
-      } else {
-        keepWeekBuckets.add(week);
-      }
-      continue;
+  const deleted: DeletedBackupFile[] = [];
+  for (const entry of plan.delete) {
+    try {
+      unlinkSync(entry.fullPath);
+      deleted.push(entry);
+    } catch {
+      // A backup that vanished underneath us (or that we cannot remove) must
+      // not fail the backup that just succeeded.
     }
-
-    // Monthly tier — keep newest per calendar month
-    if (entry.mtimeMs >= monthlyCutoff) {
-      if (keepMonthBuckets.has(month)) {
-        toDelete.push(entry.fullPath);
-      } else {
-        keepMonthBuckets.add(month);
-      }
-      continue;
-    }
-
-    // Beyond all retention tiers — delete
-    toDelete.push(entry.fullPath);
   }
 
-  for (const filePath of toDelete) {
-    unlinkSync(filePath);
-  }
-
-  return toDelete.length;
+  return { deleted, retainedCount: plan.keptCount, retainedBytes: plan.keptBytes };
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -550,11 +699,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        const pruned = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
           sizeBytes,
-          prunedCount,
+          prunedCount: pruned.deleted.length,
+          prunedFiles: pruned.deleted,
+          retainedCount: pruned.retainedCount,
+          retainedBytes: pruned.retainedBytes,
         };
       } catch (error) {
         if (existsSync(backupFile)) {
@@ -962,12 +1114,15 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    const pruned = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,
       sizeBytes,
-      prunedCount,
+      prunedCount: pruned.deleted.length,
+      prunedFiles: pruned.deleted,
+      retainedCount: pruned.retainedCount,
+      retainedBytes: pruned.retainedBytes,
     };
   } catch (error) {
     await writer.abort();

@@ -229,9 +229,12 @@ function makeInstanceSettings({
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
       backupRetention: {
+        hourlyHours: 12,
         dailyDays: 7,
         weeklyWeeks: 4,
         monthlyMonths: 1,
+        maxTotalCount: 48,
+        maxTotalGb: 20,
       },
       executionMode: "any",
     },

@@ -680,6 +680,8 @@ export async function startServer(): Promise<StartedServer> {
           backupFile: result.backupFile,
           sizeBytes: result.sizeBytes,
           prunedCount: result.prunedCount,
+          retainedCount: result.retainedCount,
+          retainedBytes: result.retainedBytes,
           backupDir: config.databaseBackupDir,
           retention,
           trigger,
@@ -687,6 +689,26 @@ export async function startServer(): Promise<StartedServer> {
         },
         `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
       );
+      // Retention deletions are destructive, so record exactly which files went
+      // and under which rule — this is the audit trail for the backup directory.
+      if (result.prunedFiles.length > 0) {
+        logger.info(
+          {
+            backupDir: config.databaseBackupDir,
+            trigger,
+            retention,
+            retainedCount: result.retainedCount,
+            retainedBytes: result.retainedBytes,
+            pruned: result.prunedFiles.map((file) => ({
+              name: file.name,
+              sizeBytes: file.sizeBytes,
+              mtime: new Date(file.mtimeMs).toISOString(),
+              reason: file.reason,
+            })),
+          },
+          `Backup retention pruned ${result.prunedFiles.length} old database backup(s)`,
+        );
+      }
       return response;
     } catch (err) {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);

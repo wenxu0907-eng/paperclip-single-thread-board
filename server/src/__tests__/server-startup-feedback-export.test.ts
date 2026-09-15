@@ -214,9 +214,12 @@ vi.mock("../services/index.js", () => ({
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
       backupRetention: {
+        hourlyHours: 12,
         dailyDays: 7,
         weeklyWeeks: 4,
         monthlyMonths: 1,
+        maxTotalCount: 48,
+        maxTotalGb: 20,
       },
     })),
   })),
