@@ -88,6 +88,8 @@ const mockSetMobileToolbar = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssuesListRender = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
+const mockComposerRestoreDraft = vi.hoisted(() => vi.fn());
+const mockComposerFocus = vi.hoisted(() => vi.fn());
 const mockImageGalleryRender = vi.hoisted(() => vi.fn());
 const mockIssueWorkspaceCardRender = vi.hoisted(() => vi.fn());
 
@@ -246,7 +248,12 @@ vi.mock("../components/IssueChatThread", () => ({
       queueState?: string;
       queueTargetRunId?: string | null;
     }>;
-    onAdd?: (body: string) => Promise<void>;
+    onAdd?: (
+      body: string,
+      reopen?: boolean,
+      reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null },
+    ) => Promise<void>;
+    composerRef?: { current: { focus: () => void; restoreDraft: (submittedBody: string) => void } | null };
     onInterruptQueued?: (runId: string) => Promise<void>;
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
@@ -259,6 +266,14 @@ vi.mock("../components/IssueChatThread", () => ({
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
+    // Stand in for the real composer's imperative handle so the page can hand a failed
+    // comment's text back the way it does in the browser.
+    if (props.composerRef) {
+      props.composerRef.current = {
+        focus: mockComposerFocus,
+        restoreDraft: mockComposerRestoreDraft,
+      };
+    }
     return (
       <div data-testid="issue-chat-thread">
         Chat thread
@@ -992,6 +1007,12 @@ describe("IssueDetail", () => {
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
+    mockComposerRestoreDraft.mockClear();
+    mockComposerFocus.mockClear();
+    // Every test that exercises these sets its own implementation, and some assert on
+    // invocationCallOrder — so keep their call logs from leaking across tests.
+    mockIssuesApi.update.mockReset();
+    mockIssuesApi.addComment.mockReset();
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
     mockNavigate.mockClear();
@@ -1362,6 +1383,76 @@ describe("IssueDetail", () => {
 
     expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-queued");
     mockHeartbeatsApi.cancel.mockClear();
+  });
+
+  it("returns the typed comment to the composer when posting it fails", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress" }));
+    mockIssuesApi.addComment.mockRejectedValue(new Error("Comment rejected by the server"));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+    };
+    let settled: unknown;
+    await act(async () => {
+      settled = await props.onAdd("Board feedback worth keeping").then(() => "resolved", (err) => err);
+    });
+    await flushReact();
+
+    expect(mockComposerRestoreDraft).toHaveBeenCalledWith("Board feedback worth keeping");
+    // The real caller is assistant-ui's fire-and-forget append, so a rejection escaping onAdd
+    // would surface as an unhandled rejection rather than reaching anyone who can act on it.
+    expect(settled).toBe("resolved");
+    const failedProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{ body: string }>;
+    };
+    expect(failedProps.comments?.some((comment) => comment.body === "Board feedback worth keeping")).toBe(false);
+  });
+
+  it("returns the typed comment to the composer when a rejected reassignment takes the comment down with it", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress" }));
+    mockIssuesApi.update.mockRejectedValue(new Error(
+      "An issue's assignee cannot be the only reviewer of its own review stage.",
+    ));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (
+        body: string,
+        reopen?: boolean,
+        reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null },
+      ) => Promise<void>;
+    };
+    let settled: unknown;
+    await act(async () => {
+      settled = await props.onAdd("Four review points plus screenshots", undefined, {
+        assigneeAgentId: "agent-2",
+        assigneeUserId: null,
+      }).then(() => "resolved", (err) => err);
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.update).toHaveBeenCalled();
+    expect(mockComposerRestoreDraft).toHaveBeenCalledWith("Four review points plus screenshots");
+    expect(settled).toBe("resolved");
   });
 
   it("does not optimistically queue a fresh comment from an unlocked stale active-run cache", async () => {
