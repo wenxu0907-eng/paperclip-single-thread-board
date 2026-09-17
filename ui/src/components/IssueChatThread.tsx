@@ -3901,6 +3901,11 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         },
       });
       queueViewportRestore(viewportSnapshot);
+      // NOTE: `append` is fire-and-forget — assistant-ui hands the message to `onNew` and
+      // returns void, so this await settles immediately and says nothing about whether the
+      // comment actually posted. The catch below therefore only covers failures raised before
+      // that handoff (e.g. onWorkModeChange). Returning the text after a *rejected post* is
+      // owned by the comment mutations' onError, which calls back in via `restoreDraft`.
       await appendPromise;
       if (draftKey) clearDraft(draftKey);
       setComposerAttachments([]);

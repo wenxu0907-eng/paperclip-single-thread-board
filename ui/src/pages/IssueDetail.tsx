@@ -2533,7 +2533,7 @@ export function IssueDetail() {
         },
       );
     },
-    onError: (err, _variables, context) => {
+    onError: (err, variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter((entry) => entry.clientId !== context.optimisticCommentId),
@@ -2542,6 +2542,10 @@ export function IssueDetail() {
       if (context?.previousIssue) {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
+      // A failed post must never eat what the author typed. The composer clears itself
+      // optimistically and cannot observe this rejection on its own (see the note in
+      // IssueChatThread's submitComment), so returning the text is this handler's job.
+      restoreQueuedCommentDraft(variables.body);
       pushToast({
         title: "Comment failed",
         body: err instanceof Error ? err.message : "Unable to post comment",
@@ -2798,7 +2802,7 @@ export function IssueDetail() {
         );
       }
     },
-    onError: (err, _variables, context) => {
+    onError: (err, variables, context) => {
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter((entry) => entry.clientId !== context.optimisticCommentId),
@@ -2807,6 +2811,10 @@ export function IssueDetail() {
       if (context?.previousIssue) {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
+      // A failed post must never eat what the author typed. The composer clears itself
+      // optimistically and cannot observe this rejection on its own (see the note in
+      // IssueChatThread's submitComment), so returning the text is this handler's job.
+      restoreQueuedCommentDraft(variables.body);
       pushToast({
         title: "Comment failed",
         body: err instanceof Error ? err.message : "Unable to post comment",
@@ -3661,11 +3669,19 @@ export function IssueDetail() {
     });
   }, [feedbackDataSharingPreference, feedbackVoteMutation]);
   const handleChatAdd = useCallback(async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
-    if (reassignment) {
-      await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
-      return;
+    // The caller is assistant-ui's fire-and-forget `append`, which drops this promise on the
+    // floor, so a rejection here lands as an unhandled rejection rather than anywhere useful.
+    // Each mutation's onError already surfaces the toast and returns the draft to the composer,
+    // so swallow the settled failure here instead of leaking it.
+    try {
+      if (reassignment) {
+        await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+        return;
+      }
+      await addComment.mutateAsync({ body, reopen });
+    } catch {
+      // handled in onError
     }
-    await addComment.mutateAsync({ body, reopen });
   }, [addComment, addCommentAndReassign]);
   const handleCommentImageUpload = useCallback(async (file: File) => {
     const attachment = await uploadAttachment.mutateAsync(file);
