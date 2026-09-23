@@ -84,6 +84,7 @@ import {
 import {
   extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
+import { normalizeLegacySecretRefsInConfig } from "../services/json-schema-secret-refs.js";
 import {
   canonicalizeLocalPluginPath,
   isCloudManagedInstance,
@@ -2313,8 +2314,9 @@ export function pluginRoutes(
     // Validate configJson against the plugin's instanceConfigSchema (if declared).
     // This ensures CLI/API callers get the same validation the UI performs client-side.
     const schema = plugin.manifestJson?.instanceConfigSchema;
-    if (schema && Object.keys(schema).length > 0) {
-      const validation = validateInstanceConfig(body.configJson, schema);
+    const activeSchema = schema && Object.keys(schema).length > 0 ? schema : null;
+    if (activeSchema) {
+      const validation = validateInstanceConfig(body.configJson, activeSchema);
       if (!validation.valid) {
         res.status(400).json({
           error: "Configuration does not match the plugin's instanceConfigSchema",
@@ -2324,8 +2326,23 @@ export function pluginRoutes(
       }
     }
 
+    // Upgrade legacy bare-UUID secret refs to the canonical object form so the
+    // legacy shape is retired on write. Only persist the upgrade when the
+    // plugin's own schema still accepts it — a manifest that declares the field
+    // as a plain string would otherwise reject its own stored config on the
+    // next save. Bindings are extracted from either shape regardless.
+    const submittedConfig = body.configJson;
+    const normalizedConfig = (() => {
+      const normalized = normalizeLegacySecretRefsInConfig(submittedConfig, schema);
+      if (normalized.normalizedPaths.length === 0) return submittedConfig;
+      if (activeSchema && !validateInstanceConfig(normalized.config, activeSchema).valid) {
+        return submittedConfig;
+      }
+      return normalized.config;
+    })();
+
     try {
-      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
+      const secretRefs = extractSecretRefBindingsFromConfig(normalizedConfig, schema);
       await validatePluginSecretRefsForCompany(companyId, secretRefs);
       await secretService(db).syncSecretRefsForTarget(
         companyId,
@@ -2336,14 +2353,14 @@ export function pluginRoutes(
 
       const result = await registry.upsertConfig(plugin.id, companyId, {
         companyId,
-        configJson: body.configJson,
+        configJson: normalizedConfig,
       });
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         companyId,
         secretRefCount: secretRefs.length,
-        configKeyCount: Object.keys(body.configJson).length,
+        configKeyCount: Object.keys(normalizedConfig).length,
       });
 
       // Notify the running worker about the config change (PLUGIN_SPEC §25.4.4).
@@ -2355,7 +2372,7 @@ export function pluginRoutes(
           await bridgeDeps.workerManager.call(
             plugin.id,
             "configChanged",
-            { config: body.configJson, companyId },
+            { config: normalizedConfig, companyId },
           );
         } catch (rpcErr) {
           if (

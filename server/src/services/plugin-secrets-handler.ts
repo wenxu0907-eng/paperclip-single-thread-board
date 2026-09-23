@@ -48,12 +48,23 @@ function parseSecretRefBinding(value: unknown): EnvSecretRefBinding | null {
 function assertSecretRefBinding(
   value: unknown,
   path: string,
-  rejectLegacyUuid = false,
+  coerceLegacyUuid = false,
 ): EnvSecretRefBinding | null {
-  if (rejectLegacyUuid && typeof value === "string" && isUuidSecretRef(value)) {
-    throw unprocessable(
-      `Plugin secret ref at ${path} must use { type: "secret_ref", secretId, version? }`,
-    );
+  // Config written before the object form existed stores a bare secret UUID at
+  // schema-declared secret-ref paths. Treat it as a `latest` binding instead of
+  // rejecting it: rejecting froze the entire config (no field could be saved at
+  // all), and returning null would silently drop the binding during a
+  // `replaceAll` sync and break secret resolution at runtime.
+  if (coerceLegacyUuid && typeof value === "string" && isUuidSecretRef(value.trim())) {
+    const coerced = parseSecretRefBinding({
+      type: "secret_ref",
+      secretId: value.trim(),
+      version: "latest",
+    });
+    if (!coerced) {
+      throw unprocessable(`Invalid secret_ref binding at ${path}`);
+    }
+    return coerced;
   }
   if (!isPlainRecord(value) || value.type !== "secret_ref") return null;
   const parsed = parseSecretRefBinding(value);
