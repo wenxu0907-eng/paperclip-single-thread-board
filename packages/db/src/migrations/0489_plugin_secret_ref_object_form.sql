@@ -1,3 +1,4 @@
+-- paperclip:migration-compat online_compatible: The previous release accepts both the bare-UUID and the object form of a secret-ref field, so rewriting these values changes nothing it depends on, and any row it writes after this runs is normalized by the config-save route on that row's next save. plugin_config holds one small row per (plugin, company) and the UPDATE is keyed on that pair, so only a handful of row locks are held, for the length of one short statement.
 -- COM-467: upgrade legacy bare-UUID plugin secret refs to the canonical
 -- `{ type: "secret_ref", secretId, version }` object form.
 --
