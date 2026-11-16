@@ -161,6 +161,8 @@ migrated** — the one migration this re-base needs is added as a file, not appl
 | 26 (server) | Agent-memory service, routes, shared types | `d3671cfb` | Pure addition. Needed `js-yaml` (unused upstream) with the lockfile in the same commit. Dropped the codex-local auth-symlink work the fork had interleaved into the same `routes/agents.ts` hunks — not a survivor. |
 | 3 + 12 | COM-294/361 managed goal block | `1fe30517` | Module lands unchanged (zero imports). Upstream moved interaction resolution, so the accept/decline folds were re-anchored on the current `acceptRequestConfirmation`/`rejectRequestConfirmation` transactions. The continuation-summary fold sits after upstream's new `conversationAgentId` early return, so chat-style tasks keep upstream semantics. |
 | 25 | `board_only_on_parents` | `6a263efd` | **Migration renumbered `0184` → `0488`** (ours collided with upstream's `0184_routable_blocked`; upstream's highest is 0487), with a matching `_journal.json` entry. Column propagated to all 9 Company-shape sites — including `board-bootstrap.ts`'s `ZodType<Company>`, which fails to compile if it drifts. Two duplicated inline guards became one shared helper. |
+| — (post-triage) | #95 gstack skill pack | `1d416572` | Landed on `master` *after* this triage was written, so no row covers it. Purely additive: 46 `SKILL.md` files under `catalog/optional/gstack` plus the generated manifest. Upstream has since split `optional/` into categories but kept the same builder contract, so the pack carries forward unchanged; `generated/catalog.json` regenerated with upstream's `build:manifest` (63 skills = upstream's 17 + 46), and `EXPECTED_OPTIONAL_KEYS` extended while keeping upstream's own two new entries. |
+| — (post-triage) | #112 / COM-467 legacy bare-UUID plugin secret refs | `782dccab` | Also post-triage. The bug is present upstream verbatim, so the fix ports unchanged: `assertSecretRefBinding` coerces a bare UUID into a `latest` binding, `normalizeLegacySecretRefsInConfig()` added, the config-save route persists the upgrade. **Migration `0185` → `0489`** (+ journal entry), file added, not applied. One deliberate difference: upstream's validator now substitutes a binding with its secret id before validating (`secretRefsAsIds`), so the object form validates against a `type: "string"` field — the fork's "keep the legacy shape for string-typed fields" case no longer applies, and the ported test asserts the upgrade persists there too. |
 | 23 + 8b | COM-456 backup retention + COM-335b reviewer-seat guard | `3888264e` | **COM-456:** `BackupRetentionPolicy` gains `hourlyHours`/`maxTotalCount`/`maxTotalGb` in `@paperclipai/shared`; `backup-lib.ts` replaces keep-all-daily with `planBackupPruning` (pure, unit-tested) + `readBackupEntries` + updated `pruneOldBackups` that logs each deletion. `InstanceGeneralSettings.tsx` adds hourly window, file count, and size cap pickers. **COM-335b:** `violatesSelfReviewSeatCollapse` added to `issues.ts`; seat-collapse rejected on top-level create, child create, and PATCH. `activeExecutionParticipantAgentId` carve-out wired into `assertAgentIssueMutationAllowed`. (Authorization.ts carve-out omitted — upstream's `decideVisibleIssueWrite` already allows review-participant writes in the PATCH path.) |
 
 ### Verified so far
@@ -178,6 +180,24 @@ migrated** — the one migration this re-base needs is added as a file, not appl
   tests) — **531+ tests**, 0 failures. Upstream's own interaction and create-path tests
   pass unmodified against the new hooks.
 - **The full CI suite has not been run yet.** That is the remaining gate on this branch.
+
+### Resolving the merge back into `master` (PR #113)
+
+PR #113 targets the fork's `master`, which diverged 4,909 commits ago, so GitHub
+reported it `CONFLICTING`: **108 conflicting files**. Every one of them sits in code
+this triage marked **drop** — the merge conflict *is* the re-base, re-stated.
+
+Resolution: a `-s ours` merge commit (`aaded00d`) on the port branch. The branch tree
+is kept byte-for-byte; fork `master` is recorded as a second parent, so no history is
+lost, `master` is never force-pushed, and the legacy tag commitment holds. Resolving
+the 108 files by hand would have meant re-litigating 17 already-decided `drop` rows
+one hunk at a time, with each resolution being "take the port side" anyway.
+
+The one real risk in `-s ours` is silently discarding `master` work the triage never
+saw. That was checked explicitly rather than assumed: of the 317 files `master` changed
+since the merge base, the ones absent from the port branch are all `drop`-row features
+plus exactly two post-triage commits — #95 and #112 — which are carried forward as
+their own commits above rather than dropped.
 
 ### Not yet landed (explicitly deferred, not dropped)
 
