@@ -199,7 +199,7 @@ since the merge base, the ones absent from the port branch are all `drop`-row fe
 plus exactly two post-triage commits — #95 and #112 — which are carried forward as
 their own commits above rather than dropped.
 
-### The two CI gates that cannot go green on this PR
+### The base-relative gates that cannot go green on this PR
 
 `ci / policy` and `review` are **base-relative** gates, and that is why they stay red
 here. Both diff the branch against the fork's `master`:
@@ -212,9 +212,55 @@ here. Both diff the branch against the fork's `master`:
   additions — e.g. `+ thiserror@2.0.20` — plus their advisories.
 
 Neither is satisfiable by cleaning up the branch: the re-base *is* a wholesale
-lockfile replacement. `ci / e2e` is downstream of `policy` and only asserts that it
-passed, so it fails as a cascade. Landing therefore still needs a fast-forward of
-`master` (`merge --ff-only`) or an admin-override merge.
+lockfile replacement. Landing therefore still needs a fast-forward of `master`
+(`merge --ff-only`) or an admin-override merge.
+
+A **third** gate has the same root cause, and it only shows up locally because the
+fork's CI never reaches it: upstream's migration-compatibility gate
+(`packages/db` `check:migrations`) baselines on `origin/master`, so against *fork*
+master it flags **70 upstream migrations** as unclassifiable. It also runs inside
+`pnpm db:migrate`, which is why Phase 3 has to follow landing rather than precede it —
+once `origin/master` *is* the upstream-rooted tree, the gate starts working for us
+instead of against us. The same is true of `policy` and `review`. All three assume the
+branch is a small delta on fork master; a re-base replaces the base, which is the one
+thing they cannot express. That asymmetry is the argument for `--ff-only` over an admin
+override: a fast-forward leaves all three gates answerable afterwards, an override
+leaves them permanently reporting on a tree they never evaluated.
+
+**`ci / e2e` is a real suite, not a cascade.** An earlier revision of this section said
+it "only asserts that `policy` passed". That was wrong: shard 2/8 runs
+`ai-personal-connection-recovery.spec.ts`, and its failure is a genuine assertion
+("Answered the pending follow-up once." never appears). Attribution is pending — see
+the baseline experiment below.
+
+### Why PR #113 has CI at all: the `-s ours` merge is load-bearing
+
+The fork's `pr.yml` is `pull_request`-triggered, and GitHub runs those workflows only
+once `refs/pull/N/merge` can be built. A branch rooted on upstream `master` cannot
+merge into fork `master`, so **no** `pull_request` workflow fires — only `review`,
+which is `pull_request_target` and needs no merge ref.
+
+PR #113 therefore has CI *solely* because it carries the `-s ours` merge of fork
+`master`, which was recorded above as conflict housekeeping. Without that merge a
+re-base branch in this repo is un-testable through a PR at all. This was discovered the
+hard way while standing up the baseline below: opening it as a draft produced only
+`review` (the fork's trigger list has no `ready_for_review`), an empty commit for
+`synchronize` produced only `review`, and only the `-s ours` merge unlocked the suite.
+
+### The attribution baseline — PR #114
+
+Three reds have been *asserted* here to be upstream's rather than ours. Asserting is not
+evidence, so PR #114 carries upstream `master` @ `c5218f5ec4` **verbatim** — zero commits
+of ours, tree verified byte-identical (`git diff --stat upstream/master..HEAD` empty),
+plus the same `-s ours` merge so the two PRs are comparable. Marked DO NOT MERGE.
+
+Any check red on #114 is red for an upstream-rooted tree in this fork's CI and is not
+attributable to the ports. Any check red on #113 but green on #114 is ours.
+
+Supporting evidence for the `static checks` row while that runs: upstream's most recent
+commit touching `stage-runner-binary.test.mjs` is **#21787**, *"remove coreutils and
+pid-file timing assumptions from static checks"* — they were actively fixing environment
+sensitivity in that exact file.
 
 One real defect did hide behind this, though, and it is now fixed: the agent-memory
 port (row 26) had added `js-yaml`, which was the only reason the branch's own diff
@@ -222,10 +268,11 @@ port (row 26) had added `js-yaml`, which was the only reason the branch's own di
 (stale SDK input registry + report-lock) independently of the base-relative gates.
 `pnpm-lock.yaml` and `server/package.json` are now byte-identical to upstream.
 
-### The four defects the ports introduced (fixed in `4fa35076`)
+### The six defects the ports introduced
 
-All four are the same failure: a port widened a shared contract without propagating
-to the sites that already depended on it.
+All six are the same failure: a port widened a shared contract without propagating
+to the sites that already depended on it. Four were fixed in `4fa35076`; two more
+were found afterwards.
 
 | Red checks | Cause |
 | --- | --- |
@@ -234,9 +281,36 @@ to the sites that already depended on it.
 | **10 checks** — 4 `General tests (server)` shards, 6 `Verify serialized server suites` | Row 26 built `projectService(db)` at `agentRoutes` construction time, so all 11 upstream test files that mock `../services/index.js` failed. Now constructed per call. |
 | `Runner support suite` | The `js-yaml` dependency above, plus a stale `source-sdk-public-inputs.json` (13 pinned inputs changed by the ports). Registry re-pinned. |
 
+Two more of the same shape, found after `4fa35076`:
+
+| Fix | Cause |
+| --- | --- |
+| `b0e3948ff2` | The row-25 fix above was itself wrong. `createDatabaseBackupOwner` normalized retention *before* calling `runDatabaseBackup`, which is redundant — `planBackupPruning` normalizes its own input and `RunDatabaseBackupOptions.retention` is typed `BackupRetentionPolicyInput` — and it changed the observable call, breaking two upstream fixtures that assert the *configured* subset reaches the backup. Worse, `4fa35076` had "fixed" one of them by editing the upstream test to match the new behaviour, which is exactly the kind of quiet contract drift this re-base exists to avoid. Reverted; the owner now passes the caller's value straight down and keeps the resolved policy only for the response and log line. All four `server-startup-feedback-export` failures shared one root cause: the assertion threw *inside* the fake `runDatabaseBackup`, so the backup looked like it had failed and left the idle wake marker behind. |
+| `6c9967837c` | The ported COM-467 backfill (`0489`) is a whole-table `UPDATE`, which upstream's migration-compat classifier reads as a lock hazard, so `packages/db typecheck` refused the branch. Now declared `online_compatible` with reasoning. Verified: `--check --base upstream/master` → 2 new migrations, none unclassified. |
+
+Verified locally after both: `database-backup-owner` + `server-startup-feedback-export`
+**143/143**; the four interaction suites that cover the COM-294 fold
+(`issue-thread-interactions-service`, `issue-thread-interaction-routes`,
+`agent-interaction-acceptance`, `chat-interaction-publications`) **307/307**; and
+`tsc --noEmit` clean in **all five** packages — `server`, `ui`, `cli`,
+`packages/shared`, `packages/db`. That last sweep is the systematic version of the
+P14 check: every type-level dependent of a widened contract is now propagated.
+
 `stage-runner-binary.test.mjs` (2 tests, under `Verify Paperclip Runner (static
-checks)`) is **not** ours: it is an upstream file and this branch changes nothing in
-`packages/paperclip-runner`.
+checks)`) is believed **not** ours — it is an upstream file and this branch changes
+nothing in `packages/paperclip-runner` — but that is now being measured rather than
+asserted, via PR #114 above.
+
+One red remains genuinely open: `ci / e2e shard (2/8)`. It is plausibly ours, because
+the COM-294 port added a best-effort goal-block fold **inside** the accept transaction
+in `issue-thread-interactions.ts`, and its `try/catch` cannot deliver on "best-effort"
+— a failed statement poisons a Postgres transaction no matter what JavaScript catches,
+which would take the whole acceptance down and enqueue no continuation. That matches the
+symptom. If the baseline shows the red is ours, the fix is a `SAVEPOINT` (Drizzle's
+nested `tx.transaction()`, already used elsewhere in this repo) so the fold keeps its
+atomicity on success but cannot poison the acceptance on failure. Moving it after the
+commit boundary would also work but would reintroduce exactly the gap the port closes:
+a lost fold means a stale standing decision overrides a fresh board approval on resume.
 
 ### Not yet landed (explicitly deferred, not dropped)
 
