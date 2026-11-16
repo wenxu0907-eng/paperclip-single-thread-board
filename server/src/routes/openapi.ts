@@ -4081,6 +4081,33 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/{id}/memories",
+  tags: ["agents"],
+  summary: "Get an overview of the agent's memory files",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/memories/file",
+  tags: ["agents"],
+  summary: "Read a memory file",
+  request: { params: z.object({ id: z.string() }), query: z.object({ path: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/agents/{id}/memories/file",
+  tags: ["agents"],
+  summary: "Write a memory file",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/{id}/configuration",
   tags: ["agents"],
   summary: "Get agent configuration",

@@ -10,7 +10,7 @@ import {
   DEFAULT_BACKUP_RETENTION,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
-import { shapeWithoutDefaults } from "./partial.js";
+import { objectWithoutDefaults, shapeWithoutDefaults } from "./partial.js";
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
   return z.number().refine(
@@ -40,7 +40,14 @@ export const instanceGeneralSettingsSchema = z.object({
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
-  .object(shapeWithoutDefaults(instanceGeneralSettingsSchema.shape))
+  .object({
+    ...shapeWithoutDefaults(instanceGeneralSettingsSchema.shape),
+    // The backup retention nested object also has per-field defaults. Strip
+    // them so a partial echo (old clients omitting new fields) passes the
+    // hidden-setting equality check instead of being rejected because Zod
+    // filled in defaults the stored value doesn't have.
+    backupRetention: objectWithoutDefaults(backupRetentionPolicySchema).partial().optional(),
+  })
   .partial()
   .strict();
 

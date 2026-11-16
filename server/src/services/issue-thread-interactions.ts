@@ -2824,8 +2824,11 @@ export function issueThreadInteractionService(
       // COM-294: fold the board's approval into the managed goal block so a fresh
       // session on resume treats it as a must-execute item that overrides any stale
       // standing preference. Best-effort; runs in-tx so it rolls back with the accept.
+      // Skip when a run is active: the description is read as the objective source by
+      // the finalizer's deliverable checks (declinedTaskDocumentNotRequired), and
+      // modifying it here would cause a spurious description-drift abort.
       const acceptedConfirmationPrompt = readConfirmationPrompt(lockedCurrent);
-      if (acceptedConfirmationPrompt) {
+      if (acceptedConfirmationPrompt && !issueContext.executionRunId) {
         await foldConfirmationOutcomeIntoGoalBlock(tx, {
           issueId: args.issue.id,
           outcome: "accepted",
@@ -3063,8 +3066,9 @@ export function issueThreadInteractionService(
 
       // COM-294: fold the board's decline into the managed goal block so a fresh
       // session on resume knows not to pursue the declined path.
+      // Skip when a run is active: same description-drift risk as the accept path.
       const declinePrompt = readConfirmationPrompt(lockedCurrent);
-      if (declinePrompt) {
+      if (declinePrompt && !issueContext.executionRunId) {
         await foldConfirmationOutcomeIntoGoalBlock(tx, {
           issueId: args.issue.id,
           outcome: "declined",
