@@ -19,7 +19,6 @@ import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup, expirePendingInteractionsOnClosedIssues } from "../services/index.js";
 
 import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
-import { DEFAULT_BACKUP_RETENTION } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { onNativeWorkspaceFinalizationRelease, releaseNativeWorkspaceFinalization } from "../services/native-workspace-finalization-notifications.js";
@@ -1225,8 +1224,7 @@ describe("startServer feedback export wiring", () => {
       const backupFile = path.join(directory, "paperclip-restart.sql.gz");
       const bytes = gzipSync("SELECT 'restart recovery';\n");
       writeFileSync(backupFile, bytes);
-      // The owner resolves the configured subset into a full policy before handing it down.
-      expect(options.retention).toEqual({ ...DEFAULT_BACKUP_RETENTION, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+      expect(options.retention).toEqual({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
       expect(options.verifyBeforePrune).toEqual(expect.any(Function));
       await options.verifyBeforePrune!(backupFile);
       return { backupFile, sizeBytes: bytes.length, prunedCount: 0, prunedFiles: [], retainedCount: 1, retainedBytes: bytes.length };

@@ -48,13 +48,18 @@ export function createDatabaseBackupOwner(options: {
     try {
       if (trigger === "idle") await markIdleBackupWakeRequired(options.backupDir);
       options.logger.info({ backupDir: options.backupDir, trigger }, `${label} database backup starting`);
-      const retention = normalizeBackupRetention(await options.getRetention());
+      // Hand `runDatabaseBackup` exactly what the caller configured — it (and
+      // `planBackupPruning` beneath it) normalizes internally. Only the
+      // response and the log report the resolved policy, which is what
+      // `InstanceDatabaseBackupRunResult.retention` promises.
+      const retentionInput = await options.getRetention();
+      const retention = normalizeBackupRetention(retentionInput);
       const verifyCheckpoint = trigger === "idle" || existsSync(idleBackupWakeMarker(options.backupDir));
 
       const result = await runDatabaseBackup({
         connectionString: options.connectionString,
         backupDir: options.backupDir,
-        retention,
+        retention: retentionInput,
         filenamePrefix: "paperclip",
         verifyBeforePrune: verifyCheckpoint ? verifyIdleDatabaseBackup : undefined,
       });
