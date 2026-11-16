@@ -278,6 +278,7 @@ export {
   joinFrontmatterBlock,
   parseFrontmatterFields,
   parseFrontmatterMarkdown,
+  parseYamlDocument,
   skillFrontmatterKnownKeys,
   skillFrontmatterSchema,
   splitFrontmatterBlock,

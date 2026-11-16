@@ -26,7 +26,7 @@ async function validArchive(options: Parameters<typeof runDatabaseBackup>[0]) {
   const bytes = gzipSync("CREATE TABLE fixture (id integer);\n");
   await writeFile(backupFile, bytes);
   await options.verifyBeforePrune?.(backupFile);
-  return { backupFile, sizeBytes: bytes.length, prunedCount: 0 };
+  return { backupFile, sizeBytes: bytes.length, prunedCount: 0, prunedFiles: [], retainedCount: 1, retainedBytes: bytes.length };
 }
 beforeEach(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), "backup-owner-"));

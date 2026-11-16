@@ -209,6 +209,20 @@ export function parseFrontmatterFields(frontmatterText: string): Record<string, 
   return parseYamlFrontmatter(frontmatterText);
 }
 
+/**
+ * Parse a standalone YAML document with the same dependency-free subset parser
+ * the frontmatter path uses. Unlike {@link parseFrontmatterFields} this returns
+ * the top-level value as-is, so callers expecting a list — the agent-memory
+ * `items.yaml` files — can test for an array. Lenient: input that parses to
+ * nothing yields `null` rather than throwing.
+ */
+export function parseYamlDocument(raw: string): unknown {
+  const prepared = prepareYamlLines(raw);
+  const firstContentIndex = prepared.findIndex((line) => !line.isBlank && !line.isComment);
+  if (firstContentIndex < 0) return null;
+  return parseYamlBlock(prepared, firstContentIndex, prepared[firstContentIndex]!.indent).value;
+}
+
 export interface FrontmatterAnalysis {
   /** The parsed field object (best-effort; `{}` when nothing parses). */
   parsed: Record<string, unknown>;

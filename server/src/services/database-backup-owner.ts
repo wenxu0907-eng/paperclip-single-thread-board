@@ -1,5 +1,10 @@
 import { existsSync } from "node:fs";
-import { formatDatabaseBackupResult, runDatabaseBackup, type BackupRetentionPolicy } from "@paperclipai/db";
+import {
+  formatDatabaseBackupResult,
+  normalizeBackupRetention,
+  runDatabaseBackup,
+  type BackupRetentionPolicyInput,
+} from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import type { InstanceDatabaseBackupRunResult, InstanceDatabaseBackupTrigger } from "../routes/instance-database-backups.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
@@ -14,7 +19,12 @@ type BackupLogger = {
 export function createDatabaseBackupOwner(options: {
   connectionString: string;
   backupDir: string;
-  getRetention: () => Promise<BackupRetentionPolicy>;
+  /**
+   * Callers read retention out of instance settings or `paperclip.config.json`,
+   * so any subset is accepted here; `normalizeBackupRetention` fills the tiers
+   * the caller left unset and the response reports the resolved policy.
+   */
+  getRetention: () => Promise<BackupRetentionPolicyInput>;
   logger: BackupLogger;
 }) {
   let databaseBackupInFlight = false;
@@ -38,7 +48,7 @@ export function createDatabaseBackupOwner(options: {
     try {
       if (trigger === "idle") await markIdleBackupWakeRequired(options.backupDir);
       options.logger.info({ backupDir: options.backupDir, trigger }, `${label} database backup starting`);
-      const retention = await options.getRetention();
+      const retention = normalizeBackupRetention(await options.getRetention());
       const verifyCheckpoint = trigger === "idle" || existsSync(idleBackupWakeMarker(options.backupDir));
 
       const result = await runDatabaseBackup({

@@ -823,7 +823,6 @@ export function agentRoutes(
       isEntryFile: true, editable: true, deprecated: false, virtual: false };
   }
   const memories = agentMemoryFileService();
-  const projects = projectService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -5544,7 +5543,10 @@ export function agentRoutes(
     companyId: string,
   ): Promise<{ projectId: string; projectName: string; dir: string }[]> {
     try {
-      const list = await projects.list(companyId);
+      // Constructed per call, not at router build time: only the memory
+      // overview needs it, and building it eagerly would force every existing
+      // agentRoutes test to add `projectService` to its services mock.
+      const list = await projectService(db).list(companyId);
       return list
         .map((project) => ({
           projectId: project.id,
