@@ -5959,6 +5959,7 @@ export function issueRoutes(
       reviewPolicy?: IssueReviewPolicy | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
+      executionState?: unknown;
     },
     options: { allowVisibleIssueWrite?: boolean } = {},
   ) {
@@ -6019,6 +6020,15 @@ export function issueRoutes(
       );
     }
     if (issue.assigneeAgentId === null) {
+      return true;
+    }
+    // COM-335b: the pending execution-stage participant (e.g. a review-gate
+    // reviewer) keeps its write path even when the assignee seat is held by
+    // the executor. in_progress is guarded by the checkout-owner path below.
+    if (
+      issue.status !== "in_progress" &&
+      activeExecutionParticipantAgentId(issue) === actorAgentId
+    ) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
@@ -8181,6 +8191,29 @@ export function issueRoutes(
     }
     input.res.status(422).json({ error: BOARD_ONLY_ON_PARENTS_MESSAGE });
     return true;
+  }
+
+  // COM-335b: prevent an agent from holding every seat (executor + sole reviewer).
+  // A review stage that only the executor can resolve is not a real review, and it
+  // feeds the recovery self-excitation loop (PRs #79–#83).
+  const SELF_REVIEW_SEAT_COLLAPSE_MESSAGE =
+    "An issue's assignee cannot be the only reviewer of its own review stage. " +
+    "Assign the work to the agent who will do it and name a different reviewer, or drop the review stage.";
+
+  function violatesSelfReviewSeatCollapse(input: {
+    executorAgentId: string | null | undefined;
+    policy: NormalizedExecutionPolicy | null;
+  }): boolean {
+    const executorAgentId = input.executorAgentId ?? null;
+    if (!executorAgentId) return false;
+    return (input.policy?.stages ?? []).some(
+      (stage) =>
+        stage.type === "review" &&
+        stage.participants.length > 0 &&
+        stage.participants.every(
+          (p) => p.type === "agent" && p.agentId === executorAgentId,
+        ),
+    );
   }
 
   async function normalizeIssueAssigneeAgentReference(
@@ -13645,6 +13678,14 @@ export function issueRoutes(
         createBody.assigneeAgentId ?? null,
         Boolean(executionPolicy?.monitor),
       );
+      // COM-335b: reject seat collapse before the row is inserted.
+      if (violatesSelfReviewSeatCollapse({
+        executorAgentId: createBody.assigneeAgentId as string | null | undefined,
+        policy: executionPolicy,
+      })) {
+        res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+        return;
+      }
       const issueId = randomUUID();
       const sourceTrust = await sourceTrustForActorWrite(
         {
@@ -14057,6 +14098,14 @@ export function issueRoutes(
         createBody.assigneeAgentId ?? null,
         Boolean(executionPolicy?.monitor),
       );
+      // COM-335b: reject seat collapse for child issues too.
+      if (violatesSelfReviewSeatCollapse({
+        executorAgentId: createBody.assigneeAgentId ?? null,
+        policy: executionPolicy,
+      })) {
+        res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+        return;
+      }
       const issueId = randomUUID();
       const sourceTrust = await sourceTrustForActorWrite(
         {
@@ -15541,6 +15590,21 @@ export function issueRoutes(
           : previousExecutionPolicy;
       if (normalizedAssigneeAgentId !== undefined) {
         updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+      }
+      // COM-335b: reject seat collapse on policy or assignee changes.
+      if (req.body.executionPolicy !== undefined || normalizedAssigneeAgentId !== undefined) {
+        const existingExecutionState = parseIssueExecutionState(existing.executionState);
+        const executionStateReadable = existingExecutionState !== null || !existing.executionState;
+        const existingReturnAssignee = existingExecutionState?.returnAssignee ?? null;
+        const executorAgentId = existingReturnAssignee
+          ? (existingReturnAssignee.type === "agent" ? existingReturnAssignee.agentId : null)
+          : updateFields.assigneeAgentId !== undefined
+            ? (updateFields.assigneeAgentId as string | null)
+            : existing.assigneeAgentId;
+        if (executionStateReadable && violatesSelfReviewSeatCollapse({ executorAgentId, policy: nextExecutionPolicy })) {
+          res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+          return;
+        }
       }
       const monitorChanged =
         monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) ===

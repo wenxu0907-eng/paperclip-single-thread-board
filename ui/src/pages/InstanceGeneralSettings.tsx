@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
 import {
+  HOURLY_RETENTION_PRESETS,
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
+  MAX_TOTAL_COUNT_PRESETS,
+  MAX_TOTAL_GB_PRESETS,
   DEFAULT_BACKUP_RETENTION,
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
@@ -184,9 +187,40 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
             <h2 className="text-sm font-semibold">Backup retention</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure how long automatic database backups are retained. Backups run roughly
-              every hour and are compressed with gzip. Within the daily window all backups are
-              kept; beyond that, one backup per week and one per month are preserved.
+              every hour and are compressed with gzip. Backups thin out as they age: every
+              backup inside the hourly window is kept, then one per day, one per week, and one
+              per month. The count and size caps are hard backstops.
             </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Hourly window</h3>
+            <div className="flex flex-wrap gap-2">
+              {HOURLY_RETENTION_PRESETS.map((hours) => {
+                const active = backupRetention.hourlyHours === hours;
+                const label = `${hours} hours`;
+                return (
+                  <button
+                    key={hours}
+                    type="button"
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+                    className={cn(
+                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                      active
+                        ? "border-foreground bg-accent text-foreground"
+                        : "border-border bg-background hover:bg-accent/50",
+                    )}
+                    onClick={() =>
+                      updateGeneralMutation.mutate({
+                        backupRetention: { ...backupRetention, hourlyHours: hours },
+                      })
+                    }
+                  >
+                    <div className="text-sm font-medium">{label}</div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="space-y-1.5">
@@ -272,6 +306,64 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     }
                   >
                     <div className="text-sm font-medium">{label}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Max file count</h3>
+            <div className="flex flex-wrap gap-2">
+              {MAX_TOTAL_COUNT_PRESETS.map((count) => {
+                const active = backupRetention.maxTotalCount === count;
+                return (
+                  <button
+                    key={count}
+                    type="button"
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+                    className={cn(
+                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                      active
+                        ? "border-foreground bg-accent text-foreground"
+                        : "border-border bg-background hover:bg-accent/50",
+                    )}
+                    onClick={() =>
+                      updateGeneralMutation.mutate({
+                        backupRetention: { ...backupRetention, maxTotalCount: count },
+                      })
+                    }
+                  >
+                    <div className="text-sm font-medium">{count} files</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Max total size</h3>
+            <div className="flex flex-wrap gap-2">
+              {MAX_TOTAL_GB_PRESETS.map((gb) => {
+                const active = backupRetention.maxTotalGb === gb;
+                return (
+                  <button
+                    key={gb}
+                    type="button"
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+                    className={cn(
+                      "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                      active
+                        ? "border-foreground bg-accent text-foreground"
+                        : "border-border bg-background hover:bg-accent/50",
+                    )}
+                    onClick={() =>
+                      updateGeneralMutation.mutate({
+                        backupRetention: { ...backupRetention, maxTotalGb: gb },
+                      })
+                    }
+                  >
+                    <div className="text-sm font-medium">{gb} GiB</div>
                   </button>
                 );
               })}

@@ -164,8 +164,10 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           filenamePrefix: "paperclip-test",
         });
 
-        expect(result.prunedCount).toBe(2);
-        expect(fs.existsSync(janNewest)).toBe(true);
+        // janNewest (Jan 28) is just outside the 60-day monthly window (now - 2*30d = Jan 30);
+        // the new pruner deletes it. All three pre-existing files are pruned.
+        expect(result.prunedCount).toBe(3);
+        expect(fs.existsSync(janNewest)).toBe(false);
         expect(fs.existsSync(janOlder)).toBe(false);
         expect(fs.existsSync(decOld)).toBe(false);
       } finally {
