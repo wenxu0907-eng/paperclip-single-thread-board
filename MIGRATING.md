@@ -161,10 +161,11 @@ migrated** — the one migration this re-base needs is added as a file, not appl
 | 26 (server) | Agent-memory service, routes, shared types | `d3671cfb` | Pure addition. Needed `js-yaml` (unused upstream) with the lockfile in the same commit. Dropped the codex-local auth-symlink work the fork had interleaved into the same `routes/agents.ts` hunks — not a survivor. |
 | 3 + 12 | COM-294/361 managed goal block | `1fe30517` | Module lands unchanged (zero imports). Upstream moved interaction resolution, so the accept/decline folds were re-anchored on the current `acceptRequestConfirmation`/`rejectRequestConfirmation` transactions. The continuation-summary fold sits after upstream's new `conversationAgentId` early return, so chat-style tasks keep upstream semantics. |
 | 25 | `board_only_on_parents` | `6a263efd` | **Migration renumbered `0184` → `0488`** (ours collided with upstream's `0184_routable_blocked`; upstream's highest is 0487), with a matching `_journal.json` entry. Column propagated to all 9 Company-shape sites — including `board-bootstrap.ts`'s `ZodType<Company>`, which fails to compile if it drifts. Two duplicated inline guards became one shared helper. |
+| 23 + 8b | COM-456 backup retention + COM-335b reviewer-seat guard | `3888264e` | **COM-456:** `BackupRetentionPolicy` gains `hourlyHours`/`maxTotalCount`/`maxTotalGb` in `@paperclipai/shared`; `backup-lib.ts` replaces keep-all-daily with `planBackupPruning` (pure, unit-tested) + `readBackupEntries` + updated `pruneOldBackups` that logs each deletion. `InstanceGeneralSettings.tsx` adds hourly window, file count, and size cap pickers. **COM-335b:** `violatesSelfReviewSeatCollapse` added to `issues.ts`; seat-collapse rejected on top-level create, child create, and PATCH. `activeExecutionParticipantAgentId` carve-out wired into `assertAgentIssueMutationAllowed`. (Authorization.ts carve-out omitted — upstream's `decideVisibleIssueWrite` already allows review-participant writes in the PATCH path.) |
 
 ### Verified so far
 
-- `typecheck` clean for `shared`, `server`, `cli`, `ui`.
+- `typecheck` clean for `shared`, `server`, `cli`, `ui` (all 8 port rows).
 - `check:tokens` and `check:module-boundaries` pass. (`check:tokens` is **red** on the
   fork's `master` — a side benefit of the re-base.)
 - `packages/db` migration **numbering** and **safety** checks pass; `0488` raises no
@@ -172,17 +173,16 @@ migrated** — the one migration this re-base needs is added as a file, not appl
   upstream migrations, none touched here.
 - Targeted suites green: agent-memory service + routes, managed-goal-block,
   board-only-on-parents, company-portability, companies-service,
-  issue-thread-interactions(+resolution), issue-continuation-summary, and the issue
-  create-path route suites — **522 tests**, 0 failures. Upstream's own interaction and
-  create-path tests pass unmodified against the new hooks.
+  issue-thread-interactions(+resolution), issue-continuation-summary, the issue
+  create-path route suites, and backup-lib (including the new `planBackupPruning` unit
+  tests) — **531+ tests**, 0 failures. Upstream's own interaction and create-path tests
+  pass unmodified against the new hooks.
 - **The full CI suite has not been run yet.** That is the remaining gate on this branch.
 
 ### Not yet landed (explicitly deferred, not dropped)
 
 | Row | Feature | Why it is still open |
 | --- | --- | --- |
-| 23 | COM-456 backup retention | Largest remaining row (~380 inserted lines). The policy rewrite in `backup-lib.ts` is self-contained, but it pulls `packages/db` into a new dependency on `@paperclipai/shared` (needs a module-boundary check), and the settings surface is a ~230-line rewrite of `InstanceGeneralSettings.tsx`. Highest operational value of what remains — upstream still keeps *every* backup in its daily tier, the exact behaviour that grew our directory to 39 GB. |
-| 8b | COM-335b reviewer seat + participant authz | The genuinely invasive authz row. It also owns `humanReviewerUserIdsFromPolicy`, which row 25's **reviewer-seat** guard needs, so the reviewer half of `board_only_on_parents` lands with it (`BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE` is defined but not yet reachable from the routes). |
 | 26 (UI) | The Memories tab | Server side is landed and tested; the tab needs re-mounting on upstream's rewritten `AgentDetail` page. |
 
 Rows **336** and **426** remain Phase-4 smoke-list items, per §2 — not Phase-2 work.
