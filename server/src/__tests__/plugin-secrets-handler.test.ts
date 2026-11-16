@@ -19,6 +19,7 @@ import {
   createPluginSecretsHandler,
   extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
+import { normalizeLegacySecretRefsInConfig } from "../services/json-schema-secret-refs.js";
 import { secretService } from "../services/secrets.js";
 
 const pluginId = "11111111-1111-4111-8111-111111111111";
@@ -41,13 +42,74 @@ describe("extractSecretRefBindingsFromConfig", () => {
     )).toEqual([]);
   });
 
-  it("rejects legacy UUID strings at schema-declared secret fields", () => {
+  // COM-467: rejecting the legacy shape froze the entire plugin config, and
+  // dropping it would delete the binding on the next `replaceAll` sync.
+  it("coerces legacy UUID strings at schema-declared secret fields into bindings", () => {
     const secretId = "77777777-7777-4777-8777-777777777777";
 
-    expect(() => extractSecretRefBindingsFromConfig(
+    expect(extractSecretRefBindingsFromConfig(
       { token: secretId },
       { type: "object", properties: { token: { format: "secret-ref" } } },
-    )).toThrow(/must use.*secret_ref/i);
+    )).toEqual([
+      expect.objectContaining({ secretId, configPath: "token", versionSelector: "latest" }),
+    ]);
+  });
+
+  it("still reads the canonical object form, including an explicit version", () => {
+    const secretId = "77777777-7777-4777-8777-777777777777";
+
+    expect(extractSecretRefBindingsFromConfig(
+      { token: { type: "secret_ref", secretId, version: 3 } },
+      { type: "object", properties: { token: { format: "secret-ref" } } },
+    )).toEqual([
+      expect.objectContaining({ secretId, configPath: "token", versionSelector: 3 }),
+    ]);
+  });
+});
+
+describe("normalizeLegacySecretRefsInConfig", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      token: { format: "secret-ref" },
+      nested: { type: "object", properties: { inner: { format: "secret-ref" } } },
+      plain: { type: "string" },
+    },
+  };
+
+  it("upgrades a legacy bare UUID to the canonical object form", () => {
+    const secretId = "77777777-7777-4777-8777-777777777777";
+
+    expect(normalizeLegacySecretRefsInConfig({ token: secretId }, schema)).toEqual({
+      config: { token: { type: "secret_ref", secretId, version: "latest" } },
+      normalizedPaths: ["token"],
+    });
+  });
+
+  it("upgrades nested secret-ref paths without touching other values", () => {
+    const secretId = "77777777-7777-4777-8777-777777777777";
+
+    expect(
+      normalizeLegacySecretRefsInConfig({ nested: { inner: secretId }, plain: "keep" }, schema),
+    ).toEqual({
+      config: { nested: { inner: { type: "secret_ref", secretId, version: "latest" } }, plain: "keep" },
+      normalizedPaths: ["nested.inner"],
+    });
+  });
+
+  it("leaves canonical, empty, non-UUID, and non-secret values alone", () => {
+    const secretId = "77777777-7777-4777-8777-777777777777";
+    const config = {
+      token: { type: "secret_ref", secretId, version: "latest" },
+      plain: "77777777-7777-4777-8777-777777777777",
+    };
+
+    const result = normalizeLegacySecretRefsInConfig(config, schema);
+    expect(result.normalizedPaths).toEqual([]);
+    expect(result.config).toBe(config);
+
+    expect(normalizeLegacySecretRefsInConfig({ token: "" }, schema).normalizedPaths).toEqual([]);
+    expect(normalizeLegacySecretRefsInConfig({ token: "not-a-uuid" }, schema).normalizedPaths).toEqual([]);
   });
 });
 
