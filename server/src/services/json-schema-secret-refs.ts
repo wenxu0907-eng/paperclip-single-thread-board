@@ -76,6 +76,39 @@ export function readConfigValueAtPath(
   return current;
 }
 
+/**
+ * Rewrite legacy bare-UUID values at schema-declared `format: "secret-ref"`
+ * paths into the canonical `{ type: "secret_ref", secretId, version }` object.
+ *
+ * Config written before the object form existed still stores a bare UUID. The
+ * board UI renders such a value as a bound secret but only re-emits the object
+ * form when the field itself is re-picked, so an edit to an unrelated field
+ * round-trips the legacy string straight back to the server. Normalizing here
+ * lets that save succeed and retires the legacy shape one write at a time.
+ */
+export function normalizeLegacySecretRefsInConfig(
+  config: Record<string, unknown>,
+  schema: Record<string, unknown> | null | undefined,
+): { config: Record<string, unknown>; normalizedPaths: string[] } {
+  let next = config;
+  const normalizedPaths: string[] = [];
+
+  for (const dotPath of collectSecretRefPaths(schema)) {
+    const current = readConfigValueAtPath(next, dotPath);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    next = writeConfigValueAtPath(next, dotPath, {
+      type: "secret_ref",
+      secretId: trimmed,
+      version: "latest",
+    });
+    normalizedPaths.push(dotPath);
+  }
+
+  return { config: next, normalizedPaths };
+}
+
 export function writeConfigValueAtPath(
   config: Record<string, unknown>,
   dotPath: string,

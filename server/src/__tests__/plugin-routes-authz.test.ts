@@ -353,6 +353,119 @@ describe("plugin install and upgrade authz", () => {
     });
   }, 20_000);
 
+  // COM-467: the board could not save any Discord setting because the stored
+  // token was a legacy bare UUID that the save route rejected on every write.
+  it("upgrades a legacy bare-UUID secret ref instead of rejecting the save", async () => {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        instanceConfigSchema: {
+          type: "object",
+          properties: {
+            apiKeyRef: {
+              anyOf: [
+                { type: "string" },
+                {
+                  type: "object",
+                  required: ["type", "secretId"],
+                  properties: {
+                    type: { const: "secret_ref" },
+                    secretId: { type: "string" },
+                    version: {},
+                  },
+                },
+              ],
+              format: "secret-ref",
+            },
+            pollMinutes: { type: "integer" },
+          },
+        },
+      },
+    });
+    mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyA, status: "active" });
+    mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
+    mockRegistry.upsertConfig.mockResolvedValue({ id: "config-1", pluginId, companyId: companyA });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    // The board edited an unrelated field; the UI round-trips the legacy ref.
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({ companyId: companyA, configJson: { apiKeyRef: secretId, pollMinutes: 16 } });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
+      companyA,
+      { targetType: "plugin", targetId: pluginId },
+      [expect.objectContaining({ secretId, configPath: "apiKeyRef", versionSelector: "latest" })],
+      { replaceAll: true },
+    );
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(pluginId, companyA, {
+      companyId: companyA,
+      configJson: {
+        apiKeyRef: { type: "secret_ref", secretId, version: "latest" },
+        pollMinutes: 16,
+      },
+    });
+  }, 20_000);
+
+  // The fork kept the legacy string whenever the manifest declared the field as
+  // `type: "string"`, because the object form then failed its own schema on the
+  // next save. Upstream's validator since substitutes a binding with its secret
+  // id before validating (`plugin-config-validator.ts:secretRefsAsIds`), so the
+  // object form validates against a string field and the upgrade can persist.
+  // The route's re-validation guard stays as a backstop for exotic schemas.
+  it("upgrades the legacy shape even when the plugin schema declares a string", async () => {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        instanceConfigSchema: {
+          type: "object",
+          properties: { apiKeyRef: { type: "string", format: "secret-ref" } },
+        },
+      },
+    });
+    mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyA, status: "active" });
+    mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
+    mockRegistry.upsertConfig.mockResolvedValue({ id: "config-1", pluginId, companyId: companyA });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({ companyId: companyA, configJson: { apiKeyRef: secretId } });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
+      companyA,
+      { targetType: "plugin", targetId: pluginId },
+      [expect.objectContaining({ secretId, configPath: "apiKeyRef", versionSelector: "latest" })],
+      { replaceAll: true },
+    );
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(pluginId, companyA, {
+      companyId: companyA,
+      configJson: { apiKeyRef: { type: "secret_ref", secretId, version: "latest" } },
+    });
+  }, 20_000);
+
   it("rejects plugin config saves that reference another company's secret before syncing bindings", async () => {
     readyPlugin();
     mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyB, status: "active" });
