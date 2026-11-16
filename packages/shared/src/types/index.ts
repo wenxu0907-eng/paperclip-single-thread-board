@@ -518,6 +518,21 @@ export type {
   ResolvedWorkspaceResource,
 } from "./workspace-file-resource.js";
 export type {
+  AgentMemoryFileKind,
+  AgentMemoryParaCategory,
+  AgentMemorySource,
+  AgentMemoryFileSummary,
+  AgentMemoryDailyNote,
+  AgentMemoryItemsFile,
+  AgentMemoryParaEntity,
+  AgentProjectMemory,
+  AgentMemoryOverview,
+  AgentMemoryFact,
+  AgentMemoryFileResource,
+  AgentMemoryFileContent,
+  UpdateAgentMemoryFileRequest,
+} from "./agent-memory.js";
+export type {
   ToolActionRequest,
   ToolAccessDecision,
   ToolAccessDecisionInput,

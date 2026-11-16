@@ -96,6 +96,7 @@ import {
   restoreAgentInstructionSchema,
   resolveAgentInstructionCandidateSchema,
   updateAgentInstructionsBundleSchema,
+  updateAgentMemoryFileSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
@@ -140,6 +141,7 @@ import {
   issueRecoveryActionService,
   issueService,
   logActivity,
+  projectService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -155,6 +157,7 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { agentMemoryFileService } from "../services/agent-memory-files.js";
 
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { pluginSupportsLoginPty, resolvePluginEnvironmentDriver, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
@@ -819,6 +822,8 @@ export function agentRoutes(
       language: path.toLowerCase().endsWith(".md") ? "markdown" : "text", markdown: path.toLowerCase().endsWith(".md"),
       isEntryFile: true, editable: true, deprecated: false, virtual: false };
   }
+  const memories = agentMemoryFileService();
+  const projects = projectService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -5530,6 +5535,104 @@ export function agentRoutes(
     });
 
     res.json(result.bundle);
+  });
+
+  // Resolve the runtime working dir for each of a company's projects. Harness
+  // auto-memory is keyed by this dir (the project workspace), so it locates the
+  // project-scoped, shared memory. Best-effort: failures degrade to no projects.
+  async function resolveCompanyProjectDirs(
+    companyId: string,
+  ): Promise<{ projectId: string; projectName: string; dir: string }[]> {
+    try {
+      const list = await projects.list(companyId);
+      return list
+        .map((project) => ({
+          projectId: project.id,
+          projectName: project.name,
+          dir: project.codebase?.effectiveLocalFolder ?? "",
+        }))
+        .filter((entry) => entry.dir.trim().length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  router.get("/agents/:id/memories", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, agent);
+    const overview = await memories.getOverview(agent);
+    overview.projectMemories = await memories.getProjectHarnessOverviews(
+      await resolveCompanyProjectDirs(agent.companyId),
+    );
+    // Project-scoped memory is populated after getOverview computed hasMemories,
+    // so fold it back in — otherwise an agent whose top-level (per-agent) memory
+    // dir is empty (e.g. its adapterConfig.cwd is unset and the harness keyed
+    // memory by the project workspace instead) reads as "No memories yet" even
+    // though real project memory was found. (COM-135)
+    overview.hasMemories = overview.hasMemories || overview.projectMemories.length > 0;
+    res.json(overview);
+  });
+
+  router.get("/agents/:id/memories/file", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, agent);
+    const relativePath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relativePath.trim()) {
+      res.status(422).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+    if (projectId) {
+      const projectDirs = await resolveCompanyProjectDirs(agent.companyId);
+      const match = projectDirs.find((entry) => entry.projectId === projectId);
+      if (!match) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      res.json(await memories.readProjectMemoryFile(match.dir, relativePath));
+      return;
+    }
+    res.json(await memories.readMemoryFile(agent, relativePath));
+  });
+
+  router.put("/agents/:id/memories/file", validate(updateAgentMemoryFileSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUpdateAgent(req, agent);
+    const result = await memories.writeMemoryFile(agent, req.body.path, req.body.content);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.memory_file_updated",
+      entityType: "agent",
+      entityId: agent.id,
+      details: {
+        path: result.resource.relativePath,
+        size: result.resource.byteSize,
+      },
+    });
+
+    res.json(result);
   });
 
   router.post("/agents/:id/connection-intents/:interactionId/adopt", validate(completeConnectionIntentSchema), async (req, res) => {
