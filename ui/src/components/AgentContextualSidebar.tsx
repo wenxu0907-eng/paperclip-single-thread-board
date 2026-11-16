@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
+  BrainCircuit,
   FileCode2,
   Fingerprint,
   Gauge,
@@ -33,6 +34,7 @@ const localIcons = {
   overview: Sparkles,
   instructions: Fingerprint,
   skills: Library,
+  memories: BrainCircuit,
   runtime: Settings2,
   secrets: KeyRound,
   tools: Wrench,

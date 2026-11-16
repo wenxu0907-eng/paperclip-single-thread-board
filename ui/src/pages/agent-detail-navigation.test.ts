@@ -15,6 +15,7 @@ describe("agent detail navigation", () => {
     expect(AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items.map((item) => item.value))).toEqual([
       "overview",
       "instructions",
+      "memories",
       "runtime",
       "secrets",
       "permissions",
@@ -25,6 +26,13 @@ describe("agent detail navigation", () => {
       "budgets",
     ]);
     expect(agentDetailViewLabel("instructions")).toBe("Identity");
+    expect(agentDetailViewLabel("memories")).toBe("Memories");
+  });
+
+  it("serves the Memories tab at /memories and accepts the singular alias", () => {
+    expect(parseAgentDetailView("memories")).toBe("memories");
+    expect(parseAgentDetailView("memory")).toBe("memories");
+    expect(agentDetailHref("agent-1", "memories")).toBe("/agents/agent-1/memories");
   });
 
   it("keeps views that left the nav reachable by URL", () => {

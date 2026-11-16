@@ -113,6 +113,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentMemoriesTab } from "./agent-detail/AgentMemoriesTab";
 import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
 import {
   isUuidLike,
@@ -1140,6 +1141,10 @@ export function AgentDetail() {
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
         />
+      )}
+
+      {activeView === "memories" && (
+        <AgentMemoriesTab agent={agent} companyId={resolvedCompanyId ?? undefined} />
       )}
 
       {activeView === "tools" && resolvedCompanyId && (

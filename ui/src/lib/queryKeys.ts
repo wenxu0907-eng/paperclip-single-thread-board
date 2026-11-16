@@ -243,6 +243,9 @@ export const queryKeys = {
     runtimeState: (id: string) => ["agents", "runtime-state", id] as const,
     taskSessions: (id: string) => ["agents", "task-sessions", id] as const,
     skills: (id: string) => ["agents", "skills", id] as const,
+    memories: (id: string) => ["agents", "memories", id] as const,
+    memoryFile: (id: string, relativePath: string, projectId?: string) =>
+      ["agents", "memories", id, "file", relativePath, projectId ?? null] as const,
     instructionsBundle: (id: string) =>
       ["agents", "instructions-bundle", id] as const,
     instructionCandidates: (id: string) =>

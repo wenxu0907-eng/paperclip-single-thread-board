@@ -1,6 +1,8 @@
 import type { AgentPublicIdentity } from "@paperclipai/shared";
 import type { AgentProjectAccess } from "@paperclipai/shared";
 import type {
+  AgentMemoryOverview,
+  AgentMemoryFileContent,
   Agent,
   EnvironmentProbeResult,
   ConnectionIntentInteraction,
@@ -171,6 +173,20 @@ export const agentsApi = {
     api.patch<Agent & import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
     api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
+  memories: (id: string, companyId?: string) =>
+    api.get<AgentMemoryOverview>(agentPath(id, companyId, "/memories")),
+  memoryFile: (id: string, relativePath: string, companyId?: string, projectId?: string) =>
+    api.get<AgentMemoryFileContent>(
+      agentPath(
+        id,
+        companyId,
+        `/memories/file?path=${encodeURIComponent(relativePath)}${
+          projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""
+        }`,
+      ),
+    ),
+  saveMemoryFile: (id: string, data: { path: string; content: string }, companyId?: string) =>
+    api.put<AgentMemoryFileContent>(agentPath(id, companyId, "/memories/file"), data),
   instructionsBundle: (id: string, companyId?: string) =>
     api.get<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle")),
   updateInstructionsBundle: (
