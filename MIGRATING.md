@@ -187,9 +187,11 @@ migrated** — the one migration this re-base needs is added as a file, not appl
 
 Rows **336** and **426** remain Phase-4 smoke-list items, per §2 — not Phase-2 work.
 
-### Still open from §3
+### On the §3 rows
 
-The downstream user's answers to plan §4.2 Q3 have **still not arrived**. This does not
-block anything landed above: all three provisional rows are `drop` candidates, and the
-one row he was asked about that is already a `port` — the Memories tab — was never at
-risk. Nothing in the landed set would change if he answers.
+Nothing in Phase 2 was conditional on the downstream user. The board withdrew the §4.2
+questions ("proceed on my assumptions", 2026-11-16) and plan rev 7 resolved §3's three
+rows as `drop`, moving the check to the Phase-4 hand-verification gate — per rev 7's own
+rule that no verdict may depend on an answer we decided not to obtain. The one row he
+would have been asked about that is already a `port` — the Memories tab — was never at
+risk.
