@@ -1,4 +1,5 @@
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
+import { preserveManagedGoalBlockOnWrite } from "../services/managed-goal-block.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
@@ -15068,6 +15069,16 @@ export function issueRoutes(
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
+      // COM-294: the platform owns a "Current Goal & Decisions" block inside the
+      // human-visible description (Option C). If a write omits that block, re-attach
+      // the existing one so an edit can never silently wipe the managed goal. Writes
+      // that carry their own block (platform regeneration) are respected as-is.
+      if (updateFields.description !== undefined) {
+        updateFields.description = preserveManagedGoalBlockOnWrite(
+          existing.description as string | null,
+          updateFields.description as string | null,
+        );
+      }
       if (commentBody && req.actor.type === "agent") {
         await assertAgentInteraction(db, { companyId: existing.companyId, actorAgentId: req.actor.agentId,
           operation: "comment", issueId: existing.id, texts: [commentBody] });

@@ -123,6 +123,10 @@ import { z } from "zod";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import {
+  foldBoardDecisionIntoDescription,
+  renderBoardDecisionLine,
+} from "./managed-goal-block.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
@@ -613,6 +617,60 @@ function isRequestConfirmationLikeKind(
   return (REQUEST_CONFIRMATION_INTERACTION_KINDS as readonly string[]).includes(
     kind,
   );
+}
+
+
+// COM-294: the prompt text of a confirmation-like card, used as the summary of the
+// board decision folded into the managed goal block. Keyed off upstream's own
+// isRequestConfirmationLikeKind rather than a second hardcoded kind list.
+function readConfirmationPrompt(interaction: { kind: string; payload: unknown }): string | null {
+  if (!isRequestConfirmationLikeKind(interaction.kind)) return null;
+  const payload = interaction.payload;
+  if (!payload || typeof payload !== "object") return null;
+  const prompt = (payload as { prompt?: unknown }).prompt;
+  return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : null;
+}
+
+type IssueGoalFoldDb = Pick<Db, "select" | "update">;
+
+/**
+ * COM-294 recurrence fix: fold a board confirmation outcome into the issue's
+ * platform-managed goal block so the decision survives the next fresh-session
+ * heartbeat (and can't be overridden by a stale standing preference the agent reads
+ * from the block). Best-effort + change-gated: skips silently when there is no
+ * objective to anchor a block on, and never throws into the resolution transaction.
+ */
+async function foldConfirmationOutcomeIntoGoalBlock(
+  db: IssueGoalFoldDb,
+  args: {
+    issueId: string;
+    outcome: "accepted" | "declined";
+    summary: string;
+    reason?: string | null;
+    now: Date;
+  },
+): Promise<void> {
+  try {
+    const line = renderBoardDecisionLine({
+      outcome: args.outcome,
+      summary: args.summary,
+      reason: args.reason ?? null,
+      date: args.now,
+    });
+    if (!line) return;
+
+    const current = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, args.issueId))
+      .then((rows: Array<{ description: string | null }>) => rows[0]?.description ?? null);
+
+    const next = foldBoardDecisionIntoDescription(current, line);
+    if (next === (current ?? "")) return; // no-op (idempotent) — nothing to write
+    await db.update(issues).set({ description: next }).where(eq(issues.id, args.issueId));
+  } catch (error) {
+    console.error("[paperclip] Failed to fold confirmation outcome into goal block", error);
+  }
 }
 
 function isTargetBoundInteractionKind(
@@ -2763,6 +2821,19 @@ export function issueThreadInteractionService(
         await touchIssue(tx, args.issue.id, args.issue.companyId);
       }
 
+      // COM-294: fold the board's approval into the managed goal block so a fresh
+      // session on resume treats it as a must-execute item that overrides any stale
+      // standing preference. Best-effort; runs in-tx so it rolls back with the accept.
+      const acceptedConfirmationPrompt = readConfirmationPrompt(lockedCurrent);
+      if (acceptedConfirmationPrompt) {
+        await foldConfirmationOutcomeIntoGoalBlock(tx, {
+          issueId: args.issue.id,
+          outcome: "accepted",
+          summary: acceptedConfirmationPrompt,
+          now: new Date(),
+        });
+      }
+
       // Snapshot the continuation target only after every lifecycle mutation
       // above has settled. Accepted plans and creator-return confirmations can
       // reassign the issue; enqueueing earlier leaves a durable wake addressed
@@ -2988,6 +3059,19 @@ export function issueThreadInteractionService(
         );
       } else {
         await touchIssue(tx, args.issue.id, args.issue.companyId);
+      }
+
+      // COM-294: fold the board's decline into the managed goal block so a fresh
+      // session on resume knows not to pursue the declined path.
+      const declinePrompt = readConfirmationPrompt(lockedCurrent);
+      if (declinePrompt) {
+        await foldConfirmationOutcomeIntoGoalBlock(tx, {
+          issueId: args.issue.id,
+          outcome: "declined",
+          summary: declinePrompt,
+          reason: reason || null,
+          now: new Date(),
+        });
       }
       await enqueueTerminalIssueInteractionChatPublications(
         tx as unknown as Db,

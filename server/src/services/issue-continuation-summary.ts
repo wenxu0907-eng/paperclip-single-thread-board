@@ -3,6 +3,15 @@ import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, readRunFailureCause, withoutSqlStatementText, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
+import {
+  extractGoalUpdateFromRunResult,
+  isBoardAuthoredDecision,
+  isCompletionClaimObjective,
+  readManagedGoalBlockDecisions,
+  readManagedGoalBlockObjective,
+  stripManagedGoalBlock,
+  syncManagedGoalBlockInDescription,
+} from "./managed-goal-block.js";
 import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
@@ -169,7 +178,8 @@ export function buildContinuationSummaryMarkdown(input: {
   }
 
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
-  const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
+  const humanDescription = stripManagedGoalBlock(issue.description) || null;
+  const objective = extractMarkdownSection(humanDescription, "Objective") ?? humanDescription?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
   const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
@@ -283,6 +293,44 @@ export async function refreshIssueContinuationSummary(input: {
   ]);
 
   if (!issue || issue.conversationAgentId) return null;
+
+  // COM-294 Option C+B: keep a platform-managed "Current Goal & Decisions" block at
+  // the top of the human-visible description so the goal survives fresh sessions.
+  // Option B (the sync mechanism the board picked, 2026-08-11): fold the agent's
+  // run-end distillation of the thread — objective + confirmed decisions — into the
+  // block. When a run emits no fresh distillation, preserve the decisions already in
+  // the block so nothing is wiped. Deterministic + change-gated: only write on a
+  // real diff (no churn / notification noise).
+  const goalUpdate = extractGoalUpdateFromRunResult(run.resultJson);
+  const preservedDecisions = readManagedGoalBlockDecisions(issue.description);
+  // Board decisions folded in from confirmation outcomes (COM-294 recurrence) are
+  // more authoritative than an agent's re-distillation — keep them across a run even
+  // when the agent emits its own decisions and forgot to re-echo them. They stay at
+  // the top; sanitizeDecisions dedups if the agent did re-echo one.
+  const preservedBoardDecisions = preservedDecisions.filter(isBoardAuthoredDecision);
+  const extraDecisions =
+    goalUpdate && goalUpdate.decisions.length > 0
+      ? [...preservedBoardDecisions, ...goalUpdate.decisions]
+      : preservedDecisions;
+  // COM-361 secondary guard: a standing board direction always outranks an agent's
+  // run-end distillation claiming the work is finished. If the block still carries
+  // board-authored decisions and the agent distilled a "already done / nothing
+  // pending" objective, refuse the overwrite and preserve the current objective —
+  // otherwise a live rework silently collapses into "done". Only preserves; never
+  // fabricates.
+  const distilledObjective = goalUpdate?.objective ?? null;
+  const objectiveOverride =
+    preservedBoardDecisions.length > 0 && isCompletionClaimObjective(distilledObjective)
+      ? readManagedGoalBlockObjective(issue.description)
+      : distilledObjective;
+  const nextDescription = syncManagedGoalBlockInDescription(issue.description, {
+    objectiveOverride,
+    extraDecisions,
+  });
+  if (nextDescription !== (issue.description ?? "")) {
+    await db.update(issues).set({ description: nextDescription }).where(eq(issues.id, issueId));
+  }
+
   const body = buildContinuationSummaryMarkdown({
     issue,
     run,
