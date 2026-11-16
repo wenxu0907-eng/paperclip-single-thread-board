@@ -43,6 +43,7 @@ export interface Company {
    */
   budgetOwnerUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  boardOnlyOnParents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;

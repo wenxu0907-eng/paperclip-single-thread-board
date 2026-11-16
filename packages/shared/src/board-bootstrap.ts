@@ -19,6 +19,7 @@ const companySnapshotSchema: z.ZodType<Company> = z.object({
   defaultDecisionOwnerUserId: z.string().nullable().default(null),
   budgetOwnerUserId: z.string().nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
+  boardOnlyOnParents: z.boolean().default(false),
   interactionResolverGovernance: interactionResolverGovernanceSchema,
   feedbackDataSharingEnabled: z.boolean(),
   feedbackDataSharingConsentAt: z.coerce.date().nullable(),

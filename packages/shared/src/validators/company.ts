@@ -43,6 +43,7 @@ export const updateCompanySchema = objectWithoutDefaults(
       // stops in the Company view only.
       budgetOwnerUserId: z.string().min(1).nullable().optional(),
       requireBoardApprovalForNewAgents: z.boolean().optional(),
+    boardOnlyOnParents: z.boolean().optional(),
       interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
       feedbackDataSharingEnabled: z.boolean().optional(),
       feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),

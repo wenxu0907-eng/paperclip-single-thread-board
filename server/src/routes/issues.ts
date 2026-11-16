@@ -1,5 +1,11 @@
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
 import { preserveManagedGoalBlockOnWrite } from "../services/managed-goal-block.js";
+import {
+  BOARD_ONLY_ON_PARENTS_MESSAGE,
+  boardOnlyOnParentsActive,
+  boardOnlyOnParentsEnabled,
+  violatesBoardOnlyOnParents,
+} from "../services/board-only-on-parents.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
@@ -8149,6 +8155,34 @@ export function issueRoutes(
     );
   }
 
+
+  // board_only_on_parents (flag-gated, default off): board members may only be
+  // assigned to top-level issues. Returns true when the request must be refused;
+  // the company lookup is only paid when the shape already violates the rule.
+  // The reviewer-seat half of this guard travels with the COM-335b port, which
+  // owns humanReviewerUserIdsFromPolicy.
+  async function refuseBoardOnlyOnParentsViolation(input: {
+    res: Response;
+    companyId: string;
+    hasParent: boolean;
+    assigneeUserId: string | null | undefined;
+  }): Promise<boolean> {
+    if (!violatesBoardOnlyOnParents({ hasParent: input.hasParent, assigneeUserId: input.assigneeUserId })) {
+      return false;
+    }
+    const boardGuardCompany = await companiesSvc.getById(input.companyId).catch(() => null);
+    if (
+      !boardOnlyOnParentsActive({
+        envEnabled: boardOnlyOnParentsEnabled(),
+        companySetting: boardGuardCompany?.boardOnlyOnParents,
+      })
+    ) {
+      return false;
+    }
+    input.res.status(422).json({ error: BOARD_ONLY_ON_PARENTS_MESSAGE });
+    return true;
+  }
+
   async function normalizeIssueAssigneeAgentReference(
     companyId: string,
     rawAssigneeAgentId: string | null | undefined,
@@ -13406,6 +13440,14 @@ export function issueRoutes(
         (Boolean(effectiveParentId) && (await resolveTaskWatchdogMutationScope(db, req.actor)).kind === "watchdog")
           ? "allow_nested"
           : "flatten";
+      if (
+        await refuseBoardOnlyOnParentsViolation({
+          res,
+          companyId,
+          hasParent: Boolean(effectiveParentId),
+          assigneeUserId: rawCreateBody.assigneeUserId as string | null | undefined,
+        })
+      ) return;
       const parentPlacement = await resolveRouteParentPlacement(
         companyId,
         effectiveParentId ?? null,
@@ -13916,6 +13958,14 @@ export function issueRoutes(
         },
       );
       if (!sanitizedBody) return;
+      if (
+        await refuseBoardOnlyOnParentsViolation({
+          res,
+          companyId: parent.companyId,
+          hasParent: true,
+          assigneeUserId: sanitizedBody.assigneeUserId as string | null | undefined,
+        })
+      ) return;
       const normalizedAssigneeAgentId =
         await normalizeIssueAssigneeAgentReference(
           parent.companyId,

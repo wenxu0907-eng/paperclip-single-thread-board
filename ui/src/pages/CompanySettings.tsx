@@ -102,6 +102,16 @@ export function CompanySettings() {
     }
   });
 
+  const boardOnlyOnParentsMutation = useMutation({
+    mutationFn: (boardOnlyOnParents: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        boardOnlyOnParents
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
   // Members populate the default decision owner and budget owner pickers.
   // Ownerless "Needs You" cards route to the default decision owner's "For
   // you" list; clearing it sends them to the claimable Unassigned pool
@@ -396,6 +406,15 @@ export function CompanySettings() {
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
+          />
+        </div>
+        <div>
+          <ToggleField
+            label="Board only on parent issues"
+            hint="Board members can only be assigned to top-level issues, not child tasks."
+            checked={!!selectedCompany.boardOnlyOnParents}
+            onChange={(v) => boardOnlyOnParentsMutation.mutate(v)}
+            toggleTestId="company-settings-board-only-on-parents-toggle"
           />
         </div>
       </div>

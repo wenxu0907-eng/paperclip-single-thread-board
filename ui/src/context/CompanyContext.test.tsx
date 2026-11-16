@@ -58,6 +58,7 @@ function makeCompany(id: string): Company {
     defaultDecisionOwnerUserId: null,
     budgetOwnerUserId: null,
     requireBoardApprovalForNewAgents: false,
+  boardOnlyOnParents: false,
     interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
