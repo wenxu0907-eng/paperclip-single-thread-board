@@ -158,7 +158,7 @@ migrated** — the one migration this re-base needs is added as a file, not appl
 | --- | --- | --- | --- |
 | 4 | COM-296 CJK fonts + code chips | `7c1dd9ed` | Upstream funnels all mono surfaces through one `--font-paper-mono` token — the fallback goes there once instead of at 7 `--font-mono` sites. Chip weight uses upstream's `--font-weight-normal` token. |
 | 10 | COM-355 stale wait-for-review guard | `499db10f` | Clean: reuses upstream's own `WAITING_FOR_REVIEW_OR_APPROVAL_RE`, already in that file. The fork's hunk also carried the goal-block hook; split out to row 3. |
-| 26 (server) | Agent-memory service, routes, shared types | `d3671cfb` | Pure addition. Needed `js-yaml` (unused upstream) with the lockfile in the same commit. Dropped the codex-local auth-symlink work the fork had interleaved into the same `routes/agents.ts` hunks — not a survivor. |
+| 26 (server) | Agent-memory service, routes, shared types | `d3671cfb` | Pure addition. Originally added `js-yaml` + a lockfile change; that was wrong and is reverted — upstream's dependency-free frontmatter parser handles top-level lists, now exposed as `parseYamlDocument`. Dropped the codex-local auth-symlink work the fork had interleaved into the same `routes/agents.ts` hunks — not a survivor. |
 | 3 + 12 | COM-294/361 managed goal block | `1fe30517` | Module lands unchanged (zero imports). Upstream moved interaction resolution, so the accept/decline folds were re-anchored on the current `acceptRequestConfirmation`/`rejectRequestConfirmation` transactions. The continuation-summary fold sits after upstream's new `conversationAgentId` early return, so chat-style tasks keep upstream semantics. |
 | 25 | `board_only_on_parents` | `6a263efd` | **Migration renumbered `0184` → `0488`** (ours collided with upstream's `0184_routable_blocked`; upstream's highest is 0487), with a matching `_journal.json` entry. Column propagated to all 9 Company-shape sites — including `board-bootstrap.ts`'s `ZodType<Company>`, which fails to compile if it drifts. Two duplicated inline guards became one shared helper. |
 | — (post-triage) | #95 gstack skill pack | `1d416572` | Landed on `master` *after* this triage was written, so no row covers it. Purely additive: 46 `SKILL.md` files under `catalog/optional/gstack` plus the generated manifest. Upstream has since split `optional/` into categories but kept the same builder contract, so the pack carries forward unchanged; `generated/catalog.json` regenerated with upstream's `build:manifest` (63 skills = upstream's 17 + 46), and `EXPECTED_OPTIONAL_KEYS` extended while keeping upstream's own two new entries. |
@@ -198,6 +198,45 @@ saw. That was checked explicitly rather than assumed: of the 317 files `master` 
 since the merge base, the ones absent from the port branch are all `drop`-row features
 plus exactly two post-triage commits — #95 and #112 — which are carried forward as
 their own commits above rather than dropped.
+
+### The two CI gates that cannot go green on this PR
+
+`ci / policy` and `review` are **base-relative** gates, and that is why they stay red
+here. Both diff the branch against the fork's `master`:
+
+* `policy` runs `git diff --name-only "$trusted_base...$HEAD_SHA"` and rejects any PR
+  whose changed-file set includes `pnpm-lock.yaml` ("CI owns lockfile updates"). A
+  branch rooted on upstream `master` *necessarily* carries upstream's lockfile, which
+  differs from the fork's by ~13,800 lines of accumulated dependency drift.
+* `review` (dependency review) reads the same comparison and reports upstream's own
+  additions — e.g. `+ thiserror@2.0.20` — plus their advisories.
+
+Neither is satisfiable by cleaning up the branch: the re-base *is* a wholesale
+lockfile replacement. `ci / e2e` is downstream of `policy` and only asserts that it
+passed, so it fails as a cascade. Landing therefore still needs a fast-forward of
+`master` (`merge --ff-only`) or an admin-override merge.
+
+One real defect did hide behind this, though, and it is now fixed: the agent-memory
+port (row 26) had added `js-yaml`, which was the only reason the branch's own diff
+*against upstream* touched the lockfile. That tripped the `Runner support suite`
+(stale SDK input registry + report-lock) independently of the base-relative gates.
+`pnpm-lock.yaml` and `server/package.json` are now byte-identical to upstream.
+
+### The four defects the ports introduced (fixed in `4fa35076`)
+
+All four are the same failure: a port widened a shared contract without propagating
+to the sites that already depended on it.
+
+| Red checks | Cause |
+| --- | --- |
+| `Typecheck` test-tree-1/-2 | Row 25 widened `BackupRetentionPolicy` and `RunDatabaseBackupResult`, breaking upstream's own backup fixtures. `createDatabaseBackupOwner` now takes a `BackupRetentionPolicyInput` and resolves it via `normalizeBackupRetention`. |
+| `Typecheck` paperclipai | `boardOnlyOnParents` became required on `Company` + the portability manifest; the CLI's three fixtures were not updated. |
+| **10 checks** — 4 `General tests (server)` shards, 6 `Verify serialized server suites` | Row 26 built `projectService(db)` at `agentRoutes` construction time, so all 11 upstream test files that mock `../services/index.js` failed. Now constructed per call. |
+| `Runner support suite` | The `js-yaml` dependency above, plus a stale `source-sdk-public-inputs.json` (13 pinned inputs changed by the ports). Registry re-pinned. |
+
+`stage-runner-binary.test.mjs` (2 tests, under `Verify Paperclip Runner (static
+checks)`) is **not** ours: it is an upstream file and this branch changes nothing in
+`packages/paperclip-runner`.
 
 ### Not yet landed (explicitly deferred, not dropped)
 
