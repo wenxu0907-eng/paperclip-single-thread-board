@@ -13,6 +13,7 @@ import type {
   PaperclipPluginManifestV1,
   PluginStateScopeKind,
   PluginEventType,
+  PluginEntityQuery,
   PluginToolDeclaration,
   PluginLauncherDeclaration,
   Company,
@@ -25,12 +26,18 @@ import type {
   IssueAssigneeAdapterOverrides,
   IssueAttachment,
   IssueThreadInteraction,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  ConnectionIntentSetupOptions,
+  ConnectionRequestResult,
+  ConnectionsSearchResult,
   Approval,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
-  CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   PluginManagedAgentResolution,
@@ -58,6 +65,7 @@ import type { PluginPerformActionContext } from "./protocol.js";
 
 export type {
   PaperclipPluginManifestV1,
+  PluginEntityQuery,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
@@ -126,11 +134,18 @@ export type {
   IssueDocumentSummary,
   IssueRelationIssueSummary,
   IssueThreadInteraction,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  ConnectionIntentSetupOptions,
+  ConnectionRequestResult,
+  ConnectionsSearchResult,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   Agent,
@@ -256,7 +271,10 @@ export interface ToolRunContext {
   runId: string;
   /** UUID of the company the run belongs to. */
   companyId: string;
-  /** UUID of the project the run belongs to. */
+  /**
+   * UUID of the project the run belongs to, or an empty string when the run
+   * has no project. Check the value before you use it as a project ID.
+   */
   projectId: string;
 }
 
@@ -328,24 +346,6 @@ export interface PluginEntityRecord {
   updatedAt: string;
 }
 
-/**
- * Query parameters for `ctx.entities.list()`.
- */
-export interface PluginEntityQuery {
-  /** Filter by entity type. */
-  entityType?: string;
-  /** Filter by scope kind. */
-  scopeKind?: PluginStateScopeKind;
-  /** Filter by scope ID. */
-  scopeId?: string;
-  /** Filter by external ID. */
-  externalId?: string;
-  /** Maximum number of results to return. */
-  limit?: number;
-  /** Number of results to skip (for pagination). */
-  offset?: number;
-}
-
 // ---------------------------------------------------------------------------
 // Project workspace metadata (read-only via ctx.projects)
 // ---------------------------------------------------------------------------
@@ -394,8 +394,7 @@ export interface PluginExecutionWorkspaceMetadata {
   id: string;
   /** UUID of the owning company. */
   companyId: string;
-  /** UUID of the parent project. */
-  projectId: string;
+  projectId: string | null;
   /** UUID of the backing project workspace, when present. */
   projectWorkspaceId: string | null;
   /** Absolute filesystem path to the workspace when locally realized. */
@@ -532,6 +531,15 @@ export interface PluginLocalFoldersClient {
  * @see PLUGIN_SPEC.md §16 — Event System
  */
 export interface PluginEventsClient {
+  /** Read durable resource hooks. Requires events.subscribe and a company scope.
+   * Creation is delivered first, then the remaining events in id order.
+   * Prefer manifest resourceLifecycle + onResourceLifecycle for automatic delivery.
+   * Manual consumers page using afterId and restart pagination to revisit unacknowledged events.
+   * Events repeat until acknowledged; use a company-scoped provider idempotency key.
+   */
+  listLifecycle(companyId: string, limit?: number, afterId?: string): Promise<ResourceLifecycleEvent[]>;
+  /** Acknowledge only after the provider operation succeeds. */
+  acknowledgeLifecycle(companyId: string, eventId: string): Promise<void>;
   /**
    * Subscribe to a core Paperclip domain event or a plugin-namespaced event.
    *
@@ -567,6 +575,32 @@ export interface PluginEventsClient {
    * @param payload - JSON-serializable event payload
    */
   emit(name: string, companyId: string, payload: unknown): Promise<void>;
+}
+
+export type ResourceLifecycleEvent = {
+  /** Native private credentials for this plugin/project. Only supplied to automatic
+   * project lifecycle callbacks with projects.instance-secrets. Never expose to UI. */
+  instanceSecrets?: Record<string, string>;
+  id: string;
+  companyId: string;
+  resourceId: string;
+  createdAt: string;
+} & (
+  | { resourceType: "agent"; action: "create" | "pause" | "resume" | "terminate" }
+  | { resourceType: "project"; action: "create" | "update" | "archive" | "delete" }
+  | { resourceType: "agent_runtime"; action: "update" | "delete" }
+);
+
+/** Return acknowledged only after durable effects finish. Retry unfinished work;
+ * defer when configuration is missing (replayed on configuration changes or startup).
+ * Both retry and deferred leave the event unacknowledged.
+ */
+export interface ResourceLifecycleResult {
+  eventId: string;
+  status: "acknowledged" | "retry" | "deferred";
+  /** Project-only patch, saved atomically with acknowledgment. Null removes a key.
+   * Up to 16 lowercase snake_case keys, each value at most 128 KiB. */
+  instanceSecrets?: Record<string, string | null>;
 }
 
 /**
@@ -826,7 +860,25 @@ export interface PluginEntitiesClient {
  *
  * @see PLUGIN_SPEC.md §7 — Project Workspaces
  */
+export interface PluginProjectSnapshot {
+  projectId: string;
+  workspaces: PluginWorkspace[];
+  entity: PluginEntityRecord | null;
+  instanceSecrets: Record<string, string>;
+}
+
 export interface PluginProjectsClient {
+  /** Transient GitHub credential for a stored repository in the current host-issued
+   * lifecycle/workspace invocation. Requires projects.git-credentials. Never persist or log. */
+  resolveGitCredential(projectId: string, workspaceId: string, companyId: string): Promise<string | null>;
+  /** Trusted worker access to this plugin’s native project credentials.
+   * Requires projects.instance-secrets; never expose via UI/data handlers. */
+  getInstanceSecrets(projectId: string, companyId: string): Promise<Record<string, string>>;
+  /** Read authorized project workspaces, instance secrets and one plugin-owned entity per project.
+   * Missing or changing projects reject the batch. Null means the host does not support this method.
+   * Keep the result in the trusted worker. */
+  readSnapshots(projectIds: string[], companyId: string, entityType: string): Promise<PluginProjectSnapshot[] | null>;
+
   /**
    * List projects visible to the plugin.
    *
@@ -1020,6 +1072,65 @@ export interface PluginLogger {
   /** Log a debug message (may be suppressed in production). */
   debug(message: string, meta?: Record<string, unknown>): void;
 }
+
+// ---------------------------------------------------------------------------
+// Plugin tracer
+// ---------------------------------------------------------------------------
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free span contract. The plugin worker
+ * builds a real span through this surface; the host records it through the real
+ * tracer. The shape is a subset of the `@opentelemetry/api` `Span` shape, so the
+ * plugin SDK never imports `@opentelemetry/api`.
+ *
+ * A span with no active host trace context is a no-op: it accepts the calls and
+ * ends without an effect. So a lifecycle hook can always open a span, and the
+ * span records nothing until tracing is on.
+ */
+export interface PluginSpan {
+  /** Set one bounded attribute. The host re-clamps every attribute at its trust
+   * boundary, so an out-of-allowlist attribute never reaches a recorded span. */
+  setAttribute(key: string, value: string | number | boolean): void;
+  /** Set the span status. The host maps it onto the recorded span. */
+  setStatus(status: { code: number; message?: string }): void;
+  /** End the span. The worker sends the span data to the host once, here. */
+  end(): void;
+}
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free tracer contract. The plugin uses
+ * it the same way as `ctx.logger`. The default is a no-op that never throws, so
+ * a plugin span changes nothing until the host injects a live tracer and an
+ * active host trace context.
+ */
+export interface PluginTracer {
+  /** Invocation-wide monotonic clock anchored to epoch milliseconds. */
+  now?(): number;
+  isRecording?(): boolean;
+  /** Completed bounded timing receipt; the host validates times and parentage. */
+  recordSpan?(span: import("./protocol.js").PluginSpanRecord): void;
+  /** Invocation-scoped nesting; absent on older hosts. No additional IPC per child. */
+  withSpan?<T>(name: string, work: () => T | Promise<T>, attributes?: Record<string, string | number | boolean>): Promise<T>;
+  /** Start one span. `options.attributes` seeds the span attributes. */
+  startSpan(
+    name: string,
+    options?: { attributes?: Record<string, string | number | boolean> },
+  ): PluginSpan;
+}
+
+/** A shared no-op span. It satisfies the span contract and does nothing, so a
+ * plugin with no injected tracer changes no behavior. */
+export const NOOP_PLUGIN_SPAN: PluginSpan = {
+  setAttribute() {},
+  setStatus() {},
+  end() {},
+};
+
+/** The default tracer. It opens no real span, so a lifecycle hook that wraps
+ * work in a span behaves exactly as before when no live tracer is injected. */
+export const NOOP_PLUGIN_TRACER: PluginTracer = {
+  startSpan: () => NOOP_PLUGIN_SPAN,
+};
 
 // ---------------------------------------------------------------------------
 // Plugin metrics
@@ -1374,6 +1485,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    /** Inherit this issue's project and workspace strategy. The new issue always gets its own workspace. */
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
@@ -1480,31 +1592,31 @@ export interface PluginIssuesClient {
   ): Promise<IssueComment>;
   createInteraction(
     issueId: string,
-    interaction: CreateIssueThreadInteraction,
+    interaction: CreateIssueThreadInteractionInput,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueThreadInteraction>;
   suggestTasks(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "suggest_tasks" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "suggest_tasks" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<SuggestTasksInteraction>;
   askUserQuestions(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "ask_user_questions" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "ask_user_questions" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<AskUserQuestionsInteraction>;
   requestConfirmation(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_confirmation" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "request_confirmation" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestConfirmationInteraction>;
   requestCheckboxConfirmation(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_checkbox_confirmation" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "request_checkbox_confirmation" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestCheckboxConfirmationInteraction>;
@@ -1593,7 +1705,44 @@ export interface PluginApprovalsClient {
  * Requires `agents.read` for reads; `agents.pause` / `agents.resume` /
  * `agents.invoke` for write operations.
  */
+export interface PluginAgentRuntimeSkill {
+  key: string;
+  runtimeName: string;
+  source: string;
+  versionId?: string | null;
+  currentVersionId?: string | null;
+  sourceStatus?: "available" | "missing";
+  missingDetail?: string | null;
+}
+
+export interface PluginAgentConnectionAssignments {
+  features: { publicMcp: boolean; chatConnectors: boolean };
+  connections: Array<{ id: string; name: string; transport: string; enabled: boolean; status: string }>;
+  profileIds: string[];
+}
+
+export interface PluginAgentRuntimeState {
+  connectionAssignments: PluginAgentConnectionAssignments;
+  skills: PluginAgentRuntimeSkill[];
+  /** Selected company skills omitted because the environment requires the same skill name. */
+  shadowedSkills?: Array<{ key: string; shadowedBy: string }>;
+  revision: string;
+  agent: Agent;
+  instructionsRootPath: string | null;
+  instructionsEntryFile: string;
+  /** Default entry content when the agent has no instruction directory. */
+  instructionsEntryContent?: string;
+  instanceSecrets: Record<string, string>;
+}
+
+export type PluginAgentRuntimeIdentity = Pick<PluginAgentRuntimeState, "revision" | "instanceSecrets"> & {
+  agent: Pick<Agent, "id" | "companyId" | "status" | "lifecycleState" | "lifecycleVersion">;
+};
+
 export interface PluginAgentsClient {
+  getRuntimeIdentity(agentId: string, companyId: string): Promise<PluginAgentRuntimeIdentity | null>;
+  /** Lifecycle reconciliation can install missing environment skills; task and recovery reads leave this false. */
+  getRuntime(agentId: string, companyId: string, environmentId?: string, installEnvironmentSkills?: boolean): Promise<PluginAgentRuntimeState | null>;
   list(input: { companyId: string; status?: Agent["status"]; limit?: number; offset?: number }): Promise<Agent[]>;
   get(agentId: string, companyId: string): Promise<Agent | null>;
   /** Pause an agent. Throws if agent is terminated or not found. Requires `agents.pause`. */
@@ -1639,6 +1788,10 @@ export interface AgentSessionEvent {
   /** The kind of event: "chunk" for output data, "status" for run state changes, "done" for end-of-stream, "error" for failures. */
   eventType: "chunk" | "status" | "done" | "error";
   stream: "stdout" | "stderr" | "system" | null;
+  /**
+   * Event text. On a successful `done` event this is the canonical final
+   * user-facing assistant reply, or null when the run produced no reply text.
+   */
   message: string | null;
   payload: Record<string, unknown> | null;
 }
@@ -1928,6 +2081,101 @@ export interface PluginStreamsClient {
   close(channel: string): void;
 }
 
+/**
+ * `ctx.execution` — deliver incremental command output from an environment
+ * driver's active `execute` call to the host runner log sink.
+ *
+ * A sandbox provider that streams a long-lived command's output calls
+ * `ctx.execution.log(stream, chunk)` for each new chunk while the execute call
+ * runs. The host correlates the chunk to the active execute invocation by the
+ * host-issued invocation id on the message envelope, and delivers it to that
+ * call's log callback before the final result. The default is a no-op that
+ * never throws, so a provider that does not stream keeps its current behavior.
+ *
+ * The `chunk` is a text string, not raw bytes. The host drops a chunk with an
+ * unknown stream name or a chunk that is empty or too large.
+ */
+export interface PluginExecutionClient {
+  /**
+   * Deliver one incremental output chunk of the active execute call.
+   *
+   * @param stream - Either `"stdout"` or `"stderr"`.
+   * @param chunk - The new output text for that stream.
+   */
+  log(stream: "stdout" | "stderr", chunk: string): void;
+}
+
+/**
+ * `ctx.loginPty` — stream one live login pseudo-terminal's output and exit
+ * from a sandbox provider worker to the host.
+ *
+ * The worker opener registers the output listener on the session and forwards
+ * each raw chunk through `output(hostRouteId, workerSessionId, chunk)`. It
+ * forwards the child exit through `exit(hostRouteId, workerSessionId,
+ * exitCode)`. Each call carries the host route identifier the open request
+ * carried and the worker session identifier the open reply returned, so the
+ * host can hold more than one concurrent login pseudo-terminal per worker and
+ * bind each chunk to its own route. The host drops a chunk or an exit that
+ * carries an unknown, a stale, or a mismatched identifier, and it never logs
+ * the raw bytes. The default is a no-op that never throws.
+ */
+export interface PluginLoginPtyClient {
+  /**
+   * Deliver one raw output chunk of a live login pseudo-terminal.
+   *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the chunk to its own route.
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw terminal output text.
+   */
+  output(hostRouteId: string, workerSessionId: string, chunk: string): void;
+  /**
+   * Deliver the child exit of a live login pseudo-terminal.
+   *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host resolves the exit against its own route.
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   */
+  exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void;
+}
+
+/**
+ * `ctx.duplexChannel` — stream one persistent duplex channel's data and exit from
+ * a sandbox provider worker to the host.
+ *
+ * The worker registers the data listener on the channel and forwards each raw
+ * chunk through `data(workerSessionId, chunk)`. It forwards the child exit through
+ * `exit(workerSessionId, exitCode)`. Each call carries the worker session
+ * identifier the open reply returned, so the host binds the data to the open route
+ * by that identifier while the route is open. The host drops a chunk or an exit
+ * that carries an unknown or a mismatched identifier, and it never logs the raw
+ * bytes. The default is a no-op that never throws. This client models the
+ * `loginPty` client, but it carries no login command allowlist.
+ */
+export interface PluginDuplexChannelClient {
+  /**
+   * Deliver one raw data chunk of a persistent duplex channel.
+   *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair.
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw channel output bytes.
+   */
+  data(hostRouteId: string, workerSessionId: string, chunk: Uint8Array): void;
+  /**
+   * Deliver the child exit of a persistent duplex channel.
+   *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair.
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   * @param transportClosed - True when the transport closed with no exit data, so the exit is a reason-less transport close, not a process exit. Absent marks a real process exit.
+   */
+  exit(
+    hostRouteId: string,
+    workerSessionId: string,
+    exitCode: number | null,
+    transportClosed?: boolean,
+  ): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -2038,6 +2286,20 @@ export interface PluginContext {
   /** Push real-time events from the worker to the plugin UI via SSE. */
   streams: PluginStreamsClient;
 
+  /** Deliver incremental command output from the active execute call to the
+   * host runner log sink. The default is a no-op for a provider that does not
+   * stream. */
+  execution: PluginExecutionClient;
+
+  /** Stream one live login pseudo-terminal's output and exit to the host.
+   * The default is a no-op for a provider that opens no login
+   * pseudo-terminal. */
+  loginPty: PluginLoginPtyClient;
+
+  /** Stream one persistent duplex channel's data and exit to the host. The
+   * default is a no-op for a provider that opens no duplex channel. */
+  duplexChannel: PluginDuplexChannelClient;
+
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;
 
@@ -2049,4 +2311,8 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /** Tracer for provider spans. The default is a no-op; the host records a span
+   * only when tracing is on and an active host trace context is present. */
+  tracer: PluginTracer;
 }

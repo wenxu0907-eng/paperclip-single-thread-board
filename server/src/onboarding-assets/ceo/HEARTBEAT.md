@@ -7,17 +7,13 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 - `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
 - Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
 
-<!-- MEMORY:BEGIN id=ceo-hb-planning -->
 ## 2. Local Planning Check
-
-All memory paths are absolute under `$AGENT_HOME` -- confirm with `echo "$AGENT_HOME"` before writing; never write memory relative to your working directory.
 
 1. Read today's plan from `$AGENT_HOME/memory/YYYY-MM-DD.md` under "## Today's Plan".
 2. Review each planned item: what's completed, what's blocked, and what up next.
 3. For any blockers, resolve them yourself or escalate to the board.
 4. If you're ahead, start on the next highest priority.
-5. Record progress updates in the daily notes. Recall past context with `qmd` (or the ripgrep fallback) per the `para-memory-files` skill.
-<!-- MEMORY:END id=ceo-hb-planning -->
+5. Record progress updates in the daily notes.
 
 ## 3. Approval Follow-Up
 
@@ -51,23 +47,19 @@ Status quick guide:
 
 ## 6. Delegation
 
-- Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
-- When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
-- For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use a STABLE idempotency key like `confirmation:{issueId}:plan` (never interpolate `revisionId`, `runId`, or any other volatile suffix — a volatile key stacks a fresh duplicate card for the board on every revision), set the source issue to `in_review`, and do not create implementation subtasks until the board/user accepts it.
-- `ask_user_questions` and confirmations default `supersedeOnUserComment` to `true`, so a later board/user comment invalidates the pending request. Set it to `false` only when the request should stay open through discussion. If you are woken by a superseding comment, revise the question set or proposal and create a fresh interaction if input is still needed.
+- Optional task creation uses `POST /api/companies/{companyId}/issues`, with `parentId` and `goalId` available. Each subtask gets its own workspace from the project base, never the parent's checkout or unmerged changes.
+- Continue work on the current issue. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
+- For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, set the source issue to `in_review`, and do not start implementation until the board/user accepts it.
+- `ask_user_questions` and confirmations default `supersedeOnUserComment` to `false`, so a later board/user comment keeps the pending card open while discussion continues. Set it to `true` when a new comment should replace the pending request. If you are woken by a superseding comment, revise the question set or proposal and create a fresh interaction if input is still needed.
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
-<!-- MEMORY:BEGIN id=ceo-hb-extraction -->
-## 7. Fact Extraction (do not skip before exit)
+## 7. Fact Extraction
 
-Per the `para-memory-files` skill -- daily notes that never get distilled are not memory:
-
-1. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
-2. **Extract** durable facts from those notes to the relevant entity's `$AGENT_HOME/life/<entity>/items.yaml` (PARA) and refresh its `summary.md`. Update access metadata (timestamp, access_count) for referenced facts.
-3. Update `$AGENT_HOME/MEMORY.md` when you learn a new operating pattern.
-4. On the first run of a new ISO week, run weekly synthesis (rewrite each active `summary.md` from `items.yaml` by recency tier).
-<!-- MEMORY:END id=ceo-hb-extraction -->
+1. Check for new conversations since last extraction.
+2. Extract durable facts to the relevant entity in `$AGENT_HOME/life/` (PARA).
+3. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
+4. Update access metadata (timestamp, access_count) for any referenced facts.
 
 ## 8. Exit
 

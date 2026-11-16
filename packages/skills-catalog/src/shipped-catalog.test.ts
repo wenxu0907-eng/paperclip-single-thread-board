@@ -8,6 +8,7 @@ const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
   "paperclipai/bundled/paperclip-operations/reflection-coach",
+  "paperclipai/bundled/paperclip-operations/status-card-query",
   "paperclipai/bundled/paperclip-operations/summarize-status",
   "paperclipai/bundled/paperclip-operations/task-planning",
   "paperclipai/bundled/product/paperclip-capsules",
@@ -19,55 +20,11 @@ const EXPECTED_BUNDLED_KEYS = [
 const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/browser/agent-browser",
   "paperclipai/optional/content/release-announcement",
+  "paperclipai/optional/content/simplified-english",
   "paperclipai/optional/finance/ramp",
-  "paperclipai/optional/gstack/autoplan",
-  "paperclipai/optional/gstack/benchmark",
-  "paperclipai/optional/gstack/benchmark-models",
-  "paperclipai/optional/gstack/browse",
-  "paperclipai/optional/gstack/canary",
-  "paperclipai/optional/gstack/careful",
-  "paperclipai/optional/gstack/codex",
-  "paperclipai/optional/gstack/context-restore",
-  "paperclipai/optional/gstack/context-save",
-  "paperclipai/optional/gstack/cso",
-  "paperclipai/optional/gstack/design-consultation",
-  "paperclipai/optional/gstack/design-html",
-  "paperclipai/optional/gstack/design-review",
-  "paperclipai/optional/gstack/design-shotgun",
-  "paperclipai/optional/gstack/devex-review",
-  "paperclipai/optional/gstack/document-generate",
-  "paperclipai/optional/gstack/document-release",
-  "paperclipai/optional/gstack/freeze",
-  "paperclipai/optional/gstack/gstack-upgrade",
-  "paperclipai/optional/gstack/guard",
-  "paperclipai/optional/gstack/health",
-  "paperclipai/optional/gstack/investigate",
-  "paperclipai/optional/gstack/land-and-deploy",
-  "paperclipai/optional/gstack/landing-report",
-  "paperclipai/optional/gstack/learn",
-  "paperclipai/optional/gstack/make-pdf",
-  "paperclipai/optional/gstack/office-hours",
-  "paperclipai/optional/gstack/open-gstack-browser",
-  "paperclipai/optional/gstack/pair-agent",
-  "paperclipai/optional/gstack/plan-ceo-review",
-  "paperclipai/optional/gstack/plan-design-review",
-  "paperclipai/optional/gstack/plan-devex-review",
-  "paperclipai/optional/gstack/plan-eng-review",
-  "paperclipai/optional/gstack/plan-tune",
-  "paperclipai/optional/gstack/qa",
-  "paperclipai/optional/gstack/qa-only",
-  "paperclipai/optional/gstack/retro",
-  "paperclipai/optional/gstack/review",
-  "paperclipai/optional/gstack/scrape",
-  "paperclipai/optional/gstack/setup-browser-cookies",
-  "paperclipai/optional/gstack/setup-deploy",
-  "paperclipai/optional/gstack/setup-gbrain",
-  "paperclipai/optional/gstack/ship",
-  "paperclipai/optional/gstack/skillify",
-  "paperclipai/optional/gstack/sync-gbrain",
-  "paperclipai/optional/gstack/unfreeze",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
+  "paperclipai/optional/software-development/prepare-mcp-integration",
 ];
 
 const MAX_FRONTMATTER_DESCRIPTION_LENGTH = 300;
@@ -83,6 +40,9 @@ const SKILL_FRONTMATTER_ROOTS = [
 
 function listSkillFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    // Standalone provider installs can contain third-party skills. They are not
+    // shipped Paperclip skills and must not participate in this repo audit.
+    if (entry.name === "node_modules") return [];
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) return listSkillFiles(entryPath);
     if (entry.isFile() && entry.name === "SKILL.md") return [entryPath];
@@ -124,15 +84,12 @@ describe("shipped skills catalog", () => {
 
     expect(skill).toContain("Post the first status update immediately, before doing anything else.");
     expect(skill).toContain('STATUS: considering "Fix login redirect loop"…');
-    expect(skill).toContain("STATUS: reading the current slot revision…");
     expect(skill).toContain("<<<SUMMARY-DRAFT>>>");
     expect(skill).toContain("<<<END-SUMMARY-DRAFT>>>");
-    expect(skill).toContain("Assistant prose streams token-by-token to the UI; tool-call arguments do not");
-    expect(skill).toContain("UI gracefully falls back to its spinner");
-    expect(skill).toContain("**Review:**");
-    expect(skill).toContain("approve on a skim");
-    expect(skill).toContain("**Recent work:**");
-    expect(skill).toContain("Not a changelog");
+    expect(skill).toContain("tool-call arguments don't stream; assistant text does");
+    expect(skill).toContain("falls back to its spinner");
+    expect(skill).toContain("Open with what the reader needs to do.");
+    expect(skill).toContain("1–3 specific, concrete, actionable items");
   });
 
   it("keeps repo and catalog skill descriptions within the prompt budget cap", () => {

@@ -36,19 +36,10 @@ describe("resolveServerDevWatchIgnorePaths", () => {
     expect(ignorePaths).toContain(fs.realpathSync(path.join(sharedUiRoot, ".vite")));
     expect(ignorePaths).toContain(path.join(worktreeUiRoot, "dist"));
     expect(ignorePaths).toContain(fs.realpathSync(path.join(sharedUiRoot, "dist")));
+    const sharedWorktreesRoot = path.join(tempRoot, "repo", ".paperclip", "worktrees");
+    expect(ignorePaths).toContain(sharedWorktreesRoot);
+    expect(ignorePaths).toContain(`${sharedWorktreesRoot.replaceAll(path.sep, "/")}/**`);
     expect(ignorePaths).toContain("**/{node_modules,bower_components,vendor}/**");
     expect(ignorePaths).toContain("**/.vite-temp/**");
-  });
-
-  it("excludes the managed runtime plugins dir so a plugin dist install does not restart the server (COM-145)", () => {
-    const home = process.env.HOME;
-    expect(home, "HOME must be set for this test").toBeTruthy();
-
-    const serverRoot = path.join(os.tmpdir(), "paperclip-dev-watch-server-root");
-    const ignorePaths = resolveServerDevWatchIgnorePaths(serverRoot);
-
-    const runtimePluginsDir = `${home}/.paperclip/plugins`;
-    expect(ignorePaths).toContain(runtimePluginsDir);
-    expect(ignorePaths).toContain(`${runtimePluginsDir.replaceAll(path.sep, "/")}/**`);
   });
 });

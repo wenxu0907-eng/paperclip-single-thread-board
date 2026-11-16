@@ -60,7 +60,6 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
       name: "Paperclip",
       issuePrefix: `PAP-${companyId.slice(0, 8)}`,
       requireBoardApprovalForNewAgents: false,
-      boardOnlyOnParents: false,
     });
     return companyId;
   }
@@ -350,7 +349,11 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
     } as any, {
       companyId,
       executionWorkspaceId,
-    })).resolves.toBeUndefined();
+    })).resolves.toMatchObject({
+      actorType: "agent",
+      agentId: managerId,
+      issueId: null,
+    });
   });
 
   it("rejects unrelated same-company agents without matching workspace assignments", async () => {

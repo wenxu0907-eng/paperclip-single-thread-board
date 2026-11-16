@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "../lib/queryKeys";
 import { PluginSettings } from "./PluginSettings";
 
 const mockPluginsApi = vi.hoisted(() => ({
@@ -13,24 +15,16 @@ const mockPluginsApi = vi.hoisted(() => ({
   logs: vi.fn(),
   getConfig: vi.fn(),
   saveConfig: vi.fn(),
-  testConfig: vi.fn(),
   listLocalFolders: vi.fn(),
   configureLocalFolder: vi.fn(),
 }));
 
-const mockSecretsApi = vi.hoisted(() => ({
-  list: vi.fn(),
-  create: vi.fn(),
-}));
-
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockRoute = vi.hoisted(() => ({ pluginId: "plugin-1" }));
+const mockSlots = vi.hoisted(() => ({ slots: [] as Array<Record<string, unknown>> }));
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
-}));
-
-vi.mock("@/api/secrets", () => ({
-  secretsApi: mockSecretsApi,
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -49,12 +43,12 @@ vi.mock("@/context/CompanyContext", () => ({
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
   Navigate: () => null,
-  useParams: () => ({ companyPrefix: "PAP", pluginId: "plugin-1" }),
+  useParams: () => ({ companyPrefix: "PAP", pluginId: mockRoute.pluginId }),
 }));
 
 vi.mock("@/plugins/slots", () => ({
-  PluginSlotMount: () => null,
-  usePluginSlots: () => ({ slots: [] }),
+  PluginSlotMount: ({ slot }: { slot: { id: string } }) => <div data-testid="settings-slot">{slot.id}</div>,
+  usePluginSlots: () => ({ slots: mockSlots.slots }),
 }));
 
 vi.mock("@/components/PageTabBar", () => ({
@@ -129,11 +123,18 @@ function folderStatus(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function renderSettings(container: HTMLDivElement) {
+async function renderSettings(
+  container: HTMLDivElement,
+  experimentalSettings: Record<string, unknown> = {},
+) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  // The local-folders section is a host-path surface, so it stays hidden until
+  // the managed-sandbox-only policy is known. Seed the policy as off; the tests
+  // below are about folder rendering, not about the gate.
+  queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
 
   await act(async () => {
     root.render(
@@ -158,10 +159,6 @@ describe("PluginSettings", () => {
     mockPluginsApi.dashboard.mockResolvedValue(null);
     mockPluginsApi.health.mockResolvedValue({ pluginId: "plugin-1", status: "ready", healthy: true, checks: [] });
     mockPluginsApi.logs.mockResolvedValue([]);
-    mockPluginsApi.getConfig.mockResolvedValue(null);
-    mockPluginsApi.saveConfig.mockResolvedValue({ id: "config-1", pluginId: "plugin-1", companyId: "company-1", configJson: {} });
-    mockPluginsApi.testConfig.mockResolvedValue({ valid: true });
-    mockSecretsApi.list.mockResolvedValue([]);
     mockPluginsApi.listLocalFolders.mockResolvedValue({
       pluginId: "plugin-1",
       companyId: "company-1",
@@ -174,13 +171,146 @@ describe("PluginSettings", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    mockRoute.pluginId = "plugin-1";
+    mockSlots.slots = [];
+  });
+
+  it("shows a plugin's custom settings page when the route names the plugin by key", async () => {
+    mockRoute.pluginId = "acme.website-preview";
+    mockSlots.slots = [
+      { id: "settings", type: "settingsPage", pluginId: "plugin-1", pluginKey: "acme.website-preview" },
+      { id: "other-settings", type: "settingsPage", pluginId: "plugin-2", pluginKey: "acme.other" },
+    ];
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "acme.website-preview",
+      status: "ready",
+      manifestJson: { displayName: "Website Preview", version: "0.1.0", capabilities: [] },
+    }));
+
+    const root = await renderSettings(container);
+
+    const mounted = [...container.querySelectorAll('[data-testid="settings-slot"]')].map((node) => node.textContent);
+    expect(mounted).toEqual(["settings"]);
+    expect(container.textContent).not.toContain("This plugin does not require any settings.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  describe("generated configuration saves", () => {
+    beforeEach(() => {
+      mockPluginsApi.get.mockResolvedValue(basePlugin({
+        manifestJson: {
+          displayName: "Default configuration",
+          instanceConfigSchema: {
+            type: "object",
+            properties: { label: { type: "string", default: "Default" } },
+          },
+        },
+      }));
+    });
+
+    it("saves defaults without edits and disables saving after the row exists", async () => {
+      const saved = { configJson: { label: "Default" } };
+      mockPluginsApi.getConfig.mockResolvedValue(null);
+      let finishSave!: (value: typeof saved) => void;
+      mockPluginsApi.saveConfig.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+
+      expect(button.disabled).toBe(false);
+      await act(async () => { button.click(); });
+      expect(mockPluginsApi.saveConfig).toHaveBeenCalledWith("plugin-1", "company-1", { label: "Default" });
+      expect(button.disabled).toBe(true);
+
+      mockPluginsApi.getConfig.mockResolvedValue(saved);
+      await act(async () => { finishSave(saved); });
+      await flushReact();
+      await flushReact();
+      expect(button.disabled).toBe(true);
+      await act(async () => { root.unmount(); });
+    });
+
+    it.each([{}, { label: "Default" }])("keeps unchanged saved values disabled: %j", async (configJson) => {
+      mockPluginsApi.getConfig.mockResolvedValue({ configJson });
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(true);
+      const input = container.querySelector("input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Changed");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(button.disabled).toBe(false);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Default");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(button.disabled).toBe(true);
+      await act(async () => { root.unmount(); });
+    });
+
+    it("does not allow an initial save when configuration loading fails", async () => {
+      mockPluginsApi.getConfig.mockRejectedValue(new Error("Unavailable"));
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(true);
+      await act(async () => { button.click(); });
+      expect(mockPluginsApi.saveConfig).not.toHaveBeenCalled();
+      await act(async () => { root.unmount(); });
+    });
+
+    it("waits for configuration loading before offering an initial save", async () => {
+      let finishLoad!: (value: null) => void;
+      mockPluginsApi.getConfig.mockImplementation(() => new Promise((resolve) => { finishLoad = resolve; }));
+      const root = await renderSettings(container);
+      expect(Array.from(container.querySelectorAll("button")).some(
+        (item) => item.textContent === "Save Configuration",
+      )).toBe(false);
+      await act(async () => { finishLoad(null); });
+      await flushReact();
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(false);
+      await act(async () => { root.unmount(); });
+    });
+
+    it("validates required fields before saving a missing configuration", async () => {
+      mockPluginsApi.get.mockResolvedValue(basePlugin({
+        manifestJson: {
+          displayName: "Required configuration",
+          instanceConfigSchema: {
+            type: "object",
+            properties: { label: { type: "string" } },
+            required: ["label"],
+          },
+        },
+      }));
+      mockPluginsApi.getConfig.mockResolvedValue(null);
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(false);
+      await act(async () => { button.click(); });
+      expect(mockPluginsApi.saveConfig).not.toHaveBeenCalled();
+      await act(async () => { root.unmount(); });
+    });
   });
 
   it("routes environment-provider plugins to instance environments when they have no instance config", async () => {
     const root = await renderSettings(container);
 
-    expect(container.textContent).toContain("Configure this plugin from Instance Settings → Environments.");
-    expect(container.textContent).toContain("secret bindings still resolve through the selected company context");
+    expect(container.textContent).toContain("Configure this plugin from Settings → Environments.");
+    expect(container.textContent).toContain("secret bindings still resolve through the selected organization context");
     const link = container.querySelector('a[href="/company/settings/instance/environments"]');
     expect(link?.textContent).toContain("Open Environments");
 
@@ -219,6 +349,123 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("No local folder path is configured.");
     expect(container.textContent).toContain("Missing directories: raw, wiki");
     expect(container.textContent).toContain("Missing files: WIKI.md, index.md");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps loaded local folder statuses on screen when their refetch fails transiently", async () => {
+    const declaration = wikiFolderDeclaration();
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      packageName: "@paperclipai/plugin-llm-wiki",
+      status: "ready",
+      manifestJson: {
+        displayName: "LLM Wiki",
+        version: "0.1.0",
+        description: "Local-file LLM Wiki plugin.",
+        author: "Paperclip",
+        capabilities: ["local.folders"],
+        localFolders: [declaration],
+      },
+    }));
+    mockPluginsApi.listLocalFolders.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      declarations: [declaration],
+      folders: [folderStatus()],
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, {});
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PluginSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("No local folder path is configured.");
+
+    mockPluginsApi.listLocalFolders.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders("plugin-1", "company-1") });
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.listLocalFolders).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Wiki root");
+    expect(container.textContent).toContain("No local folder path is configured.");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows readable copy with Retry instead of leaving the page when the plugin fails to load", async () => {
+    mockPluginsApi.get
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue(basePlugin());
+
+    const root = await renderSettings(container);
+
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load this plugin");
+    expect(container.textContent).not.toContain("E2B Sandbox Provider");
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retryButton, "Retry button").toBeTruthy();
+
+    await act(async () => {
+      retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("E2B Sandbox Provider");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides local folders when the instance runs agents only in the platform-managed environment", async () => {
+    const declaration = wikiFolderDeclaration();
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      packageName: "@paperclipai/plugin-llm-wiki",
+      status: "ready",
+      manifestJson: {
+        displayName: "LLM Wiki",
+        version: "0.1.0",
+        description: "Local-file LLM Wiki plugin.",
+        author: "Paperclip",
+        capabilities: ["local.folders"],
+        localFolders: [declaration],
+      },
+    }));
+    mockPluginsApi.listLocalFolders.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      declarations: [declaration],
+      folders: [folderStatus()],
+    });
+
+    const root = await renderSettings(container, { enableManagedSandboxOnly: true });
+
+    // The platform-managed environment owns the filesystem, so the whole
+    // section disappears rather than showing paths nobody can act on.
+    expect(container.textContent).not.toContain("Local folders");
 
     await act(async () => {
       root.unmount();
@@ -344,97 +591,6 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("WritableYes");
     expect(container.textContent).toContain("Present");
     expect(container.textContent).not.toContain("Validation problems");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("loads and saves generated config through the selected company scope", async () => {
-    mockPluginsApi.getConfig.mockResolvedValue({
-      id: "config-1",
-      pluginId: "plugin-1",
-      companyId: "company-1",
-      configJson: {},
-    });
-    mockPluginsApi.get.mockImplementation(async () => ({
-      ...basePlugin({
-        status: "ready",
-        supportsConfigTest: true,
-        manifestJson: {
-          displayName: "Discord",
-          version: "0.1.0",
-          description: "Discord integration.",
-          author: "Paperclip",
-          capabilities: ["secrets.read-ref"],
-          instanceConfigSchema: {
-            type: "object",
-            properties: {
-              discordBotTokenRef: {
-                type: "string",
-                format: "secret-ref",
-                title: "Discord bot token",
-              },
-            },
-          },
-        },
-      }),
-    }));
-    mockPluginsApi.saveConfig.mockResolvedValue({
-      id: "config-1",
-      pluginId: "plugin-1",
-      companyId: "company-1",
-      configJson: { discordBotTokenRef: "raw-token" },
-    });
-
-    const root = await renderSettings(container);
-    await flushReact();
-
-    expect(mockPluginsApi.getConfig).toHaveBeenCalledWith("plugin-1", "company-1");
-    expect(container.textContent).toContain("Select an existing secret");
-
-    const pasteRaw = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent === "Or paste a raw value") as HTMLButtonElement | undefined;
-    expect(pasteRaw).toBeTruthy();
-    await act(async () => {
-      pasteRaw!.click();
-    });
-
-    const input = container.querySelector('input[type="password"]') as HTMLInputElement | null;
-    expect(input).not.toBeNull();
-    await act(async () => {
-      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-      valueSetter?.call(input!, "raw-token");
-      input!.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-
-    const save = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent === "Save Configuration") as HTMLButtonElement | undefined;
-    expect(save).toBeTruthy();
-    await act(async () => {
-      save!.click();
-    });
-    await flushReact();
-
-    expect(mockPluginsApi.saveConfig).toHaveBeenCalledWith(
-      "plugin-1",
-      "company-1",
-      { discordBotTokenRef: "raw-token" },
-    );
-
-    const test = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent === "Test Configuration") as HTMLButtonElement | undefined;
-    expect(test).toBeTruthy();
-    await act(async () => {
-      test!.click();
-    });
-    await flushReact();
-
-    expect(mockPluginsApi.testConfig).toHaveBeenCalledWith(
-      "plugin-1",
-      "company-1",
-      { discordBotTokenRef: "raw-token" },
-    );
 
     await act(async () => {
       root.unmount();

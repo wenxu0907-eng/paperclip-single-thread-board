@@ -1,17 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, readRunFailureCause, withoutSqlStatementText, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
-import {
-  extractGoalUpdateFromRunResult,
-  isBoardAuthoredDecision,
-  isCompletionClaimObjective,
-  readManagedGoalBlockDecisions,
-  readManagedGoalBlockObjective,
-  stripManagedGoalBlock,
-  syncManagedGoalBlockInDescription,
-} from "./managed-goal-block.js";
+import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
@@ -115,20 +107,7 @@ function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previou
     return "Inspect the failed run, fix the cause, and resume from the most recent concrete action above.";
   }
   if (run.status === "cancelled") return "Confirm the cancellation reason before starting another run.";
-  const resumeDefault = "Resume implementation from the acceptance criteria, latest comments, and this summary.";
-  // COM-355: We only reach this branch when the issue is NOT `done`/`in_review`
-  // (those returned above) and the run made progress. A carried-over
-  // "wait for review/approval" next-action from a prior in_review moment is stale
-  // here — the issue is back `in_progress` and actively working. Preserving it
-  // would make continuationSummaryParksExecutor() park the queued continuation
-  // (issue_continuation_waiting_on_review), silently dropping the follow-up work
-  // the run just launched (e.g. a background research/render that re-invokes the
-  // assignee) — the "task cancels then no follow-up" symptom the board reported.
-  // Drop the stale park text and fall back to the resume default.
-  if (previousNextAction && WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(previousNextAction)) {
-    return resumeDefault;
-  }
-  return previousNextAction ?? resumeDefault;
+  return previousNextAction ?? "Resume implementation from the acceptance criteria, latest comments, and this summary.";
 }
 
 function bulletList(items: string[], empty: string) {
@@ -163,17 +142,23 @@ export function buildContinuationSummaryMarkdown(input: {
 }) {
   const { issue, run, agent } = input;
   const resultSummary = readResultSummary(run.resultJson);
+  const terminalFailure = run.resultJson?.terminalSessionFailure;
+  const terminalFailureCategory = terminalFailure && typeof terminalFailure === "object" && !Array.isArray(terminalFailure)
+    ? ((terminalFailure as Record<string, unknown>).category ?? "unknown")
+    : null;
+  // Rows saved before SQL text was kept out of run errors still carry it.
+  const modelError = summarizeRunErrorForModel(
+    run.error ? withoutSqlStatementText(run.error, readRunFailureCause(run.resultJson)) : run.error, terminalFailureCategory);
   const recentActions = [
     `Run \`${run.id}\` finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",
   ];
-  if (run.error) {
-    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(run.error, 500)}`);
+  if (modelError) {
+    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(modelError, 500)}`);
   }
 
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
-  const humanDescription = stripManagedGoalBlock(issue.description) || null;
-  const objective = extractMarkdownSection(humanDescription, "Objective") ?? humanDescription?.trim() ?? "No objective captured.";
+  const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
   const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
@@ -273,6 +258,7 @@ export async function refreshIssueContinuationSummary(input: {
     db
       .select({
         id: issues.id,
+        conversationAgentId: issues.conversationAgentId,
         identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
@@ -285,45 +271,7 @@ export async function refreshIssueContinuationSummary(input: {
     getIssueContinuationSummaryDocument(db, issueId),
   ]);
 
-  if (!issue) return null;
-
-  // COM-294 Option C+B: keep a platform-managed "Current Goal & Decisions" block at
-  // the top of the human-visible description so the goal survives fresh sessions.
-  // Option B (the sync mechanism the board picked, 2026-08-11): fold the agent's
-  // run-end distillation of the thread — objective + confirmed decisions — into the
-  // block. When a run emits no fresh distillation, preserve the decisions already in
-  // the block so nothing is wiped. Deterministic + change-gated: only write on a
-  // real diff (no churn / notification noise).
-  const goalUpdate = extractGoalUpdateFromRunResult(run.resultJson);
-  const preservedDecisions = readManagedGoalBlockDecisions(issue.description);
-  // Board decisions folded in from confirmation outcomes (COM-294 recurrence) are
-  // more authoritative than an agent's re-distillation — keep them across a run even
-  // when the agent emits its own decisions and forgot to re-echo them. They stay at
-  // the top; sanitizeDecisions dedups if the agent did re-echo one.
-  const preservedBoardDecisions = preservedDecisions.filter(isBoardAuthoredDecision);
-  const extraDecisions =
-    goalUpdate && goalUpdate.decisions.length > 0
-      ? [...preservedBoardDecisions, ...goalUpdate.decisions]
-      : preservedDecisions;
-  // COM-361 secondary guard: a standing board direction always outranks an agent's
-  // run-end distillation claiming the work is finished. If the block still carries
-  // board-authored decisions and the agent distilled a "already done / nothing
-  // pending" objective, refuse the overwrite and preserve the current objective —
-  // otherwise a live rework silently collapses into "done" ("agent forgot what we
-  // discussed"). Only preserves; never fabricates.
-  const distilledObjective = goalUpdate?.objective ?? null;
-  const objectiveOverride =
-    preservedBoardDecisions.length > 0 && isCompletionClaimObjective(distilledObjective)
-      ? readManagedGoalBlockObjective(issue.description)
-      : distilledObjective;
-  const nextDescription = syncManagedGoalBlockInDescription(issue.description, {
-    objectiveOverride,
-    extraDecisions,
-  });
-  if (nextDescription !== (issue.description ?? "")) {
-    await db.update(issues).set({ description: nextDescription }).where(eq(issues.id, issueId));
-  }
-
+  if (!issue || issue.conversationAgentId) return null;
   const body = buildContinuationSummaryMarkdown({
     issue,
     run,

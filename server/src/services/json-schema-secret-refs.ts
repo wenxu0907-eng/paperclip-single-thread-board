@@ -5,6 +5,31 @@ export function isUuidSecretRef(value: string): boolean {
   return UUID_RE.test(value);
 }
 
+export type SecretRefBindingObject = {
+  secretId: string;
+  version: "latest" | number;
+};
+
+/**
+ * Parses the `{ type: "secret_ref", secretId, version? }` binding object that
+ * secret pickers submit for `format: "secret-ref"` config fields. Returns null
+ * for anything else (raw values, bare secret-id strings, malformed objects).
+ */
+export function parseSecretRefBindingObject(value: unknown): SecretRefBindingObject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "secret_ref") return null;
+  if (typeof record.secretId !== "string" || !isUuidSecretRef(record.secretId.trim())) return null;
+  const version = record.version;
+  if (version === undefined || version === null || version === "latest") {
+    return { secretId: record.secretId.trim(), version: "latest" };
+  }
+  if (typeof version === "number" && Number.isInteger(version) && version > 0) {
+    return { secretId: record.secretId.trim(), version };
+  }
+  return null;
+}
+
 export function collectSecretRefPaths(
   schema: Record<string, unknown> | null | undefined,
 ): Set<string> {
@@ -49,39 +74,6 @@ export function readConfigValueAtPath(
     current = (current as Record<string, unknown>)[key];
   }
   return current;
-}
-
-/**
- * Rewrite legacy bare-UUID values at schema-declared `format: "secret-ref"`
- * paths into the canonical `{ type: "secret_ref", secretId, version }` object.
- *
- * Config written before the object form existed still stores a bare UUID. The
- * board UI renders such a value as a bound secret but only re-emits the object
- * form when the field itself is re-picked, so an edit to an unrelated field
- * round-trips the legacy string straight back to the server. Normalizing here
- * lets that save succeed and retires the legacy shape one write at a time.
- */
-export function normalizeLegacySecretRefsInConfig(
-  config: Record<string, unknown>,
-  schema: Record<string, unknown> | null | undefined,
-): { config: Record<string, unknown>; normalizedPaths: string[] } {
-  let next = config;
-  const normalizedPaths: string[] = [];
-
-  for (const dotPath of collectSecretRefPaths(schema)) {
-    const current = readConfigValueAtPath(next, dotPath);
-    if (typeof current !== "string") continue;
-    const trimmed = current.trim();
-    if (!isUuidSecretRef(trimmed)) continue;
-    next = writeConfigValueAtPath(next, dotPath, {
-      type: "secret_ref",
-      secretId: trimmed,
-      version: "latest",
-    });
-    normalizedPaths.push(dotPath);
-  }
-
-  return { config: next, normalizedPaths };
 }
 
 export function writeConfigValueAtPath(

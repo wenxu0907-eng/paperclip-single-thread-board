@@ -22,10 +22,13 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { pluginApiUpgrade, proxyPluginApiWebSocket } from "../realtime/plugin-api-ws.js";
+import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
+import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -72,6 +75,7 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasCompanyAccess,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
@@ -84,14 +88,28 @@ import {
 import {
   extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
-import { normalizeLegacySecretRefsInConfig } from "../services/json-schema-secret-refs.js";
 import {
   canonicalizeLocalPluginPath,
-  isCloudManagedInstance,
   isWithinBundledPluginRoot,
 } from "../services/plugin-install-guard.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+
+/**
+ * Floor: when the hosting operator hides the Plugins settings surface
+ * (`instance.plugins` in PAPERCLIP_HIDDEN_SETTINGS), plugin lifecycle and
+ * configuration writes are rejected alongside it. Reads stay open — installed
+ * plugins keep running and `/plugins/ui-contributions` still powers their UI.
+ */
+function assertPluginManagementVisible() {
+  if (getHiddenSettings().has("instance.plugins")) {
+    throw forbidden("Plugin management is managed by the hosting operator on this instance", {
+      code: "settings_operator_managed",
+    });
+  }
+}
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -452,6 +470,7 @@ interface PluginScopedApiRequest {
 }
 
 interface PluginScopedApiResponse {
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -463,8 +482,8 @@ interface PluginToolExecuteRequest {
   tool: string;
   /** Parameters matching the tool's declared JSON Schema. */
   parameters?: unknown;
-  /** Agent run context. */
-  runContext: ToolRunContext;
+  /** Agent run context. projectId may be omitted or null when the run has no project. */
+  runContext: Omit<ToolRunContext, "projectId"> & { projectId?: string | null };
 }
 
 /**
@@ -613,6 +632,17 @@ export function pluginRoutes(
       return typeof value === "string" ? value : null;
     }
 
+    if (resolution.from === "agent") {
+      const id = params[resolution.param];
+      if (!id) return null;
+      const [agent] = await db.select({ id: agents.id, companyId: agents.companyId }).from(agents).where(eq(agents.id, id)).limit(1);
+      if (!agent || !hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
+      assertCompanyAccess(req, agent.companyId);
+      const decision = await authorizationService(db).decide({ actor: req.actor, action: "agent:read", resource: { type: "agent", companyId: agent.companyId, agentId: agent.id } });
+      if (!decision.allowed) throw notFound("Agent not found");
+      return agent.companyId;
+    }
+
     const issueId = params[resolution.param ?? ""];
     if (!issueId) return null;
     const issue = await issuesSvc.getById(issueId);
@@ -665,6 +695,27 @@ export function pluginRoutes(
       throw forbidden("Agent authentication required");
     }
     await issuesSvc.assertCheckoutOwner(issueId, req.actor.agentId, runId);
+  }
+
+  /**
+   * Company ids that bound tenant-attributed plugin reads.
+   *
+   * `plugin_logs`, `plugin_job_runs` and `plugin_webhook_deliveries` carry a
+   * `company_id` attribution (NULL for instance-scope rows). Instance
+   * administrators (and the local implicit board) keep the instance-wide view;
+   * every other board actor is restricted to its own companies, so a member of
+   * one company cannot read another company's operational rows.
+   *
+   * Returns `null` for the unscoped instance-wide view.
+   */
+  function pluginOperationalReadCompanyIds(req: Request): string[] | null {
+    if (req.actor.type !== "board") {
+      return [];
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return null;
+    }
+    return req.actor.companyIds ?? [];
   }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
@@ -811,13 +862,15 @@ export function pluginRoutes(
       return '"runContext.runId" does not belong to "runContext.agentId"';
     }
 
-    const [project] = await db
-      .select({ companyId: projects.companyId })
-      .from(projects)
-      .where(eq(projects.id, runContext.projectId))
-      .limit(1);
-    if (!project || project.companyId !== runContext.companyId) {
-      return '"runContext.projectId" does not belong to "runContext.companyId"';
+    if (runContext.projectId) {
+      const [project] = await db
+        .select({ companyId: projects.companyId })
+        .from(projects)
+        .where(eq(projects.id, runContext.projectId))
+        .limit(1);
+      if (!project || project.companyId !== runContext.companyId) {
+        return '"runContext.projectId" does not belong to "runContext.companyId"';
+      }
     }
 
     return null;
@@ -1009,7 +1062,7 @@ export function pluginRoutes(
       return;
     }
 
-    const { tool, parameters, runContext } = body;
+    const { tool, parameters, runContext: requestedRunContext } = body;
 
     // Validate required fields
     if (!tool || typeof tool !== "string") {
@@ -1017,17 +1070,26 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext || typeof runContext !== "object") {
+    if (!requestedRunContext || typeof requestedRunContext !== "object") {
       res.status(400).json({ error: '"runContext" is required and must be an object' });
       return;
     }
 
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
+    if (!requestedRunContext.agentId || !requestedRunContext.runId || !requestedRunContext.companyId) {
       res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
+        error: '"runContext" must include agentId, runId, and companyId',
       });
       return;
     }
+
+    const requestedProjectId: unknown = requestedRunContext.projectId;
+    if (requestedProjectId != null && typeof requestedProjectId !== "string") {
+      res.status(400).json({ error: '"runContext.projectId" must be a string when present' });
+      return;
+    }
+    // A run can have no project. Plugins then get an empty projectId, the same
+    // value the tool gateway sends, so both paths give plugins one contract.
+    const runContext: ToolRunContext = { ...requestedRunContext, projectId: requestedProjectId ?? "" };
 
     assertCompanyAccess(req, runContext.companyId);
     const scopeError = await validateToolRunContextScope(runContext);
@@ -1126,6 +1188,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/install", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
 
     // Input validation
@@ -1854,6 +1917,20 @@ export function pluginRoutes(
     }
 
     try {
+      const upgrade = (req as Request & { [pluginApiUpgrade]?: unknown })[pluginApiUpgrade];
+      if (match.route.transport === "websocket") {
+        if (!upgrade || req.method !== "GET" || match.route.auth !== "board" || !plugin.manifestJson.capabilities.includes("http.outbound")) {
+          res.status(426).json({ error: "Browser WebSocket required" });
+          return;
+        }
+        if (!req.header("origin") || trustedBoardMutationOrigin(req) !== req.header("origin")?.toLowerCase()) {
+          res.status(403).json({ error: "Trusted browser origin required" });
+          return;
+        }
+      } else if (upgrade) {
+        res.status(400).json({ error: "Route does not accept WebSockets" });
+        return;
+      }
       assertScopedApiAuth(req, match.route);
       const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
       if (!companyId) {
@@ -1897,6 +1974,14 @@ export function pluginRoutes(
         "handleApiRequest",
         input,
       ) as PluginScopedApiResponse;
+      if (match.route.transport === "websocket") {
+        if (result.websocket) {
+          proxyPluginApiWebSocket(req, res, result.websocket, () => bridgeDeps.workerManager.isRunning(plugin.id));
+        } else {
+          res.status(result.status && result.status >= 400 && result.status <= 599 ? result.status : 502).json({ error: "Plugin connection unavailable" });
+        }
+        return;
+      }
       const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
         ? Number(result.status)
         : 200;
@@ -1969,6 +2054,7 @@ export function pluginRoutes(
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
     const purge = req.query.purge === "true";
 
@@ -2005,6 +2091,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/enable", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -2043,6 +2130,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/disable", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
     const body = req.body as { reason?: string } | undefined;
     const reason = body?.reason;
@@ -2164,7 +2252,16 @@ export function pluginRoutes(
     const level = req.query.level as string | undefined;
     const since = req.query.since as string | undefined;
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+    if (companyIds && companyIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
     const conditions = [eq(pluginLogs.pluginId, plugin.id)];
+    if (companyIds) {
+      conditions.push(inArray(pluginLogs.companyId, companyIds));
+    }
     if (level) {
       conditions.push(eq(pluginLogs.level, level));
     }
@@ -2205,6 +2302,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
     const body = req.body as { version?: string } | undefined;
     const version = body?.version;
@@ -2286,6 +2384,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -2314,9 +2413,8 @@ export function pluginRoutes(
     // Validate configJson against the plugin's instanceConfigSchema (if declared).
     // This ensures CLI/API callers get the same validation the UI performs client-side.
     const schema = plugin.manifestJson?.instanceConfigSchema;
-    const activeSchema = schema && Object.keys(schema).length > 0 ? schema : null;
-    if (activeSchema) {
-      const validation = validateInstanceConfig(body.configJson, activeSchema);
+    if (schema && Object.keys(schema).length > 0) {
+      const validation = validateInstanceConfig(body.configJson, schema);
       if (!validation.valid) {
         res.status(400).json({
           error: "Configuration does not match the plugin's instanceConfigSchema",
@@ -2326,23 +2424,8 @@ export function pluginRoutes(
       }
     }
 
-    // Upgrade legacy bare-UUID secret refs to the canonical object form so the
-    // legacy shape is retired on write. Only persist the upgrade when the
-    // plugin's own schema still accepts it — a manifest that declares the field
-    // as a plain string would otherwise reject its own stored config on the
-    // next save. Bindings are extracted from either shape regardless.
-    const submittedConfig = body.configJson;
-    const normalizedConfig = (() => {
-      const normalized = normalizeLegacySecretRefsInConfig(submittedConfig, schema);
-      if (normalized.normalizedPaths.length === 0) return submittedConfig;
-      if (activeSchema && !validateInstanceConfig(normalized.config, activeSchema).valid) {
-        return submittedConfig;
-      }
-      return normalized.config;
-    })();
-
     try {
-      const secretRefs = extractSecretRefBindingsFromConfig(normalizedConfig, schema);
+      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
       await validatePluginSecretRefsForCompany(companyId, secretRefs);
       await secretService(db).syncSecretRefsForTarget(
         companyId,
@@ -2353,14 +2436,14 @@ export function pluginRoutes(
 
       const result = await registry.upsertConfig(plugin.id, companyId, {
         companyId,
-        configJson: normalizedConfig,
+        configJson: body.configJson,
       });
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         companyId,
         secretRefCount: secretRefs.length,
-        configKeyCount: Object.keys(normalizedConfig).length,
+        configKeyCount: Object.keys(body.configJson).length,
       });
 
       // Notify the running worker about the config change (PLUGIN_SPEC §25.4.4).
@@ -2368,11 +2451,25 @@ export function pluginRoutes(
       // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
       // up the new config on re-initialize. If no worker is running, skip.
       if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+        // Refresh the worker's authorized proactive company scopes so the
+        // just-configured company can be acted on from proactive loops (e.g.
+        // the chat gateway's notifier drain) without requiring a restart
+        // (LOOA-629). The set is exactly the plugin's configured companies.
+        try {
+          const configRows = await registry.listConfigs(plugin.id);
+          bridgeDeps.workerManager.setProactiveCompanyScopes(
+            plugin.id,
+            configRows.map((row) => row.companyId),
+          );
+        } catch {
+          // Non-fatal: the set is rebuilt from the DB on the next worker start.
+        }
+
         try {
           await bridgeDeps.workerManager.call(
             plugin.id,
             "configChanged",
-            { config: normalizedConfig, companyId },
+            { config: body.configJson, companyId },
           );
         } catch (rpcErr) {
           if (
@@ -2420,6 +2517,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config/test", async (req, res) => {
     assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -2592,7 +2690,11 @@ export function pluginRoutes(
     }
 
     try {
-      const runs = await jobDeps.jobStore.listRunsByJob(jobId, limit);
+      const runs = await jobDeps.jobStore.listRunsByJob(
+        jobId,
+        limit,
+        pluginOperationalReadCompanyIds(req),
+      );
       res.json(runs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2896,6 +2998,7 @@ export function pluginRoutes(
 
   router.put("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey", async (req, res) => {
     assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
     const { pluginId, companyId, folderKey } = req.params;
     assertCompanyAccess(req, companyId);
 
@@ -2975,6 +3078,8 @@ export function pluginRoutes(
       return;
     }
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+
     // --- Worker diagnostics ---
     let worker: {
       status: string;
@@ -3022,7 +3127,7 @@ export function pluginRoutes(
 
     if (jobDeps) {
       try {
-        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10);
+        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10, companyIds);
         // Also fetch job definitions so we can include jobKey
         const jobs = await jobDeps.jobStore.listJobs(plugin.id);
         const jobKeyMap = new Map(jobs.map((j) => [j.id, j.jobKey]));
@@ -3059,6 +3164,10 @@ export function pluginRoutes(
     }> = [];
 
     try {
+      const deliveryConditions = [eq(pluginWebhookDeliveries.pluginId, plugin.id)];
+      if (companyIds) {
+        deliveryConditions.push(inArray(pluginWebhookDeliveries.companyId, companyIds));
+      }
       const deliveries = await db
         .select({
           id: pluginWebhookDeliveries.id,
@@ -3071,7 +3180,7 @@ export function pluginRoutes(
           createdAt: pluginWebhookDeliveries.createdAt,
         })
         .from(pluginWebhookDeliveries)
-        .where(eq(pluginWebhookDeliveries.pluginId, plugin.id))
+        .where(and(...deliveryConditions))
         .orderBy(desc(pluginWebhookDeliveries.createdAt))
         .limit(10);
 

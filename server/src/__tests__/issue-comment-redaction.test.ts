@@ -2,16 +2,30 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import {
+  assets,
   companies,
+  closeRegisteredClients,
   companyMemberships,
   createDb,
+  issueAttachments,
   issueComments,
   issueReferenceMentions,
   issues,
 } from "@paperclipai/db";
-import { companySearchQuerySchema } from "@paperclipai/shared";
+import {
+  companySearchQuerySchema,
+  LOW_TRUST_REVIEW_PRESET,
+} from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -24,8 +38,13 @@ import { issueReferenceService } from "../services/issue-references.js";
 import { issueService } from "../services/issues.js";
 import type { StorageService } from "../storage/types.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const embeddedPostgresSupport = externalTestDatabaseUrl
+  ? { supported: true }
+  : await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+  ? describe
+  : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -35,23 +54,36 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("deleted issue comment redaction", () => {
   let db!: ReturnType<typeof createDb>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let tempDb: Awaited<
+    ReturnType<typeof startEmbeddedPostgresTestDatabase>
+  > | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-comment-redaction-");
-    db = createDb(tempDb.connectionString);
+    if (externalTestDatabaseUrl) {
+      db = createDb(externalTestDatabaseUrl);
+    } else {
+      tempDb = await startEmbeddedPostgresTestDatabase(
+        "paperclip-comment-redaction-",
+      );
+      db = createDb(tempDb.connectionString);
+    }
     await db.execute(sql.raw("CREATE EXTENSION IF NOT EXISTS pg_trgm"));
   }, 20_000);
 
   afterEach(async () => {
     await db.delete(issueReferenceMentions);
+    await db.delete(issueAttachments);
     await db.delete(issueComments);
+    await db.delete(assets);
     await db.delete(issues);
     await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
   afterAll(async () => {
+    if (externalTestDatabaseUrl) {
+      await closeRegisteredClients(externalTestDatabaseUrl);
+    }
     await tempDb?.cleanup();
   });
 
@@ -63,7 +95,6 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       name: "Comment Redaction Co",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
-      boardOnlyOnParents: false,
     });
     await db.insert(issues).values({
       id: issueId,
@@ -126,14 +157,19 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       issueId,
       authorUserId: "board-user-1",
       body: "secret deleted body",
-      presentation: { kind: "system_notice", tone: "warning" },
-      metadata: { version: 1, sections: [{ rows: [{ type: "text", text: "secret metadata" }] }] },
+      presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
+      metadata: {
+        version: 1,
+        sections: [{ rows: [{ type: "text", text: "secret metadata" }] }],
+      },
       deletedAt,
       deletedByType: "user",
       deletedByUserId: "board-user-1",
     });
 
-    const comments = await issueService(db).listComments(issueId, { order: "asc" });
+    const comments = await issueService(db).listComments(issueId, {
+      order: "asc",
+    });
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({
       id: commentId,
@@ -152,15 +188,21 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     const heartbeatContext = await request(createApp(companyId))
       .get(`/api/issues/${issueId}/heartbeat-context`)
       .query({ wakeCommentId: commentId });
-    expect(heartbeatContext.status, JSON.stringify(heartbeatContext.body)).toBe(200);
+    expect(heartbeatContext.status, JSON.stringify(heartbeatContext.body)).toBe(
+      200,
+    );
     expect(heartbeatContext.body.wakeComment).toMatchObject({
       id: commentId,
       body: "",
       metadata: null,
       deletedByUserId: "board-user-1",
     });
-    expect(JSON.stringify(heartbeatContext.body)).not.toContain("secret deleted body");
-    expect(JSON.stringify(heartbeatContext.body)).not.toContain("secret metadata");
+    expect(JSON.stringify(heartbeatContext.body)).not.toContain(
+      "secret deleted body",
+    );
+    expect(JSON.stringify(heartbeatContext.body)).not.toContain(
+      "secret metadata",
+    );
 
     const wakePayload = await buildPaperclipWakePayload({
       db,
@@ -188,65 +230,254 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(JSON.stringify(wakePayload)).not.toContain("secret metadata");
   });
 
-  it("forces a thread re-fetch and exposes the interaction id for a resolved-interaction wake with no comment anchor (COM-319)", async () => {
+  it("never includes a same-company comment from another issue in a wake payload", async () => {
     const { companyId, issueId } = await seedIssue();
-    const interactionId = randomUUID();
+    const foreignIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: foreignIssueId,
+      companyId,
+      identifier: "RED-2",
+      title: "Foreign issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const [sourceComment, foreignComment] = await db
+      .insert(issueComments)
+      .values([
+        {
+          companyId,
+          issueId,
+          authorUserId: "board-user-1",
+          body: "Full external instruction. TRAILING-CLAUSE: keep this exact requirement.",
+        },
+        {
+          companyId,
+          issueId: foreignIssueId,
+          authorUserId: "board-user-1",
+          body: "FOREIGN-ISSUE-SECRET must never cross the task boundary",
+        },
+      ])
+      .returning();
 
     const wakePayload = await buildPaperclipWakePayload({
       db,
       companyId,
       contextSnapshot: {
         issueId,
-        interactionId,
-        interactionKind: "ask_user_questions",
-        interactionStatus: "answered",
+        wakeCommentId: sourceComment!.id,
+        wakeCommentIds: [sourceComment!.id, foreignComment!.id],
         wakeReason: "issue_commented",
       },
     });
 
-    // Without a comment anchor the run would otherwise be told "fallback fetch needed: no" and
-    // drift to answering a stale old comment. It must instead re-read the thread and know which
-    // interaction was resolved.
-    expect(wakePayload?.comments).toEqual([]);
-    expect(wakePayload?.interactionId).toBe(interactionId);
-    expect(wakePayload?.fallbackFetchNeeded).toBe(true);
-  });
-
-  it("hydrates the newest comments inline and anchors latestCommentId for a resolved-interaction wake with no comment anchor (COM-319)", async () => {
-    const { companyId, issueId } = await seedIssue();
-    // Three comments oldest -> newest. A re-read alone would leave the run to self-select from the
-    // full thread (and drift to the oldest). The wake must instead surface the newest as the anchor.
-    const oldId = randomUUID();
-    const midId = randomUUID();
-    const newId = randomUUID();
-    await db.insert(issueComments).values([
-      { id: oldId, companyId, issueId, authorUserId: "board-user-1", body: "oldest stale comment", createdAt: new Date("2026-08-01T00:00:00.000Z") },
-      { id: midId, companyId, issueId, authorUserId: "board-user-1", body: "middle comment", createdAt: new Date("2026-08-05T00:00:00.000Z") },
-      { id: newId, companyId, issueId, authorUserId: "board-user-1", body: "the current board answer", createdAt: new Date("2026-08-11T00:00:00.000Z") },
+    expect(wakePayload?.comments).toEqual([
+      expect.objectContaining({
+        id: sourceComment!.id,
+        issueId,
+        body: "Full external instruction. TRAILING-CLAUSE: keep this exact requirement.",
+        bodyTruncated: false,
+      }),
     ]);
+    expect(wakePayload?.commentWindow).toEqual({
+      requestedCount: 2,
+      includedCount: 1,
+      missingCount: 1,
+    });
+    expect(JSON.stringify(wakePayload)).not.toContain("FOREIGN-ISSUE-SECRET");
+  });
+
+  it("includes bounded attachment descriptors only for requested comments in the same company and issue", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const otherIssueId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const otherCompanyIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Attachment Co",
+      issuePrefix: "OAT",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: otherIssueId,
+        companyId,
+        identifier: "RED-ATT-2",
+        title: "Other attachment issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: otherCompanyIssueId,
+        companyId: otherCompanyId,
+        identifier: "OAT-1",
+        title: "Other company attachment issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    const [
+      sourceComment,
+      unrequestedComment,
+      quarantinedComment,
+      otherIssueComment,
+      otherCompanyComment,
+    ] = await db
+      .insert(issueComments)
+      .values([
+        {
+          companyId,
+          issueId,
+          authorUserId: "board-user-1",
+          body: "Inspect the attached evidence.",
+        },
+        {
+          companyId,
+          issueId,
+          authorUserId: "board-user-1",
+          body: "Same task, not part of this wake.",
+        },
+        {
+          companyId,
+          issueId,
+          body: "Quarantined file instructions.",
+          sourceTrust: {
+            preset: LOW_TRUST_REVIEW_PRESET,
+            disposition: "quarantined",
+            sourceIssueId: issueId,
+          },
+        },
+        {
+          companyId,
+          issueId: otherIssueId,
+          authorUserId: "board-user-1",
+          body: "Other task.",
+        },
+        {
+          companyId: otherCompanyId,
+          issueId: otherCompanyIssueId,
+          authorUserId: "other-user",
+          body: "Other company.",
+        },
+      ])
+      .returning();
+    const attachmentFixtures = [
+      {
+        companyId,
+        issueId,
+        issueCommentId: sourceComment!.id,
+        filename: "evidence.png",
+      },
+      {
+        companyId,
+        issueId,
+        issueCommentId: unrequestedComment!.id,
+        filename: "same-task-unrequested.txt",
+      },
+      {
+        companyId,
+        issueId,
+        issueCommentId: quarantinedComment!.id,
+        filename: "quarantined.txt",
+      },
+      {
+        companyId,
+        issueId: otherIssueId,
+        issueCommentId: otherIssueComment!.id,
+        filename: "other-task.txt",
+      },
+      {
+        companyId: otherCompanyId,
+        issueId: otherCompanyIssueId,
+        issueCommentId: otherCompanyComment!.id,
+        filename: "other-company.txt",
+      },
+    ];
+    for (const [index, fixture] of attachmentFixtures.entries()) {
+      const [asset] = await db
+        .insert(assets)
+        .values({
+          companyId: fixture.companyId,
+          provider: "local_disk",
+          objectKey: `wake-attachment-${index}`,
+          contentType: index === 0 ? "image/png" : "text/plain",
+          byteSize: index === 0 ? 2048 : 128,
+          sha256: `sha-${index}`,
+          originalFilename: fixture.filename,
+          createdByUserId: "board-user-1",
+        })
+        .returning();
+      await db.insert(issueAttachments).values({
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        issueCommentId: fixture.issueCommentId,
+        assetId: asset!.id,
+      });
+    }
 
     const wakePayload = await buildPaperclipWakePayload({
       db,
       companyId,
       contextSnapshot: {
         issueId,
-        interactionId: randomUUID(),
-        interactionKind: "ask_user_questions",
-        interactionStatus: "answered",
+        wakeCommentIds: [
+          sourceComment!.id,
+          sourceComment!.id,
+          quarantinedComment!.id,
+          otherIssueComment!.id,
+          otherCompanyComment!.id,
+        ],
         wakeReason: "issue_commented",
       },
     });
 
-    // Newest comment is the explicit anchor, not merely re-fetched.
-    expect(wakePayload?.latestCommentId).toBe(newId);
-    expect(wakePayload?.fallbackFetchNeeded).toBe(true);
-    const ids = (wakePayload?.comments ?? []).map((c: any) => c.id);
-    expect(ids).toContain(newId);
-    // Rendered oldest -> newest so the window reads chronologically and ends on the current input.
-    expect(ids[ids.length - 1]).toBe(newId);
+    expect(wakePayload?.comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: sourceComment!.id,
+          attachments: [
+            expect.objectContaining({
+              filename: "evidence.png",
+              contentType: "image/png",
+              byteSize: 2048,
+            }),
+          ],
+        }),
+        expect.objectContaining({ id: quarantinedComment!.id }),
+      ]),
+    );
+    expect(
+      wakePayload?.comments.find(
+        (comment) => comment.id === quarantinedComment!.id,
+      ),
+    ).not.toHaveProperty("attachments");
+    expect(JSON.stringify(wakePayload)).not.toContain(
+      "same-task-unrequested.txt",
+    );
+    expect(JSON.stringify(wakePayload)).not.toContain("other-task.txt");
+    expect(JSON.stringify(wakePayload)).not.toContain("other-company.txt");
+    expect(JSON.stringify(wakePayload)).not.toContain("quarantined.txt");
+
+    const lowTrustWakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        wakeCommentIds: [quarantinedComment!.id],
+        wakeReason: "issue_commented",
+      },
+      exposeLowTrustRaw: true,
+    });
+    expect(lowTrustWakePayload?.comments).toEqual([
+      expect.objectContaining({
+        id: quarantinedComment!.id,
+        attachments: [
+          expect.objectContaining({ filename: "quarantined.txt" }),
+        ],
+      }),
+    ]);
   });
 
-  it("does not force a re-fetch for a resolved-interaction wake that already carries a comment anchor", async () => {
+  it("serializes comment timestamps as ISO strings through the redacted comments route (PAP-16607)", async () => {
     const { companyId, issueId } = await seedIssue();
     const commentId = randomUUID();
     await db.insert(issueComments).values({
@@ -254,43 +485,21 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       companyId,
       issueId,
       authorUserId: "board-user-1",
-      body: "current board answer",
+      body: "ordinary comment",
     });
 
-    const wakePayload = await buildPaperclipWakePayload({
-      db,
-      companyId,
-      contextSnapshot: {
-        issueId,
-        interactionId: randomUUID(),
-        interactionKind: "ask_user_questions",
-        interactionStatus: "answered",
-        wakeReason: "issue_commented",
-        commentId,
-        wakeCommentIds: [commentId],
-      },
-    });
-
-    expect(wakePayload?.comments).toHaveLength(1);
-    expect(wakePayload?.fallbackFetchNeeded).toBe(false);
-  });
-
-  it("does not force a re-fetch for an unresolved interaction wake with no comment anchor", async () => {
-    const { companyId, issueId } = await seedIssue();
-
-    const wakePayload = await buildPaperclipWakePayload({
-      db,
-      companyId,
-      contextSnapshot: {
-        issueId,
-        interactionId: randomUUID(),
-        interactionKind: "ask_user_questions",
-        interactionStatus: "pending",
-        wakeReason: "issue_commented",
-      },
-    });
-
-    expect(wakePayload?.fallbackFetchNeeded).toBe(false);
+    const response = await request(createApp(companyId)).get(
+      `/api/issues/${issueId}/comments`,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toHaveLength(1);
+    // Secret redaction must not collapse Date instances to `{}` — the chat
+    // renderer needs parseable timestamps.
+    expect(typeof response.body[0].createdAt).toBe("string");
+    expect(Number.isNaN(new Date(response.body[0].createdAt).getTime())).toBe(
+      false,
+    );
+    expect(typeof response.body[0].updatedAt).toBe("string");
   });
 
   it("excludes deleted comment bodies from company search", async () => {
@@ -306,7 +515,10 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
 
     const result = await companySearchService(db).search(
       companyId,
-      companySearchQuerySchema.parse({ q: "vanished-search-needle", scope: "comments" }),
+      companySearchQuerySchema.parse({
+        q: "vanished-search-needle",
+        scope: "comments",
+      }),
     );
 
     expect(result.results).toEqual([]);
@@ -322,7 +534,6 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       name: "Reference Redaction Co",
       issuePrefix: "REF",
       requireBoardApprovalForNewAgents: false,
-      boardOnlyOnParents: false,
     });
     await db.insert(issues).values([
       {
@@ -351,9 +562,11 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
 
     const refs = issueReferenceService(db);
     await refs.syncComment(commentId);
-    expect((await refs.listIssueReferenceSummary(sourceIssueId)).outbound.map((item) => item.issue.id)).toEqual([
-      targetIssueId,
-    ]);
+    expect(
+      (await refs.listIssueReferenceSummary(sourceIssueId)).outbound.map(
+        (item) => item.issue.id,
+      ),
+    ).toEqual([targetIssueId]);
 
     await db.update(issueComments).set({
       deletedAt: new Date("2026-06-03T12:00:00.000Z"),
@@ -362,6 +575,8 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     });
     await refs.syncComment(commentId);
 
-    expect((await refs.listIssueReferenceSummary(sourceIssueId)).outbound).toEqual([]);
+    expect(
+      (await refs.listIssueReferenceSummary(sourceIssueId)).outbound,
+    ).toEqual([]);
   });
 });

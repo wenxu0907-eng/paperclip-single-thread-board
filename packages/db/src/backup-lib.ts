@@ -6,27 +6,18 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
-import { DEFAULT_BACKUP_RETENTION, type BackupRetentionPolicy } from "@paperclipai/shared";
+import { randomUUID } from "node:crypto";
 
-export type { BackupRetentionPolicy };
-
-/**
- * Retention as supplied by a caller. Every field is optional and filled from
- * `DEFAULT_BACKUP_RETENTION`, so policies persisted before a tier was added
- * keep working.
- *
- * Fields are plain numbers rather than the preset unions of
- * `BackupRetentionPolicy`: the presets constrain what the settings UI offers,
- * but the CLI reads arbitrary values out of `paperclip.config.json`. Any
- * positive number is a valid policy here; non-positive or missing values fall
- * back to the default for that tier.
- */
-export type BackupRetentionPolicyInput = Partial<Record<keyof BackupRetentionPolicy, number>>;
+export type BackupRetentionPolicy = {
+  dailyDays: number;
+  weeklyWeeks: number;
+  monthlyMonths: number;
+};
 
 export type RunDatabaseBackupOptions = {
   connectionString: string;
   backupDir: string;
-  retention: BackupRetentionPolicyInput;
+  retention: BackupRetentionPolicy;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   /**
@@ -38,18 +29,14 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /** Optional durability gate. A rejected archive must not prune history. */
+  verifyBeforePrune?: (backupFile: string) => Promise<void>;
 };
 
 export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
-  /** Backups deleted by this run's retention sweep, with the reason for each. */
-  prunedFiles: DeletedBackupFile[];
-  /** Backup files remaining in the directory after pruning. */
-  retainedCount: number;
-  /** Total size of the remaining backup files, in bytes. */
-  retainedBytes: number;
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -59,6 +46,7 @@ export type RunDatabaseRestoreOptions = {
 };
 
 type SequenceDefinition = {
+  is_identity: boolean;
   sequence_schema: string;
   sequence_name: string;
   data_type: string;
@@ -120,212 +108,85 @@ function isoWeekKey(date: Date): string {
 }
 
 function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-function dayKey(date: Date): string {
-  return `${monthKey(date)}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-/** Why a backup file was retained. */
-export type BackupKeepReason = "latest" | "hourly" | "daily" | "weekly" | "monthly";
-
-/** Why a backup file was deleted. */
-export type BackupDeleteReason =
-  | "superseded_within_day"
-  | "superseded_within_week"
-  | "superseded_within_month"
-  | "beyond_retention_window"
-  | "max_total_count_exceeded"
-  | "max_total_size_exceeded";
-
-export type BackupFileEntry = {
-  name: string;
-  fullPath: string;
-  mtimeMs: number;
-  sizeBytes: number;
-};
-
-export type KeptBackupFile = BackupFileEntry & { reason: BackupKeepReason };
-export type DeletedBackupFile = BackupFileEntry & { reason: BackupDeleteReason };
-
-export type BackupPrunePlan = {
-  keep: KeptBackupFile[];
-  delete: DeletedBackupFile[];
-  keptCount: number;
-  keptBytes: number;
-};
-
-const BYTES_PER_GIB = 1024 * 1024 * 1024;
-
-function positive(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
+  const months = Math.max(1, monthlyMonths);
+  const now = new Date(nowMs);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1);
 }
 
 /**
- * Fill in any retention fields the caller omitted. Settings persisted before
- * the hourly/cap tiers existed only carry the daily/weekly/monthly fields, so
- * normalizing here keeps old callers and old stored policies working.
+ * Tiered backup pruning:
+ * - Daily tier: keep ALL backups from the last `dailyDays` days
+ * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
+ * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
+ * - Everything else is deleted
  */
-export function normalizeBackupRetention(
-  retention: BackupRetentionPolicyInput | undefined,
-): BackupRetentionPolicy {
-  const d = DEFAULT_BACKUP_RETENTION;
-  return {
-    hourlyHours: positive(retention?.hourlyHours, d.hourlyHours),
-    dailyDays: positive(retention?.dailyDays, d.dailyDays),
-    weeklyWeeks: positive(retention?.weeklyWeeks, d.weeklyWeeks),
-    monthlyMonths: positive(retention?.monthlyMonths, d.monthlyMonths),
-    maxTotalCount: positive(retention?.maxTotalCount, d.maxTotalCount),
-    maxTotalGb: positive(retention?.maxTotalGb, d.maxTotalGb),
-  } as BackupRetentionPolicy;
-}
+function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+  if (!existsSync(backupDir)) return 0;
 
-/**
- * Decide which backups to keep and which to delete. Pure (no filesystem
- * access) so the policy can be unit-tested directly.
- *
- * Backups thin out as they age:
- * - Hourly tier: keep EVERY backup taken within `hourlyHours`
- * - Daily tier: keep the NEWEST backup per calendar day back to `dailyDays`
- * - Weekly tier: keep the NEWEST backup per calendar week back to `weeklyWeeks`
- * - Monthly tier: keep the NEWEST backup per calendar month back to `monthlyMonths`
- * - Anything older is deleted
- *
- * Then `maxTotalCount` / `maxTotalGb` are applied as hard backstops, dropping
- * the oldest survivors first. This is what bounds the directory even when
- * backups run far more often than the tiers assume.
- *
- * The single newest backup is always retained, regardless of every cap.
- */
-export function planBackupPruning(
-  entries: BackupFileEntry[],
-  retentionInput: BackupRetentionPolicyInput,
-  nowMs: number,
-): BackupPrunePlan {
-  const retention = normalizeBackupRetention(retentionInput);
+  const now = Date.now();
+  const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
+  const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
+  const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
 
-  const hourlyCutoff = nowMs - retention.hourlyHours * 60 * 60 * 1000;
-  const dailyCutoff = nowMs - retention.dailyDays * 24 * 60 * 60 * 1000;
-  const weeklyCutoff = nowMs - retention.weeklyWeeks * 7 * 24 * 60 * 60 * 1000;
-  const monthlyCutoff = nowMs - retention.monthlyMonths * 30 * 24 * 60 * 60 * 1000;
+  type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
+  const entries: BackupEntry[] = [];
 
-  // Newest first, so the first entry in each day/week/month bucket is the keeper.
-  const sorted = [...entries].sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  const keep: KeptBackupFile[] = [];
-  const toDelete: DeletedBackupFile[] = [];
-  const seenDays = new Set<string>();
-  const seenWeeks = new Set<string>();
-  const seenMonths = new Set<string>();
-
-  const retain = (entry: BackupFileEntry, reason: BackupKeepReason) => {
-    const date = new Date(entry.mtimeMs);
-    // A retained backup represents its day, week and month for the coarser
-    // tiers below, so those tiers don't keep a redundant second copy.
-    seenDays.add(dayKey(date));
-    seenWeeks.add(isoWeekKey(date));
-    seenMonths.add(monthKey(date));
-    keep.push({ ...entry, reason });
-  };
-
-  sorted.forEach((entry, index) => {
-    // The newest backup is never a deletion candidate.
-    if (index === 0) {
-      retain(entry, "latest");
-      return;
-    }
-
-    if (entry.mtimeMs >= hourlyCutoff) {
-      retain(entry, "hourly");
-      return;
-    }
-
-    const date = new Date(entry.mtimeMs);
-
-    if (entry.mtimeMs >= dailyCutoff) {
-      if (seenDays.has(dayKey(date))) toDelete.push({ ...entry, reason: "superseded_within_day" });
-      else retain(entry, "daily");
-      return;
-    }
-
-    if (entry.mtimeMs >= weeklyCutoff) {
-      if (seenWeeks.has(isoWeekKey(date))) toDelete.push({ ...entry, reason: "superseded_within_week" });
-      else retain(entry, "weekly");
-      return;
-    }
-
-    if (entry.mtimeMs >= monthlyCutoff) {
-      if (seenMonths.has(monthKey(date))) toDelete.push({ ...entry, reason: "superseded_within_month" });
-      else retain(entry, "monthly");
-      return;
-    }
-
-    toDelete.push({ ...entry, reason: "beyond_retention_window" });
-  });
-
-  // Hard backstops. `keep` is newest-first, so pop() drops the oldest survivor.
-  // The `length > 1` guard keeps the newest backup even if it alone exceeds a cap.
-  const maxBytes = retention.maxTotalGb * BYTES_PER_GIB;
-  let keptBytes = keep.reduce((total, entry) => total + entry.sizeBytes, 0);
-
-  while (keep.length > 1 && keep.length > retention.maxTotalCount) {
-    const victim = keep.pop()!;
-    keptBytes -= victim.sizeBytes;
-    toDelete.push({ ...victim, reason: "max_total_count_exceeded" });
-  }
-
-  while (keep.length > 1 && keptBytes > maxBytes) {
-    const victim = keep.pop()!;
-    keptBytes -= victim.sizeBytes;
-    toDelete.push({ ...victim, reason: "max_total_size_exceeded" });
-  }
-
-  return { keep, delete: toDelete, keptCount: keep.length, keptBytes };
-}
-
-/** Read the backup files this policy manages out of `backupDir`. */
-export function readBackupEntries(backupDir: string, filenamePrefix: string): BackupFileEntry[] {
-  if (!existsSync(backupDir)) return [];
-
-  const entries: BackupFileEntry[] = [];
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
-    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs, sizeBytes: stat.size });
+    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
   }
-  return entries;
-}
 
-/**
- * Apply the retention policy to `backupDir`, deleting the backups the plan
- * rejects. Returns the files actually removed so the caller can log exactly
- * what was deleted and why.
- */
-function pruneOldBackups(
-  backupDir: string,
-  retention: BackupRetentionPolicyInput,
-  filenamePrefix: string,
-  nowMs: number = Date.now(),
-): { deleted: DeletedBackupFile[]; retainedCount: number; retainedBytes: number } {
-  if (!existsSync(backupDir)) return { deleted: [], retainedCount: 0, retainedBytes: 0 };
+  // Sort newest first so the first entry per week/month bucket is the one we keep
+  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-  const plan = planBackupPruning(readBackupEntries(backupDir, filenamePrefix), retention, nowMs);
+  const keepWeekBuckets = new Set<string>();
+  const keepMonthBuckets = new Set<string>();
+  const toDelete: string[] = [];
 
-  const deleted: DeletedBackupFile[] = [];
-  for (const entry of plan.delete) {
-    try {
-      unlinkSync(entry.fullPath);
-      deleted.push(entry);
-    } catch {
-      // A backup that vanished underneath us (or that we cannot remove) must
-      // not fail the backup that just succeeded.
+  for (const entry of entries) {
+    // Daily tier — keep everything within dailyDays
+    if (entry.mtimeMs >= dailyCutoff) continue;
+
+    const date = new Date(entry.mtimeMs);
+    const week = isoWeekKey(date);
+    const month = monthKey(date);
+
+    // Weekly tier — keep newest per calendar week
+    if (entry.mtimeMs >= weeklyCutoff) {
+      if (keepWeekBuckets.has(week)) {
+        toDelete.push(entry.fullPath);
+      } else {
+        keepWeekBuckets.add(week);
+      }
+      continue;
     }
+
+    // Monthly tier — keep newest per calendar month
+    if (entry.mtimeMs >= monthlyCutoff) {
+      if (keepMonthBuckets.has(month)) {
+        toDelete.push(entry.fullPath);
+      } else {
+        keepMonthBuckets.add(month);
+      }
+      continue;
+    }
+
+    // Beyond all retention tiers — delete
+    toDelete.push(entry.fullPath);
   }
 
-  return { deleted, retainedCount: plan.keptCount, retainedBytes: plan.keptBytes };
+  for (const filePath of toDelete) {
+    unlinkSync(filePath);
+  }
+
+  return toDelete.length;
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -426,6 +287,9 @@ function formatSqlValue(
   if (val === null || val === undefined) return "NULL";
   if (dataType === "json" || dataType === "jsonb") {
     return formatSqlLiteral(JSON.stringify(val));
+  }
+  if (dataType === "bytea" && val instanceof Uint8Array) {
+    return `decode('${Buffer.from(val).toString("hex")}', 'hex')`;
   }
   if (typeof val === "boolean") return val ? "true" : "false";
   if (typeof val === "number") return String(val);
@@ -672,6 +536,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
+  let effectiveBackupEngine = backupEngine;
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
@@ -683,13 +548,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+  // Initial and final sleep checks can run within the same second. A failed
+  // second checkpoint must never overwrite the first verified recovery point.
+  const checkpointSuffix = opts.verifyBeforePrune ? `-${randomUUID()}` : "";
+  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql`);
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
+      let dumped = false;
       try {
         await closeSql();
         await runPgDumpBackup({
@@ -697,17 +566,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
-        const pruned = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
-        return {
-          backupFile,
-          sizeBytes,
-          prunedCount: pruned.deleted.length,
-          prunedFiles: pruned.deleted,
-          retainedCount: pruned.retainedCount,
-          retainedBytes: pruned.retainedBytes,
-        };
+        dumped = true;
       } catch (error) {
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
@@ -715,8 +574,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (backupEngine === "pg_dump") {
           throw error;
         }
+        effectiveBackupEngine = "javascript";
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
+      }
+      if (dumped) {
+        // Only an engine failure can select the JavaScript fallback. Once
+        // pg_dump succeeds, archive verification or persistence failures
+        // must retain their original error and must not reuse a closed writer.
+        await writer.abort();
+        const sizeBytes = statSync(backupFile).size;
+        await opts.verifyBeforePrune?.(backupFile);
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        return { backupFile, sizeBytes, prunedCount };
       }
     }
 
@@ -737,6 +607,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("BEGIN;");
     emitStatement("SET LOCAL session_replication_role = replica;");
     emitStatement("SET LOCAL client_min_messages = warning;");
+    emitStatement("SET LOCAL check_function_bodies = false;");
     emit("");
 
     const allTables = await sql<TableDefinition[]>`
@@ -764,6 +635,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     const allSequences = await sql<SequenceDefinition[]>`
       SELECT
+        false AS is_identity,
         s.sequence_schema,
         s.sequence_name,
         s.data_type,
@@ -785,7 +657,26 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       WHERE ${sql.unsafe(nonSystemSchemaPredicate("s.sequence_schema"))}
       ORDER BY s.sequence_schema, s.sequence_name
     `;
-    const sequences = allSequences.filter(
+    const identitySequences = await sql<SequenceDefinition[]>`
+      SELECT true AS is_identity, n.nspname AS sequence_schema, seq.relname AS sequence_name,
+             format_type(options.seqtypid, NULL) AS data_type,
+             options.seqstart::text AS start_value, options.seqmin::text AS minimum_value,
+             options.seqmax::text AS maximum_value, options.seqincrement::text AS increment,
+             CASE WHEN options.seqcycle THEN 'YES' ELSE 'NO' END AS cycle_option,
+             owner_namespace.nspname AS owner_schema, owner.relname AS owner_table,
+             attribute.attname AS owner_column
+      FROM pg_sequence options
+      JOIN pg_class seq ON seq.oid = options.seqrelid
+      JOIN pg_namespace n ON n.oid = seq.relnamespace
+      JOIN pg_depend dependency ON dependency.objid = seq.oid AND dependency.deptype = 'i'
+        AND dependency.classid = 'pg_class'::regclass AND dependency.refclassid = 'pg_class'::regclass
+      JOIN pg_class owner ON owner.oid = dependency.refobjid
+      JOIN pg_namespace owner_namespace ON owner_namespace.oid = owner.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid = owner.oid AND attribute.attnum = dependency.refobjsubid
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, seq.relname
+    `;
+    const sequences = [...allSequences, ...identitySequences].filter(
       (seq) => !seq.owner_table || includedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table)),
     );
 
@@ -827,7 +718,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     if (sequences.length > 0) {
       emit("-- Sequences");
-      for (const seq of sequences) {
+      for (const seq of sequences.filter(seq => !seq.is_identity)) {
         const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
         emitStatement(`DROP SEQUENCE IF EXISTS ${qualifiedSequenceName} CASCADE;`);
         emitStatement(
@@ -847,11 +738,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         udt_name: string;
         is_nullable: string;
         column_default: string | null;
+        is_identity: string;
+        identity_generation: "ALWAYS" | "BY DEFAULT" | null;
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
       }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
+        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default, is_identity, identity_generation,
                character_maximum_length, numeric_precision, numeric_scale
         FROM information_schema.columns
         WHERE table_schema = ${schema_name} AND table_name = ${tablename}
@@ -885,7 +778,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         }
 
         let def = `  "${col.column_name}" ${typeStr}`;
-        if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
+        if (col.is_identity === "YES") {
+          const sequence = sequences.find(seq => seq.is_identity && seq.owner_schema === schema_name
+            && seq.owner_table === tablename && seq.owner_column === col.column_name);
+          if (!sequence || !col.identity_generation) throw new Error(`Missing identity sequence for ${schema_name}.${tablename}.${col.column_name}`);
+          def += ` GENERATED ${col.identity_generation} AS IDENTITY (SEQUENCE NAME ${quoteQualifiedName(sequence.sequence_schema, sequence.sequence_name)} START WITH ${sequence.start_value} INCREMENT BY ${sequence.increment} MINVALUE ${sequence.minimum_value} MAXVALUE ${sequence.maximum_value} ${sequence.cycle_option === "YES" ? "CYCLE" : "NO CYCLE"})`;
+        } else if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
         if (col.is_nullable === "NO") def += " NOT NULL";
         colDefs.push(def);
       }
@@ -913,7 +811,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    const ownedSequences = sequences.filter((seq) => seq.owner_table && seq.owner_column);
+    const ownedSequences = sequences.filter((seq) => !seq.is_identity && seq.owner_table && seq.owner_column);
     if (ownedSequences.length > 0) {
       emit("-- Sequence ownership");
       for (const seq of ownedSequences) {
@@ -955,7 +853,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    // Foreign keys (after all tables and referenced unique constraints are created)
+    // Collect foreign keys now. Emit them after routines and standalone indexes
+    // because PostgreSQL permits a non-constraint unique index to be the target
+    // of a foreign key.
     const allForeignKeys = await sql<{
       constraint_name: string;
       source_schema: string;
@@ -995,14 +895,29 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         && includedTableNames.has(tableKey(fk.target_schema, fk.target_table)),
     );
 
-    if (fks.length > 0) {
-      emit("-- Foreign keys");
-      for (const fk of fks) {
-        const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
-        const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
-        emitStatement(
-          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
-        );
+    // JavaScript backups are used when a worktree seed filters or transforms
+    // table data. Preserve user-defined routines before indexes because an
+    // expression index may depend on a user-defined function.
+    const routines = await sql<{ definition: string }[]>`
+      SELECT pg_get_functiondef(p.oid) AS definition
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        AND p.prokind IN ('f', 'p')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_depend d
+          WHERE d.classid = 'pg_proc'::regclass
+            AND d.objid = p.oid
+            AND d.deptype = 'e'
+        )
+      ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
+    `;
+    if (routines.length > 0) {
+      emit("-- Functions and procedures");
+      for (const routine of routines) {
+        const definition = routine.definition.trimEnd();
+        emitStatement(definition.endsWith(";") ? definition : `${definition};`);
       }
       emit("");
     }
@@ -1029,16 +944,29 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    if (fks.length > 0) {
+      emit("-- Foreign keys");
+      for (const fk of fks) {
+        const srcCols = fk.source_columns.map((c) => `"${c}"`).join(", ");
+        const tgtCols = fk.target_columns.map((c) => `"${c}"`).join(", ");
+        emitStatement(
+          `ALTER TABLE ${quoteQualifiedName(fk.source_schema, fk.source_table)} ADD CONSTRAINT "${fk.constraint_name}" FOREIGN KEY (${srcCols}) REFERENCES ${quoteQualifiedName(fk.target_schema, fk.target_table)} (${tgtCols}) ON UPDATE ${fk.update_rule} ON DELETE ${fk.delete_rule};`,
+        );
+      }
+      emit("");
+    }
+
     // Dump data for each table
     for (const { schema_name, tablename } of tables) {
       const currentTableKey = tableKey(schema_name, tablename);
       const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
+      const overrideIdentity = identitySequences.some(seq => seq.owner_schema === schema_name && seq.owner_table === tablename);
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
       if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? 0) === 0) continue;
 
       // Get column info for this table
-      const cols = await sql<{ column_name: string; data_type: string }[]>`
-        SELECT column_name, data_type
+      const cols = await sql<{ column_name: string; data_type: string; udt_schema: string; udt_name: string }[]>`
+        SELECT column_name, data_type, udt_schema, udt_name
         FROM information_schema.columns
         WHERE table_schema = ${schema_name} AND table_name = ${tablename}
         ORDER BY ordinal_position
@@ -1048,7 +976,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
-      if (backupEngine !== "javascript" && nullifiedColumns.size === 0) {
+      if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
         const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
@@ -1068,8 +996,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         continue;
       }
 
+      const binaryArray = (column: (typeof cols)[number]) => column.data_type === "ARRAY"
+        && column.udt_schema === "pg_catalog" && column.udt_name === "_bytea";
+      const projection = cols.some(binaryArray) ? cols.map(column => binaryArray(column)
+        ? `${quoteIdentifier(column.column_name)}::text AS ${quoteIdentifier(column.column_name)}`
+        : quoteIdentifier(column.column_name)).join(", ") : "*";
       const rowCursor = sql
-        .unsafe(`SELECT * FROM ${qualifiedTableName}`)
+        .unsafe(`SELECT ${projection} FROM ${qualifiedTableName}`)
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
       for await (const rows of rowCursor) {
@@ -1077,9 +1010,36 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
           );
-          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames})${overrideIdentity ? " OVERRIDING SYSTEM VALUE" : ""} VALUES (${values.join(", ")});`);
         }
         await writer.drain();
+      }
+      emit("");
+    }
+
+    const allTriggers = await sql<{
+      schema_name: string;
+      tablename: string;
+      definition: string;
+    }[]>`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS tablename,
+        pg_get_triggerdef(t.oid, true) AS definition
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE NOT t.tgisinternal
+        AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, c.relname, t.tgname
+    `;
+    const triggers = allTriggers.filter((entry) => (
+      includedTableNames.has(tableKey(entry.schema_name, entry.tablename))
+    ));
+    if (triggers.length > 0) {
+      emit("-- Triggers");
+      for (const trigger of triggers) {
+        emitStatement(`${trigger.definition};`);
       }
       emit("");
     }
@@ -1114,15 +1074,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
-    const pruned = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    await opts.verifyBeforePrune?.(backupFile);
+    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,
       sizeBytes,
-      prunedCount: pruned.deleted.length,
-      prunedFiles: pruned.deleted,
-      retainedCount: pruned.retainedCount,
-      retainedBytes: pruned.retainedBytes,
+      prunedCount,
     };
   } catch (error) {
     await writer.abort();

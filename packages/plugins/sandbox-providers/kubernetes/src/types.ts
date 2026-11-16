@@ -28,7 +28,7 @@ export const kubernetesProviderConfigSchema = z
       .optional(),
 
     runtimeClassName: z.string().optional(),
-    serviceAccountAnnotations: z.record(z.string()).default({}),
+    serviceAccountAnnotations: z.record(z.string(), z.string()).default({}),
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
@@ -90,6 +90,11 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  scopedNetworkPolicyName: string | null;
+  scopedNetworkEgress: {
+    allowFqdns: string[];
+    allowCidrs: string[];
+  };
   /**
    * True when this lease's backend has NO data channel for the native file-sync
    * transport. Native sync streams over a pod exec, which only the `sandbox-cr`

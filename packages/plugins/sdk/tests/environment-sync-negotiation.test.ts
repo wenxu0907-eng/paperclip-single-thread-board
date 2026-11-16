@@ -109,11 +109,13 @@ describe("environment sync verb negotiation", () => {
 
   it("routes environmentSyncIn/environmentSyncOut to the hooks when defined", async () => {
     const seen: string[] = [];
+    const minimums: Array<number | undefined> = [];
     const worker = startTestWorker(
       definePlugin({
         async setup() {},
         async onEnvironmentSyncIn(params): Promise<PluginEnvironmentSyncResult> {
           seen.push("in");
+          minimums.push(params.minimumTimeoutMs);
           return {
             operations: params.operations.map((op) => ({
               operationId: op.operationId,
@@ -124,6 +126,7 @@ describe("environment sync verb negotiation", () => {
         },
         async onEnvironmentSyncOut(params): Promise<PluginEnvironmentSyncResult> {
           seen.push("out");
+          minimums.push(params.minimumTimeoutMs);
           return {
             operations: params.operations.map((op) => ({
               operationId: op.operationId,
@@ -141,6 +144,7 @@ describe("environment sync verb negotiation", () => {
         companyId: "company",
         environmentId: "env",
         config: {},
+        minimumTimeoutMs: 900_000,
         lease: { providerLeaseId: "lease-1" },
       };
       const inParams: PluginEnvironmentSyncInParams = {
@@ -161,6 +165,67 @@ describe("environment sync verb negotiation", () => {
       const outResult = await worker.callWorker<PluginEnvironmentSyncResult>("environmentSyncOut", outParams);
       expect(outResult.operations[0]).toMatchObject({ operationId: "op-b", filesTransferred: 1 });
       expect(seen).toEqual(["in", "out"]);
+      expect(minimums).toEqual([900_000, 900_000]);
+    } finally {
+      worker.stop();
+    }
+  });
+
+  it("test_sync_in_forwards_post_upload_commands_to_plugin_hook", async () => {
+    // Phase 1 (PAP-3222): the optional ordered `postUploadCommands` must survive
+    // the host→worker JSON-RPC hop to `onEnvironmentSyncIn` UNCHANGED — same
+    // order, same fields — and an operation that omits the field must arrive with
+    // it `undefined` (byte-identical to a pre-contract operation).
+    const received: PluginEnvironmentSyncInParams["operations"][] = [];
+    const worker = startTestWorker(
+      definePlugin({
+        async setup() {},
+        async onEnvironmentSyncIn(params): Promise<PluginEnvironmentSyncResult> {
+          received.push(params.operations);
+          return {
+            operations: params.operations.map((op) => ({
+              operationId: op.operationId,
+              filesTransferred: op.files.length,
+              bytesTransferred: 0,
+            })),
+          };
+        },
+      }),
+    );
+    try {
+      await worker.callWorker("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      const inParams: PluginEnvironmentSyncInParams = {
+        driverKey: "sandbox",
+        companyId: "company",
+        environmentId: "env",
+        config: {},
+        lease: { providerLeaseId: "lease-1" },
+        operations: [
+          {
+            operationId: "op-with-commands",
+            files: [{ sourcePath: "/host/a", targetPath: "/remote/a", kind: "directory" }],
+            postUploadCommands: [
+              { command: "tar -xf /remote/a.tar -C /remote/a" },
+              { command: "merge-auth /remote/a", cwd: "/remote/a", timeoutMs: 30_000 },
+            ],
+          },
+          {
+            operationId: "op-without-commands",
+            files: [{ sourcePath: "/host/b", targetPath: "/remote/b", kind: "directory" }],
+          },
+        ],
+      };
+      await worker.callWorker<PluginEnvironmentSyncResult>("environmentSyncIn", inParams);
+
+      expect(received).toHaveLength(1);
+      const [withCommands, withoutCommands] = received[0];
+      // Present: forwarded unchanged, order preserved, no rewriting.
+      expect(withCommands.postUploadCommands).toEqual([
+        { command: "tar -xf /remote/a.tar -C /remote/a" },
+        { command: "merge-auth /remote/a", cwd: "/remote/a", timeoutMs: 30_000 },
+      ]);
+      // Absent: arrives undefined (backward compatible).
+      expect(withoutCommands.postUploadCommands).toBeUndefined();
     } finally {
       worker.stop();
     }
@@ -187,5 +252,31 @@ describe("environment sync verb negotiation", () => {
     } finally {
       worker.stop();
     }
+  });
+});
+
+
+describe("environment stop-and-retain negotiation", () => {
+  it.each([false, true])("dispatches only an explicitly advertised stop hook: %s", async supported => {
+    let releases = 0;
+    const worker = startTestWorker(definePlugin({
+      async setup() {},
+      async onEnvironmentReleaseLease() { releases += 1; },
+      ...(supported ? { async onEnvironmentStopLease(params: { providerLeaseId: string | null }) {
+        return { providerLeaseId: params.providerLeaseId!, state: "stopped" as const };
+      } } : {}),
+    }));
+    try {
+      const result = await worker.callWorker<{ supportedMethods: string[] }>("initialize", {
+        manifest: MANIFEST, config: {}, databaseNamespace: null,
+      });
+      expect(result.supportedMethods.includes("environmentStopLease")).toBe(supported);
+      const call = worker.callWorker("environmentStopLease", {
+        driverKey: "daytona", companyId: "company", environmentId: "env", config: {}, providerLeaseId: "lease-1",
+      });
+      if (supported) await expect(call).resolves.toEqual({ providerLeaseId: "lease-1", state: "stopped" });
+      else await expect(call).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+      expect(releases).toBe(0);
+    } finally { worker.stop(); }
   });
 });
