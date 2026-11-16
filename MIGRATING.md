@@ -180,7 +180,12 @@ migrated** — the one migration this re-base needs is added as a file, not appl
   create-path route suites, and backup-lib (including the new `planBackupPruning` unit
   tests) — **531+ tests**, 0 failures. Upstream's own interaction and create-path tests
   pass unmodified against the new hooks.
-- **The full CI suite has not been run yet.** That is the remaining gate on this branch.
+- Memories-tab render coverage: 7 tests in `ui/src/pages/agent-detail/AgentMemoriesTab.test.tsx`
+  (harness-vs-para empty-state wording, the project-memory-only case, read-only project
+  selections, and the yaml parse-error path). The fork had none — the tab was inline.
+- **The full CI suite has now been run.** See "CI: what the full suite says" below for the
+  measured baseline and the per-suite attribution; CI green at the branch tip is the one
+  remaining gate.
 
 ### Resolving the merge back into `master` (PR #113)
 
