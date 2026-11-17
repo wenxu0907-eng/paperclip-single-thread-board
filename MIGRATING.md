@@ -307,22 +307,61 @@ checks)`) is believed **not** ours — it is an upstream file and this branch ch
 nothing in `packages/paperclip-runner` — but that is now being measured rather than
 asserted, via PR #114 above.
 
-One red remains genuinely open: `ci / e2e shard (2/8)`. It is plausibly ours, because
-the COM-294 port added a best-effort goal-block fold **inside** the accept transaction
-in `issue-thread-interactions.ts`, and its `try/catch` cannot deliver on "best-effort"
-— a failed statement poisons a Postgres transaction no matter what JavaScript catches,
-which would take the whole acceptance down and enqueue no continuation. That matches the
-symptom. If the baseline shows the red is ours, the fix is a `SAVEPOINT` (Drizzle's
-nested `tx.transaction()`, already used elsewhere in this repo) so the fold keeps its
-atomicity on success but cannot poison the acceptance on failure. Moving it after the
-commit boundary would also work but would reintroduce exactly the gap the port closes:
-a lost fold means a stale standing decision overrides a fresh board approval on resume.
+#### `ci / e2e shard (2/8)` — measured, and the first hypothesis was wrong
+
+The red is `tests/e2e/ai-personal-connection-recovery.spec.ts:55`: after *Use connection
+and continue*, the agent's reply never arrives.
+
+An earlier revision of this section guessed the cause: the COM-294 port adds a
+best-effort goal-block fold **inside** the accept transaction, and a `try/catch` cannot
+deliver on "best-effort" in Postgres, so a failed fold would take the acceptance down
+with it. The job log falsifies that for this red on two counts. First, the adopt call
+returned `200` and the continuation run *was* created — so nothing took the acceptance
+down. Second, `connection_intent` resolution does not go through `accept()` at all: the
+route calls `intents.complete()` → `resolveConnectionIntent`, which never reaches the
+fold. What actually happened:
+
+```
+20:10:44 WARN  swept stale issue lock columns {"cleared":1,"issueIds":["15b1ba20…"]}
+20:10:46 INFO  POST …/connection-intents/…/adopt 200
+20:10:46 INFO  claimQueuedRun: withheld queued run at the execution gate
+                {"runId":"d7c25848…","outcome":"cancelled","errorCode":"issue_not_in_progress"}
+```
+
+The recovery sweeper (`server/src/services/recovery/service.ts`) fired in the two-second
+window between the spec's deliberately-failed first run and the adopt, clearing the chat
+issue's lock columns; the resumed run then lost the `in_progress` precondition at
+`claimQueuedRun`'s execution gate (`server/src/services/heartbeat/queue.ts:1379`). Both
+files are untouched by this branch — `git diff --name-only upstream/master...HEAD --
+server/src/services/heartbeat server/src/services/recovery` is empty — and the delta
+contains no issue-status, lock, or gate write anywhere outside test files.
+
+Timing corroborates: same spec, same shard position on both PRs; control #114 passed it
+in 18.0s with the sweeper message appearing **zero** times in its shard-2 log, while
+#113 failed at 23.9s with the sweeper firing **once**, in exactly the wrong window. The
+spec also passes at the port tip locally — 3/3 under `--repeat-each 3`, throwaway
+instance on port 3199. Verdict: an upstream-owned timing race the slow runner exposed,
+not a port defect.
+
+(Shard *membership* also differs between the two PRs — #114's shard 2 additionally ran
+`completed-task-paused-assignee.spec.ts`. That is expected: the e2e lane selects by
+changed-file profile and the two PRs have very different change sets. `tests/` is
+byte-identical between `upstream/master` and this branch, so no spec was dropped.)
+
+The transaction-poisoning concern was wrong about *this* red but right about the code:
+as written, a failing fold statement would still poison whichever accept/decline
+transaction does reach it. That is now fixed at the source — the fold runs inside a
+`SAVEPOINT` (Drizzle's nested `transaction()`), so it keeps its atomicity on success and
+on failure rolls back only itself. Moving it past the commit boundary would also work
+but would reintroduce exactly the gap the port closes: a lost fold means a stale
+standing decision overrides a fresh board approval on resume.
 
 ### Not yet landed (explicitly deferred, not dropped)
 
-| Row | Feature | Why it is still open |
-| --- | --- | --- |
-| 26 (UI) | The Memories tab | Server side is landed and tested; the tab needs re-mounting on upstream's rewritten `AgentDetail` page. |
+Nothing. Row 26's UI half — the Memories tab — landed on upstream's rewritten
+`AgentDetail` IA (`c71b4e4551`) with its own test file (`8711dbc44b`), so all eight
+Phase-1 `port` rows plus the two post-triage carry-forwards (#95, #112) are on the
+branch.
 
 Rows **336** and **426** remain Phase-4 smoke-list items, per §2 — not Phase-2 work.
 

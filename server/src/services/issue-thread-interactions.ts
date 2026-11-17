@@ -631,7 +631,8 @@ function readConfirmationPrompt(interaction: { kind: string; payload: unknown })
   return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : null;
 }
 
-type IssueGoalFoldDb = Pick<Db, "select" | "update">;
+type IssueGoalFoldDb = Pick<Db, "select" | "update"> &
+  Partial<Pick<Db, "transaction">>;
 
 /**
  * COM-294 recurrence fix: fold a board confirmation outcome into the issue's
@@ -639,6 +640,13 @@ type IssueGoalFoldDb = Pick<Db, "select" | "update">;
  * heartbeat (and can't be overridden by a stale standing preference the agent reads
  * from the block). Best-effort + change-gated: skips silently when there is no
  * objective to anchor a block on, and never throws into the resolution transaction.
+ *
+ * "Best-effort" has to be enforced at the database level, not just in JavaScript: a
+ * failed statement poisons the surrounding Postgres transaction regardless of what
+ * the `catch` below swallows, which would take the whole accept/decline down with it
+ * and enqueue no continuation. So the fold runs inside a SAVEPOINT (Drizzle's nested
+ * `transaction()`) — it keeps its atomicity on success, and on failure only the
+ * savepoint rolls back. The caller's transaction stays usable.
  */
 async function foldConfirmationOutcomeIntoGoalBlock(
   db: IssueGoalFoldDb,
@@ -650,16 +658,16 @@ async function foldConfirmationOutcomeIntoGoalBlock(
     now: Date;
   },
 ): Promise<void> {
-  try {
-    const line = renderBoardDecisionLine({
-      outcome: args.outcome,
-      summary: args.summary,
-      reason: args.reason ?? null,
-      date: args.now,
-    });
-    if (!line) return;
+  const line = renderBoardDecisionLine({
+    outcome: args.outcome,
+    summary: args.summary,
+    reason: args.reason ?? null,
+    date: args.now,
+  });
+  if (!line) return;
 
-    const current = await db
+  const fold = async (scope: IssueGoalFoldDb) => {
+    const current = await scope
       .select({ description: issues.description })
       .from(issues)
       .where(eq(issues.id, args.issueId))
@@ -667,7 +675,15 @@ async function foldConfirmationOutcomeIntoGoalBlock(
 
     const next = foldBoardDecisionIntoDescription(current, line);
     if (next === (current ?? "")) return; // no-op (idempotent) — nothing to write
-    await db.update(issues).set({ description: next }).where(eq(issues.id, args.issueId));
+    await scope.update(issues).set({ description: next }).where(eq(issues.id, args.issueId));
+  };
+
+  try {
+    if (typeof db.transaction === "function") {
+      await db.transaction((savepoint) => fold(savepoint as unknown as IssueGoalFoldDb));
+    } else {
+      await fold(db);
+    }
   } catch (error) {
     console.error("[paperclip] Failed to fold confirmation outcome into goal block", error);
   }
