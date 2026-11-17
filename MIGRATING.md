@@ -12,7 +12,7 @@ touched, no live checkout modified.
 | Upstream target | `upstream/master` @ **`c5218f5ec4`** (2026-11-15, PR #21852) |
 | Gap | **4,909 commits** |
 | Fork-local source footprint | 107 non-test source files, +9,089 / −696 lines |
-| Migration collision | ours ends at `0184_board_only_on_parents.sql`; **upstream's own 0184 is `0184_routable_blocked.sql`** and upstream has **486** migrations |
+| Migration collision | **two** collisions, both resolved in Phase 3 (§6.1): ours ended at `0184_board_only_on_parents.sql` + `0185_plugin_secret_ref_object_form.sql`, while **upstream's own 0184/0185 are `0184_routable_blocked.sql` / `0185_status_cards.sql`**. Renumbered to `0488` / `0489` on an upstream chain ending at `0487`. |
 
 ### Correction to the plan, before the table
 
@@ -115,11 +115,13 @@ Read this part if you have your own checkout or your own running instance.
 - `master` stays exactly where it is, tagged **`legacy/pre-upstream-rebase-2026-11`**, with a permanent
   **`master-legacy`** branch. The new line ships on a *new* branch; only the repo's **default branch**
   flips. Your `git pull` will not fail — you simply stop receiving updates until you choose to move.
-- **The database upgrade is one-way.** This fork's schema ends at migration `0184`; upstream is at `486`,
-  and *upstream's own `0184` is a different migration*. Moving to the new line applies the whole
-  `0184 → 0487+` chain and there is no downgrade path. **Back up your database first, or start a fresh
-  one.** We can only rehearse this upgrade against *our* database — if your data matters to you, restore
-  a copy and rehearse it yourself before upgrading in place.
+- **The database upgrade is one-way.** This fork's schema ends at migration `0185`; upstream ends at
+  `0487`, and *upstream's own `0184` and `0185` are different migrations than ours* — both of our
+  fork-local slots collide, and both were renumbered to the end of upstream's chain (`0488`, `0489`).
+  Moving to the new line applies **305 migrations** and there is no downgrade path. **Back up your
+  database first, or start a fresh one.** We can only rehearse this upgrade against *our* database — if
+  your data matters to you, restore a copy and rehearse it yourself before upgrading in place. §6 records
+  our rehearsal and gives you the exact commands to repeat it on yours.
 - **If you have your own commits or branches** on top of this fork's `master`, they are rooted in the old
   history and have no useful merge-base with the new line. They will need re-authoring on the new base —
   the same thing we have to do with our own open PRs.
@@ -373,3 +375,146 @@ rows as `drop`, moving the check to the Phase-4 hand-verification gate — per r
 rule that no verdict may depend on an answer we decided not to obtain. The one row he
 would have been asked about that is already a `port` — the Memories tab — was never at
 risk.
+
+---
+
+## 6. Phase 3 — the migration renumber, and the upgrade rehearsed on a restored copy
+
+Phase 3 of COM-521 (COM-526). This is the irreversible step, so it was rehearsed only against a
+**restored copy** of the pinned Phase 0 snapshot. The live database was never migrated.
+
+### 6.1 Both fork-local slots collided, and both were renumbered
+
+The plan anticipated one collision on `0184`. There were **two** — the Phase 0 runbook flagged the
+second one, and both are now resolved:
+
+| Fork-local migration | Old slot | Collided with upstream's | New slot |
+|---|---|---|---|
+| `board_only_on_parents` | `0184` | `0184_routable_blocked` | **`0488`** |
+| `plugin_secret_ref_object_form` | `0185` | `0185_status_cards` | **`0489`** |
+
+Journal rebuilt and verified: 488 entries, no duplicate tags, no file-vs-journal mismatch in either
+direction, and all **182** migrations shared with the legacy line are **byte-identical** to it.
+`pnpm --filter @paperclipai/db check:migrations` (numbering + safety + compatibility) passes.
+
+The journal's duplicate `idx 178` and missing `idx 126, 130, 177` are **inherited from
+`upstream/master` unchanged** — they are not artefacts of our renumber, and were deliberately left
+alone rather than "tidied", so the chain stays diffable against upstream.
+
+### 6.2 The applied-migration ledger needed no surgery — but only because of how this fork migrates
+
+Worth writing down, because the obvious reading is wrong and dangerous.
+
+Under **stock drizzle**, the applied set is derived from `MAX(created_at)` in
+`drizzle.__drizzle_migrations`. Our pre-upgrade ledger's max `created_at` is `1787270400000`, which is
+*newer* than the journal `when` of upstream migrations `0184`–`0226`. On that reading, **43 upstream
+migrations would have been silently skipped** — a corrupt schema that reports success.
+
+This fork does not use the stock migrator. `packages/db/src/client.ts` resolves the applied set by
+**SHA-256 of each migration's SQL** (`listAppliedMigrations` → `mapHashesToMigrationFiles`), and only
+falls back to `created_at` if *no* hash resolves at all. The apply loop then re-checks each file by
+hash and skips it if already recorded. Because all 182 shared migrations are byte-identical, hash
+resolution is complete and the `created_at` path never executes.
+
+The rehearsal confirms this rather than assuming it: the migrator reported exactly **305 pending**,
+which is the hash-based count. The `created_at` path would have reported 263.
+
+Two ledger rows (`id=112`, `id=185`) hash to no migration SQL in any ref — residue of files edited
+after being applied. Under hash-keyed resolution they are simply ignored, which is why the ledger
+reconciles with no manual intervention. Both runs confirm it.
+
+> **If you are on a clone and your migration files differ from ours byte-for-byte** — local patches,
+> hand-edited SQL, a partially-applied chain — hash resolution degrades and the `created_at` fallback
+> can engage, which is where the silent-skip hazard lives. Verify after upgrading that
+> `select count(*) from drizzle.__drizzle_migrations` is **490**, and re-run the migrator: it must say
+> `No pending migrations`.
+
+### 6.3 Rehearsal result — clean, twice, from a fresh restore each time
+
+Both runs restored `com521-prerebase-paperclip-20261116-092022.sql.gz` (sha256 `d37c12a9…`, verified
+each time) into a scratch database, applied the 39 CHECK constraints the backup tool omits, then
+migrated. **Run 2's assertions are identical to run 1's in every field.**
+
+- **305 migrations applied, 0 errors, ~39 s.** Ledger **185 → 490**.
+- **Re-running the migrator reports `No pending migrations`** — the upgrade is stable, not
+  re-entrant-dirty.
+
+| Assertion | Before | After |
+|---|---|---|
+| Base tables (`public`) | 158 | 330 |
+| Indexes (`public`) | 723 | 1374 |
+| Foreign keys | 520 | 992 |
+| CHECK constraints | 41 | 171 |
+| Primary keys / unique / not-null | 221 / 52 / 1358 | 391 / 71 / 2880 |
+| Migrations applied | 185 | 490 |
+| Extensions | `fuzzystrmatch, pg_trgm, plpgsql` | unchanged |
+| **Total rows across all tables** | **13,406,834** | **13,407,289** |
+| Companies / agents / issues | 9 / 65 / 3082 | 9 / 65 / 3082 |
+| `companies.board_only_on_parents` | present | **present** |
+
+**No table lost a single row.** The two tables dropped by the chain
+(`cloud_upstream_connections`, `cloud_upstream_runs`) were **both empty**. The `+455` row delta is
+fully accounted for: backfills into three existing tables (`issue_attachments` +113,
+`principal_permission_grants` +40, `activity_log` +31) and four newly-seeded tables
+(`resource_lifecycle_events` 254, `company_skill_source_entries` 8, `user_company_preferences` 7,
+`company_skill_sources` 2).
+
+That `board_only_on_parents` survives is the assertion that matters for the renumber: it proves
+moving our migration to `0488` carried the fork-local schema change forward instead of losing it.
+
+### 6.4 The upgraded schema vs a greenfield install
+
+The upgraded copy was compared object-by-object (columns + types + nullability, indexes, constraints)
+against a **fresh empty database migrated through the same chain** (488 migrations from zero):
+
+- **Zero objects missing from the upgraded database.** Every column, index and constraint a greenfield
+  install creates is present. The upgraded schema is a strict superset.
+- It carries **two extra tables** — `agent_fallback_chains` and `agent_fallback_chain_state` — which
+  are legacy fork tables upstream never had, so nothing in its chain drops them. **Both are empty
+  before and after**, and no migration or schema source on the new line references them. They are
+  inert residue of a dropped fork feature, not a schema conflict. Left in place: dropping tables is
+  not something to do as a side-effect of an upgrade rehearsal.
+
+### 6.5 Reproduce it on your own data
+
+This is the walkthrough §4 promised. Substitute your own dump. **Never point this at your live
+database** — restore to a scratch database and migrate that.
+
+```bash
+export PGPASSWORD=...                     # your DB password
+PSQL=/opt/homebrew/bin/psql               # your psql
+HOST=127.0.0.1; PORT=54329; USER=paperclip
+DB=upgrade_rehearsal                      # scratch target, NOT your live DB
+DUMP=/path/to/your-backup.sql.gz
+
+# 1. fresh scratch target
+$PSQL -h $HOST -p $PORT -U $USER -d postgres \
+  -c "DROP DATABASE IF EXISTS $DB;" -c "CREATE DATABASE $DB;"
+
+# 2. restore schema + data
+gunzip -c "$DUMP" | $PSQL -h $HOST -p $PORT -U $USER -d $DB -v ON_ERROR_STOP=1 -q
+
+# 3. if your dump came from `paperclipai db:backup`, re-add the CHECK constraints
+#    it omits (see Phase 0 runbook) — otherwise the copy accepts rows the real schema forbids.
+
+# 4. record BEFORE assertions — at minimum per-table row counts and the ledger
+$PSQL -h $HOST -p $PORT -U $USER -d $DB -At \
+  -c "select count(*) from drizzle.__drizzle_migrations"
+
+# 5. migrate the COPY
+cd /path/to/your/checkout            # on the new upstream-based line
+DATABASE_URL="postgres://$USER:$PGPASSWORD@$HOST:$PORT/$DB" \
+  pnpm --filter @paperclipai/db migrate
+
+# 6. AFTER: ledger must read 490, and a second run must say "No pending migrations"
+DATABASE_URL="postgres://$USER:$PGPASSWORD@$HOST:$PORT/$DB" \
+  pnpm --filter @paperclipai/db migrate
+```
+
+Compare row counts before and after. Expect growth only from the backfills listed in §6.3 and no
+table to lose rows. If any pre-existing table shrinks, stop and do not upgrade in place.
+
+**The upgrade remains one-way.** There is no downgrade migration. Rolling back means restoring your
+backup *and* moving your checkout back to `master-legacy` — the pair, not one or the other (see the
+Phase 0 runbook on rollback pairs). We can only rehearse against our own data; §4's residual risk
+stands, which is precisely why this walkthrough exists.
