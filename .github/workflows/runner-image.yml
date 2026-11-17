@@ -271,7 +271,7 @@ jobs:
 
       - name: Download the resolved lockfile
         if: github.event_name != 'push'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-image-lockfile
           path: ${{ runner.temp }}/runner-image-lockfile
@@ -497,14 +497,14 @@ jobs:
 
       - name: Download the verified amd64 images
         if: steps.early.outputs.exists != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-image-amd64
           path: ${{ runner.temp }}/runner-image/amd64
 
       - name: Download the verified arm64 images
         if: steps.early.outputs.exists != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-image-arm64
           path: ${{ runner.temp }}/runner-image/arm64
