@@ -189,7 +189,7 @@ jobs:
       # push builds from the committed file, which every job checks out.
       - name: Keep the resolved lockfile for the build legs
         if: steps.lock.outputs.state == 'current' && github.event_name != 'push'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-image-lockfile
           path: pnpm-lock.yaml
@@ -427,7 +427,7 @@ jobs:
 
       - name: Upload the verified images
         if: env.KEEP_IMAGE == 'true' && steps.published.outputs.exists != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-image-${{ matrix.arch }}
           path: |
