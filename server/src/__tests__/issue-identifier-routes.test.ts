@@ -81,7 +81,6 @@ describeEmbeddedPostgres("issue identifier routes", () => {
       name: "Cloud tenant",
       issuePrefix: "PC1A2",
       requireBoardApprovalForNewAgents: false,
-      boardOnlyOnParents: false,
     });
     await seedCloudTenantMember(companyId);
     await db.insert(issues).values({

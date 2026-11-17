@@ -1,21 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter } from "lucide-react";
-import type { Agent, AttentionItem } from "@paperclipai/shared";
-import { useNavigate } from "@/lib/router";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
+import { CoordinatorNeedsYou } from "../components/coordinator/CoordinatorNeedsYou";
+import { CheckCircle2, History, Inbox } from "lucide-react";
+import type { Agent, AttentionItem, AttentionPersonalView, AttentionSubject } from "@paperclipai/shared";
+import { useNavigate, useSearchParams } from "@/lib/router";
+import { accessApi } from "../api/access";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
-import { authApi } from "../api/auth";
+import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToastActions } from "../context/ToastContext";
-import { useInboxDismissals } from "../hooks/useInboxBadge";
+import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useClaimAttentionItem, useDismissAttentionReceipt } from "../hooks/useAttentionViews";
+import { ATTENTION_VIEW_PARAM, parseAttentionView } from "../lib/attention-views";
+import { buildCompanyUserLabelMap } from "../lib/company-members";
+import { AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "../components/AttentionViews";
+import { AttentionSnoozedGroup, AttentionStaleGroup } from "../components/AttentionCloseMenu";
+import { DecisionHistoryPanel } from "../components/DecisionHistoryPanel";
+import { Button } from "../components/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "../components/ui/sheet";
+import { splitArchivedAttentionItems } from "../lib/attention-close";
+import { attentionObligationEvidence, foldAttentionObligations } from "../lib/attention-obligations";
 import { queryKeys } from "../lib/queryKeys";
 import {
-  ATTENTION_GROUP_BY_OPTIONS,
-  ATTENTION_SORT_OPTIONS,
+  ATTENTION_AGING_DAYS,
+  attentionIsAging,
   buildAttentionFilterOptions,
-  countActiveAttentionFilters,
   defaultAttentionFilterState,
   filterAttentionItems,
   groupAttentionItems,
@@ -24,37 +34,30 @@ import {
   loadAttentionGroupBy,
   loadAttentionSortOrder,
   loadCollapsedAttentionGroupKeys,
-  NO_GROUP_SENTINEL,
+  buildDeskShelves,
   planAttentionRenderRows,
+  resolveAttentionDateRange,
   saveAttentionFilters,
   saveAttentionGroupBy,
   saveAttentionSortOrder,
   saveCollapsedAttentionGroupKeys,
   sortAttentionItems,
-  sourceMeta,
+  type AttentionDateRangeId,
   type AttentionFilterState,
+  type AttentionGroup,
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
-import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
-import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
+import { DecisionsToolbar } from "../components/DecisionsToolbar";
+import { Curtain, AgingItemRow } from "../components/DecisionShelf";
+import { DecisionQueueRail } from "../components/DecisionQueueRail";
+import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
+import { DecisionResolver } from "../components/DecisionResolver";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
-import { Button } from "../components/ui/button";
-import { Checkbox } from "../components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
-
-const SEVERITY_LABELS: Record<string, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
-
-/** Curtain rows never expand; module-level so memoized rows see one identity. */
-const noopToggleExpand = () => {};
 
 // Incremental rendering (PAP-13784, same pattern as IssuesList): the feed is
 // uncapped, so mounting every row up front makes the page slow to paint and
@@ -64,6 +67,17 @@ const noopToggleExpand = () => {};
 const INITIAL_ATTENTION_ROW_RENDER_LIMIT = 50;
 const ATTENTION_ROW_RENDER_BATCH_SIZE = 100;
 const ATTENTION_SCROLL_LOAD_THRESHOLD_PX = 480;
+const DECISION_HISTORY_VISIBLE_LIMIT = 50;
+const DECISION_HISTORY_QUERY_LIMIT = DECISION_HISTORY_VISIBLE_LIMIT + 1;
+
+export function decisionHistoryQueryEnabled(companyId: string | null | undefined, open: boolean) {
+  return Boolean(companyId && open);
+}
+
+export function decisionHistoryCount(count: number | undefined) {
+  if (count == null) return undefined;
+  return count > DECISION_HISTORY_VISIBLE_LIMIT ? `${DECISION_HISTORY_VISIBLE_LIMIT}+` : count;
+}
 
 function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
   if (!element || typeof window === "undefined") return null;
@@ -79,29 +93,82 @@ function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
 }
 
 export function WhatNeedsMe() {
+  const { enabled } = useCoordinatorWorkspaceEnabled();
+  return enabled ? <CoordinatorNeedsYou /> : <ClassicWhatNeedsMe />;
+}
+
+function ClassicWhatNeedsMe() {
   const { selectedCompanyId } = useCompany();
+  // The signed-in person; it keys every list so an account switch never shows
+  // the previous person's cards (PAP-749 plan §1).
+  const { userId: currentUserId } = useCoordinatorWorkspaceEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
+  // How the current selection was made. The selection ring is the keyboard
+  // cursor — it marks the row that j/k, e, x and s will act on — so it is drawn
+  // only for a keyboard-driven selection. Clicking used to set it too, which
+  // put a ring around the card for no reason the operator could act on, and
+  // only ever on rows with a See more/less toggle to click (the toggle is what
+  // set it), so the queue looked arbitrarily inconsistent. The selection itself
+  // still follows a click, so keyboard actions target the row you just used.
+  const [selectionFromKeyboard, setSelectionFromKeyboard] = useState(false);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
-  // Decision-training drawer target. `null` when closed.
-  const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Toolbar preferences (persisted to localStorage, Inbox pattern).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
   const [sortOrder, setSortOrder] = useState<AttentionSortOrder>(() => loadAttentionSortOrder());
   const [filters, setFilters] = useState<AttentionFilterState>(() => defaultAttentionFilterState);
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
-  const [snoozedOpen, setSnoozedOpen] = useState(false);
-  const [dismissedOpen, setDismissedOpen] = useState(false);
+  // The Archived view's Snoozed group starts open (PAP-749 plan §3).
+  const [snoozedOpen, setSnoozedOpen] = useState(true);
+  const [agingOpen, setAgingOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // The Stale (N) group starts collapsed (PAP-749 plan §3).
+  const [staleOpen, setStaleOpen] = useState(false);
+  const [decidedOpen, setDecidedOpen] = useState(false);
+  const [expiredOpen, setExpiredOpen] = useState(false);
 
-  // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
+  // Date-range chips (PAP-16032 §4.2) — resolve to server-side activity bounds.
+  const [dateRange, setDateRange] = useState<AttentionDateRangeId>("all");
+  const [customRange, setCustomRange] = useState<AttentionCustomRange>({ from: null, to: null });
+
+  // `?decisionId=` deep link (PAP-16032 §4.7) — focus/expand the referenced card.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkDecisionId = searchParams.get("decisionId");
+  const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
+  // For you is the default; the other views live in the URL (PAP-749 Rule 3).
+  // Everyone opens for a board member only (PAP-768).
+  const everyone = useAttentionEveryoneView(selectedCompanyId);
+  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM), { everyone });
+  const setView = useCallback((next: AttentionPersonalView) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (next === "mine") params.delete(ATTENTION_VIEW_PARAM);
+      else params.set(ATTENTION_VIEW_PARAM, next);
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+  // Archived: the cards you archived or snoozed for yourself (PAP-749 plan §3).
+  const archivedView = view === "archived";
+  const { viewCounts } = useAttentionBadge(selectedCompanyId);
+  const claim = useClaimAttentionItem(selectedCompanyId);
+  const claimingId = claim.isPending ? claim.variables?.id ?? null : null;
+  const handleClaim = useCallback((item: AttentionItem) => claim.mutate(item), [claim.mutate]);
+
+  // Optimistic hide. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
-  const [pendingRestore, setPendingRestore] = useState<Set<string>>(() => new Set());
 
-  const { dismiss, snooze, restore } = useInboxDismissals(selectedCompanyId);
-  const { pushToast } = useToastActions();
   const navigate = useNavigate();
+
+  // Date chips resolve to server-side activity bounds. Anchored to start-of-day,
+  // so the resolved ISO strings are stable across renders within the same day —
+  // safe to key the feed query on without thrashing.
+  const activityBounds = useMemo(
+    () => resolveAttentionDateRange(dateRange, Date.now(), customRange),
+    [dateRange, customRange],
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Decisions" }]);
@@ -113,19 +180,28 @@ export function WhatNeedsMe() {
     setCollapsedGroupKeys(loadCollapsedAttentionGroupKeys(selectedCompanyId));
   }, [selectedCompanyId]);
 
-  const {
-    data: feed,
-    isLoading,
-    error,
-  } = useQuery({
+  const feedQuery = useQuery({
     // Distinct from the sidebar badge's `queryKeys.attention` so dismissed rows
     // (needed for the curtains) never inflate the badge count. Invalidating the
     // `["attention", companyId]` prefix still cascades to this query.
-    queryKey: [...queryKeys.attention(selectedCompanyId!), "with-dismissed"],
-    queryFn: () => attentionApi.list(selectedCompanyId!, { includeDismissed: true }),
-    enabled: !!selectedCompanyId,
+    queryKey: [
+      ...queryKeys.attention(selectedCompanyId!),
+      currentUserId,
+      view,
+      "classic",
+      activityBounds.activitySince ?? null,
+      activityBounds.activityUntil ?? null,
+    ],
+    queryFn: () => attentionApi.list(selectedCompanyId!, {
+      all: true,
+      view,
+      ...activityBounds,
+    }),
+    enabled: !!selectedCompanyId && !!currentUserId,
     refetchOnWindowFocus: true,
   });
+  const { data: feed, isLoading } = feedQuery;
+  const feedView = useQueryView(feedQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -133,11 +209,40 @@ export function WhatNeedsMe() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
+  // Decision history — decided / expired decisions leave the open attention
+  // feed (entryRule = open only), so we fetch them directly for the curtains.
+  const { data: decidedDecisions, isLoading: decidedDecisionsLoading } = useQuery({
+    queryKey: queryKeys.decisions.list(selectedCompanyId!, "decided"),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "decided", limit: DECISION_HISTORY_QUERY_LIMIT }),
+    enabled: decisionHistoryQueryEnabled(selectedCompanyId, decidedOpen),
   });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const { data: expiredDecisions, isLoading: expiredDecisionsLoading } = useQuery({
+    queryKey: queryKeys.decisions.list(selectedCompanyId!, "expired"),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "expired", limit: DECISION_HISTORY_QUERY_LIMIT }),
+    enabled: decisionHistoryQueryEnabled(selectedCompanyId, expiredOpen),
+  });
+
+  const { data: userDirectory } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const userLabelMap = useMemo(() => buildCompanyUserLabelMap(userDirectory?.users), [userDirectory?.users]);
+
+  // Every Close… verb goes through the one close API (PAP-749 plan §2). The row
+  // hides at once; it comes back if the server refuses.
+  const unhide = useCallback((item: AttentionItem) => {
+    setPendingHide((prev) => {
+      const next = new Set(prev);
+      next.delete(item.id);
+      return next;
+    });
+  }, []);
+  const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onCloseFailed: unhide });
+  const receiptActions = useDismissAttentionReceipt(selectedCompanyId);
+  const closeCard = closeActions.close;
+  const transferCard = closeActions.transfer;
+  const closingId = closeActions.closingItemId ?? closeActions.transferringItemId;
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -148,45 +253,64 @@ export function WhatNeedsMe() {
   // Reset optimistic state once the server sends a fresh snapshot.
   useEffect(() => {
     setPendingHide(new Set());
-    setPendingRestore(new Set());
   }, [feed?.generatedAt]);
 
-  const allItems = useMemo(() => feed?.items ?? [], [feed]);
-
-  const isServerHidden = (item: AttentionItem) => item.dismissal != null && item.dismissal.isActive;
+  // One card for each obligation (PAP-749 Rule 11): evidence folds into its
+  // lead before any split, so a lead and its evidence always move together.
+  const obligations = useMemo(() => foldAttentionObligations(feed?.items ?? []), [feed]);
+  const allItems = obligations.cards;
 
   const activeItems = useMemo(
-    () =>
-      allItems.filter(
-        (item) => (!isServerHidden(item) || pendingRestore.has(item.id)) && !pendingHide.has(item.id),
-      ),
-    [allItems, pendingHide, pendingRestore],
-  );
-  const snoozedItems = useMemo(
-    () =>
-      allItems.filter(
-        (item) =>
-          item.dismissal?.kind === "snooze" && item.dismissal.isActive && !pendingRestore.has(item.id),
-      ),
-    [allItems, pendingRestore],
-  );
-  const dismissedItems = useMemo(
-    () =>
-      allItems.filter(
-        (item) =>
-          item.dismissal?.kind === "dismiss" && item.dismissal.isActive && !pendingRestore.has(item.id),
-      ),
-    [allItems, pendingRestore],
+    () => allItems.filter((item) => !pendingHide.has(item.id)),
+    [allItems, pendingHide],
   );
 
-  const filterOptions = useMemo(() => buildAttentionFilterOptions(activeItems), [activeItems]);
+  // The server's clock at feed time — used for the arrival/decide-by shelves and
+  // the aging idle labels so they match `deskBadgeCount` and the sidebar badge
+  // exactly, and stay stable across renders (Date.now() only as a pre-load fallback).
+  const now = useMemo(
+    () => (feed?.generatedAt ? new Date(feed.generatedAt).getTime() : Date.now()),
+    [feed?.generatedAt],
+  );
 
-  // Filter → sort → group, all client-side so switching re-buckets without a refetch.
-  const groups = useMemo(() => {
-    const filtered = filterAttentionItems(activeItems, filters);
+  // Stale cards (PAP-749 Rule 10) go to the collapsed Stale group at the bottom.
+  // Aging shelf (§4.4): other items the server flags as idle past retention
+  // leave the live desk for their own curtain, so the desk shows fresh decisions.
+  // The Archived view (plan §3) keeps stale cards in place with their chip and
+  // puts snoozed cards in their own group.
+  const { staleItems, agingItems, deskItems, snoozedItems } = useMemo(() => {
+    if (archivedView) {
+      const { archived, snoozed } = splitArchivedAttentionItems(activeItems);
+      return { staleItems: [], agingItems: [], deskItems: archived, snoozedItems: snoozed };
+    }
+    return {
+      staleItems: activeItems.filter((item) => item.stale),
+      agingItems: activeItems.filter((item) => !item.stale && attentionIsAging(item)),
+      deskItems: activeItems.filter((item) => !item.stale && !attentionIsAging(item)),
+      snoozedItems: [] as AttentionItem[],
+    };
+  }, [activeItems, archivedView]);
+
+  const filterOptions = useMemo(() => buildAttentionFilterOptions(deskItems), [deskItems]);
+
+  // Filter → sort → group, all client-side so switching re-buckets without a
+  // refetch. In the default (ungrouped) view the desk groups by arrival —
+  // "New today" then "Earlier" — with a "Decide now" shelf only when something
+  // carries an explicit, due decide-by. Any explicit
+  // group-by keeps the Inbox-style activity grouping.
+  const groups = useMemo<AttentionGroup[]>(() => {
+    const filtered = filterAttentionItems(deskItems, filters, searchQuery);
+    if (groupBy === "none") {
+      return buildDeskShelves(filtered, now);
+    }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [activeItems, filters, sortOrder, groupBy]);
+  }, [deskItems, filters, searchQuery, sortOrder, groupBy, now]);
+
+  const visibleStaleItems = useMemo(
+    () => sortAttentionItems(filterAttentionItems(staleItems, filters, searchQuery), sortOrder),
+    [staleItems, filters, searchQuery, sortOrder],
+  );
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -214,14 +338,12 @@ export function WhatNeedsMe() {
       collapsedGroupKeys,
       snoozedItems,
       snoozedOpen,
-      dismissedItems,
-      dismissedOpen,
+      dismissedItems: [],
+      dismissedOpen: false,
       limit: Math.max(renderedRowLimit, selectedIndex + 1),
     });
   }, [
     collapsedGroupKeys,
-    dismissedItems,
-    dismissedOpen,
     groups,
     keyboardItems,
     renderedRowLimit,
@@ -271,6 +393,7 @@ export function WhatNeedsMe() {
   useEffect(() => {
     if (selectedAttentionId && !keyboardItems.some((item) => item.id === selectedAttentionId)) {
       setSelectedAttentionId(null);
+      setSelectionFromKeyboard(false);
     }
   }, [keyboardItems, selectedAttentionId]);
 
@@ -279,14 +402,43 @@ export function WhatNeedsMe() {
     document.getElementById(`attention-row-${selectedAttentionId}`)?.scrollIntoView({ block: "nearest" });
   }, [selectedAttentionId]);
 
+  // `?decisionId=` deep link (§4.7): focus and expand the referenced decision
+  // card once the feed lands, then drop the param so a later manual collapse is
+  // not re-forced on the next refetch. Wins over the generic auto-expand below.
+  useEffect(() => {
+    if (deepLinkConsumed || !deepLinkDecisionId || isLoading) return;
+    const target = allItems.find(
+      (item) => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId,
+    );
+    if (!target) {
+      if (everyone && view !== "all") setView("all");
+      return;
+    }
+    setDeepLinkConsumed(true);
+    setAutoExpandDone(true);
+    if (target) {
+      setExpandedId(target.id);
+      setSelectedAttentionId(target.id);
+      setSelectionFromKeyboard(true);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("decisionId");
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams, isLoading, everyone, view, setView]);
+
   // Auto-expand the topmost inline-capable decision, once.
   useEffect(() => {
-    if (autoExpandDone || activeItems.length === 0) return;
-    const sorted = sortAttentionItems(activeItems, sortOrder);
+    if (autoExpandDone || deskItems.length === 0) return;
+    const sorted = sortAttentionItems(deskItems, sortOrder);
     const topInline = sorted.find((item) => isInlineResolvable(item));
     if (topInline) setExpandedId(topInline.id);
     setAutoExpandDone(true);
-  }, [activeItems, autoExpandDone, sortOrder]);
+  }, [deskItems, autoExpandDone, sortOrder]);
 
   const updateGroupBy = (next: AttentionGroupBy) => {
     setGroupBy(next);
@@ -311,60 +463,72 @@ export function WhatNeedsMe() {
   };
 
   // All row callbacks are stable (deps are setState functions, stable hook
-  // callbacks, and the stable `pushToast`) so the memoized rows only re-render
+  // callbacks, and the stable mutation `mutate`s) so the memoized rows only re-render
   // when their own item/expanded/selected props change (PAP-13784).
-  const handleUndoDismiss = useCallback(
-    (item: AttentionItem) => {
-      setPendingHide((prev) => {
-        const next = new Set(prev);
-        next.delete(item.id);
-        return next;
-      });
-      restore(item.dismissalKey);
-    },
-    [restore],
-  );
   const handleDismiss = useCallback(
     (item: AttentionItem) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      dismiss(item.dismissalKey);
+      // "Archive for me": personal, with an Undo toast from the close hook.
+      closeCard({ item, mode: "archive" });
       setExpandedId((previous) => (previous === item.id ? null : previous));
-      // ~8s undo window; restores the row in place via T1's DELETE endpoint.
-      pushToast({
-        id: `attention-dismiss-${item.id}`,
-        dedupeKey: `attention-dismiss-${item.dismissalKey}`,
-        title: "Dismissed",
-        body: item.subject.title ?? undefined,
-        tone: "info",
-        ttlMs: 8000,
-        action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
-      });
     },
-    [dismiss, handleUndoDismiss, pushToast],
+    [closeCard],
   );
   const handleSnooze = useCallback(
     (item: AttentionItem, snoozedUntil: string) => {
+      // In the Archived view a new snooze time keeps the card; it only moves
+      // to (or within) the Snoozed group after the refetch.
+      if (!archivedView) {
+        setPendingHide((prev) => new Set(prev).add(item.id));
+        setExpandedId((previous) => (previous === item.id ? null : previous));
+      }
+      closeCard({ item, mode: "snooze", until: snoozedUntil });
+    },
+    [archivedView, closeCard],
+  );
+  const handleWithdraw = useCallback(
+    (item: AttentionItem, reason: string) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      snooze(item.dismissalKey, snoozedUntil);
+      closeCard({ item, mode: "withdraw", reason });
       setExpandedId((previous) => (previous === item.id ? null : previous));
     },
-    [snooze],
+    [closeCard],
   );
+  const handleTransfer = useCallback(
+    (item: AttentionItem, userId: string) => transferCard({ item, userId }),
+    [transferCard],
+  );
+  const handleWithdrawAll = useCallback(
+    (items: AttentionItem[], reason: string) => {
+      setPendingHide((prev) => {
+        const next = new Set(prev);
+        for (const item of items) next.add(item.id);
+        return next;
+      });
+      return closeActions.withdrawAll(items, reason).then((result) => {
+        for (const item of result.failed) unhide(item);
+        return result;
+      });
+    },
+    [closeActions.withdrawAll, unhide],
+  );
+  // Restore deletes your dismissal: the card leaves Archived at once and is
+  // back in its view after the refetch. It comes back here if the server refuses.
+  const restoreCard = closeActions.restore;
   const handleRestore = useCallback(
     (item: AttentionItem) => {
-      setPendingRestore((prev) => new Set(prev).add(item.id));
-      restore(item.dismissalKey);
+      setPendingHide((prev) => new Set(prev).add(item.id));
+      void restoreCard(item).then((restored) => {
+        if (!restored) unhide(item);
+      });
     },
-    [restore],
+    [restoreCard, unhide],
   );
   const handleToggleExpand = useCallback((item: AttentionItem) => {
     setSelectedAttentionId(item.id);
+    setSelectionFromKeyboard(false);
     setExpandedId((prev) => (prev === item.id ? null : item.id));
   }, []);
-  const handleTrain = useCallback((item: AttentionItem) => {
-    setTrainingItem(item);
-  }, []);
-
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const action = resolveAttentionQueueKeyAction({
@@ -389,6 +553,7 @@ export function WhatNeedsMe() {
             : keyboardItems.length - 1
           : (currentIndex + offset + keyboardItems.length) % keyboardItems.length;
         setSelectedAttentionId(keyboardItems[nextIndex]?.id ?? null);
+        setSelectionFromKeyboard(true);
         return;
       }
 
@@ -408,134 +573,95 @@ export function WhatNeedsMe() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleDismiss, keyboardItems, navigate, selectedAttentionId]);
-  const activeFilterCount = countActiveAttentionFilters(filters);
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
 
-  if (isLoading) {
+  // Keep a loaded feed on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || feedView.kind === "reconnecting") {
     return <PageSkeleton variant="approvals" />;
   }
+  if (feedView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={feedView.error}
+        action="load your decisions"
+        onRetry={feedView.retry}
+        retrying={feedView.isFetching}
+      />
+    );
+  }
 
-  const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
+  const receipts = view === "mine" ? feed?.receipts ?? [] : [];
+  const hasAnything = activeItems.length > 0 || receipts.length > 0;
 
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center justify-between gap-4">
+      {/* Closed cards — answered, withdrawn, expired, closed with their task,
+          approvals too — with outcome filters (PAP-749 plan §3). */}
+      <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+        <SheetContent side="right" className="w-full gap-0 overflow-y-auto sm:max-w-md" data-classic-decision-history>
+          <SheetHeader>
+            <SheetTitle>Decision history</SheetTitle>
+          </SheetHeader>
+          <div className="p-4">
+            {historyOpen && <DecisionHistoryPanel companyId={selectedCompanyId} agents={agents ?? []} userLabelMap={userLabelMap} />}
+          </div>
+        </SheetContent>
+      </Sheet>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
           <h1 className="text-xl font-bold">Decisions</h1>
-          <Button variant="outline" size="sm" onClick={() => navigate("/training")}>
-            <GraduationCap className="size-4" /> Training
+          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
+            <History className="h-4 w-4" />
+            Decision history
           </Button>
         </div>
-        <div className="flex items-center gap-2">
-          {visibleCount > 0 && (
-            <span className="text-sm text-muted-foreground">
-              {visibleCount} {visibleCount === 1 ? "decision" : "decisions"}
-            </span>
-          )}
-          {/* Filter */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className={cn("h-8 w-8 shrink-0", activeFilterCount > 0 && "bg-accent")}
-                title="Filter"
-                aria-label="Filter"
-              >
-                <ListFilter className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-64 p-0">
-              <FilterMenu
-                options={filterOptions}
-                filters={filters}
-                onChange={updateFilters}
-              />
-            </PopoverContent>
-          </Popover>
-          {/* Group by */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                title="Group"
-                aria-label="Group"
-              >
-                <Layers className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-40 p-2">
-              <div className="space-y-0.5">
-                {ATTENTION_GROUP_BY_OPTIONS.map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
-                      groupBy === value ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50",
-                    )}
-                    onClick={() => updateGroupBy(value)}
-                  >
-                    <span>{label}</span>
-                    {groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-          {/* Sort */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                title="Sort"
-                aria-label="Sort"
-              >
-                <ArrowUpDown className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-44 p-2">
-              <div className="space-y-0.5">
-                {ATTENTION_SORT_OPTIONS.map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
-                      sortOrder === value ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50",
-                    )}
-                    onClick={() => updateSortOrder(value)}
-                  >
-                    <span>{label}</span>
-                    {sortOrder === value ? <Check className="h-3.5 w-3.5" /> : null}
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-        </div>
+        <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} everyone={everyone} />
+        {view === "mine" ? <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} /> : null}
+        <DecisionsToolbar
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
+          visibleCount={visibleCount}
+          filterOptions={filterOptions}
+          filters={filters}
+          onFiltersChange={updateFilters}
+          groupBy={groupBy}
+          onGroupByChange={updateGroupBy}
+          sortOrder={sortOrder}
+          onSortOrderChange={updateSortOrder}
+        />
       </div>
 
-      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
+      <AttentionReceiptList receipts={receipts} userLabelMap={userLabelMap}
+        onDismiss={receiptActions.dismiss} dismissingId={receiptActions.dismissingId} onOpen={navigate} />
+
+      {/* Queue quicklinks + date-range chips (§4.1–§4.2). The rail self-hides
+          when the company has no queues; the chips filter the desk server-side. */}
+      <div className="space-y-2">
+        <DecisionQueueRail companyId={selectedCompanyId} activeQueueKey={null} />
+        <DecisionDateChips
+          value={dateRange}
+          custom={customRange}
+          onChange={(value, custom) => {
+            setDateRange(value);
+            setCustomRange(custom);
+          }}
+        />
+      </div>
 
       {!hasAnything ? (
-        <ZeroState />
+        <ZeroState view={view} />
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
-            <CaughtUpNote filtered={activeItems.length > 0} />
+            <CaughtUpNote filtered={deskItems.length > 0} view={view} snoozedBelow={snoozedItems.length > 0} />
           ) : (
-            groups.map((group) => {
+            <>
+              {groups.map((group) => {
               const groupLabel = group.label;
               const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
               return (
@@ -552,274 +678,298 @@ export function WhatNeedsMe() {
                     />
                   )}
                   {!collapsed && (
-                    <div className="space-y-2">
-                      {(renderPlan.groupRows.get(group.key) ?? []).map((item) => (
-                        <AttentionQueueRow
-                          key={item.id}
-                          item={item}
-                          companyId={selectedCompanyId}
-                          expanded={expandedId === item.id}
-                          onToggleExpand={handleToggleExpand}
-                          onDismiss={handleDismiss}
-                          onSnooze={handleSnooze}
-                          onTrain={handleTrain}
-                          agentMap={agentMap}
-                          currentUserId={currentUserId}
-                          selected={selectedAttentionId === item.id}
-                        />
-                      ))}
+                    <div className="space-y-4">
+                      {(() => {
+                        const rows = renderPlan.groupRows.get(group.key) ?? [];
+                        const seenBundles = new Set<string>();
+                        return rows.map((item) => {
+                          const bundleId =
+                            item.sourceKind === "decision"
+                              ? ((item.subject.metadata?.bundleId as string | null | undefined) ?? null)
+                              : null;
+                          let header: ReactNode = null;
+                          if (bundleId && !seenBundles.has(bundleId)) {
+                            seenBundles.add(bundleId);
+                            const bundleRows = rows.filter(
+                              (row) =>
+                                row.sourceKind === "decision" &&
+                                ((row.subject.metadata?.bundleId as string | null | undefined) ?? null) === bundleId,
+                            );
+                            const first = bundleRows[0];
+                            header = (
+                              <DecisionBundleHeader
+                                agentName={agentMap.get(first?.subject.metadata?.originAgentId as string)?.name ?? null}
+                                title={(first?.subject.metadata?.bundleTitle as string | null | undefined) ?? null}
+                                originIssue={first?.relatedIssue ?? null}
+                                count={bundleRows.length}
+                              />
+                            );
+                          }
+                          return (
+                            <Fragment key={item.id}>
+                              {header}
+                              <div className={bundleId ? "border-l-2 border-violet-500/40 pl-3" : undefined}>
+                                <AttentionQueueRow
+                                  item={item}
+                                  companyId={selectedCompanyId}
+                                  expanded={expandedId === item.id}
+                                  onToggleExpand={handleToggleExpand}
+                                  onDismiss={handleDismiss}
+                                  onSnooze={handleSnooze}
+                                  onWithdraw={handleWithdraw}
+                                  onTransfer={handleTransfer}
+                                  onRestore={archivedView ? handleRestore : undefined}
+                                  closing={closingId === item.id}
+                                  agentMap={agentMap}
+                                  agents={agents}
+                                  showTriage
+                                  currentUserId={currentUserId}
+                                  userLabelMap={userLabelMap}
+                                  onClaim={handleClaim}
+                                  claiming={claimingId === item.id}
+                                  selected={selectionFromKeyboard && selectedAttentionId === item.id}
+                                  evidence={attentionObligationEvidence(obligations, item)}
+                                />
+                              </div>
+                            </Fragment>
+                          );
+                        });
+                      })()}
                     </div>
                   )}
                 </section>
               );
-            })
+              })}
+            </>
           )}
 
-          {snoozedItems.length > 0 && (
+          <AttentionStaleGroup
+            items={visibleStaleItems}
+            open={staleOpen}
+            onToggle={() => setStaleOpen((prev) => !prev)}
+            onWithdrawAll={handleWithdrawAll}
+            busy={closeActions.bulkPending}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+          >
+            {visibleStaleItems.map((item) => (
+              <AttentionQueueRow
+                key={item.id}
+                item={item}
+                companyId={selectedCompanyId}
+                expanded={expandedId === item.id}
+                onToggleExpand={handleToggleExpand}
+                onDismiss={handleDismiss}
+                onSnooze={handleSnooze}
+                onWithdraw={handleWithdraw}
+                onTransfer={handleTransfer}
+                closing={closingId === item.id}
+                agentMap={agentMap}
+                agents={agents}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                onClaim={handleClaim}
+                claiming={claimingId === item.id}
+                evidence={attentionObligationEvidence(obligations, item)}
+              />
+            ))}
+          </AttentionStaleGroup>
+
+          {/* Snoozed by you, in the Archived view: each card says when it
+              comes back; Restore now or change the time (PAP-749 plan §3). */}
+          <AttentionSnoozedGroup
+            count={snoozedItems.length}
+            open={snoozedOpen}
+            onToggle={() => setSnoozedOpen((prev) => !prev)}
+          >
+            {renderPlan.snoozedRows.map((item) => (
+              <AttentionQueueRow
+                key={item.id}
+                item={item}
+                companyId={selectedCompanyId}
+                expanded={expandedId === item.id}
+                onToggleExpand={handleToggleExpand}
+                onDismiss={handleDismiss}
+                onSnooze={handleSnooze}
+                onWithdraw={handleWithdraw}
+                onTransfer={handleTransfer}
+                onRestore={handleRestore}
+                closing={closingId === item.id}
+                agentMap={agentMap}
+                agents={agents}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                onClaim={handleClaim}
+                claiming={claimingId === item.id}
+                evidence={attentionObligationEvidence(obligations, item)}
+              />
+            ))}
+          </AttentionSnoozedGroup>
+
+          {agingItems.length > 0 && (
             <Curtain
-              label="Snoozed"
-              count={snoozedItems.length}
-              open={snoozedOpen}
-              onToggle={() => setSnoozedOpen((prev) => !prev)}
+              label="Aging"
+              count={agingItems.length}
+              open={agingOpen}
+              onToggle={() => setAgingOpen((prev) => !prev)}
             >
-              {renderPlan.snoozedRows.map((item) => (
-                <AttentionQueueRow
+              <p className="text-xs text-muted-foreground">
+                Idle past {ATTENTION_AGING_DAYS} days — kept off the desk. Keep any you still want surfaced.
+              </p>
+              {agingItems.map((item) => (
+                <AgingItemRow
                   key={item.id}
                   item={item}
                   companyId={selectedCompanyId}
-                  variant="hidden"
-                  expanded={false}
-                  onToggleExpand={noopToggleExpand}
-                  onDismiss={handleDismiss}
-                  onRestore={handleRestore}
+                  now={now}
                   agentMap={agentMap}
+                  agents={agents}
                   currentUserId={currentUserId}
+                  expanded={expandedId === item.id}
+                  onToggleExpand={handleToggleExpand}
+                  onDismiss={handleDismiss}
+                  onSnooze={handleSnooze}
+                  evidence={attentionObligationEvidence(obligations, item)}
                 />
               ))}
             </Curtain>
           )}
 
-          {dismissedItems.length > 0 && (
-            <Curtain
-              label="Dismissed"
-              count={dismissedItems.length}
-              open={dismissedOpen}
-              onToggle={() => setDismissedOpen((prev) => !prev)}
-            >
-              {renderPlan.dismissedRows.map((item) => (
-                <AttentionQueueRow
-                  key={item.id}
-                  item={item}
-                  companyId={selectedCompanyId}
-                  variant="hidden"
-                  expanded={false}
-                  onToggleExpand={noopToggleExpand}
-                  onDismiss={handleDismiss}
-                  onRestore={handleRestore}
-                  agentMap={agentMap}
-                  currentUserId={currentUserId}
-                />
-              ))}
-            </Curtain>
-          )}
         </div>
       )}
 
-      <DecisionTrainingDrawer
-        open={trainingItem !== null}
-        onOpenChange={(next) => {
-          if (!next) setTrainingItem(null);
-        }}
-        companyId={selectedCompanyId}
-        item={trainingItem}
-        currentUserId={currentUserId}
-      />
-    </div>
-  );
-}
+      <div className="space-y-4">
+        <Curtain
+          label="Decided"
+          count={decisionHistoryCount(decidedDecisions?.length)}
+          open={decidedOpen}
+          onToggle={() => setDecidedOpen((prev) => !prev)}
+        >
+          {decidedDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
+          ) : (decidedDecisions?.length ?? 0) > 0 ? (
+            decidedDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
+              <DecisionResolver
+                key={decision.id}
+                companyId={selectedCompanyId}
+                decisionId={decision.id}
+                agentMap={agentMap}
+                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
+              />
+            ))
+          ) : (
+            <p className="text-xs text-muted-foreground">No decided decisions.</p>
+          )}
+        </Curtain>
 
-function FilterMenu({
-  options,
-  filters,
-  onChange,
-}: {
-  options: ReturnType<typeof buildAttentionFilterOptions>;
-  filters: AttentionFilterState;
-  onChange: (next: AttentionFilterState) => void;
-}) {
-  const toggle = (key: keyof AttentionFilterState, value: string) => {
-    const list = filters[key] as string[];
-    const nextList = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
-    onChange({ ...filters, [key]: nextList });
-  };
-  const hasActive = countActiveAttentionFilters(filters) > 0;
-
-  return (
-    <div className="max-h-(--sz-70vh) overflow-y-auto">
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Filter</span>
-        {hasActive && (
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => onChange(defaultAttentionFilterState)}
-          >
-            Clear
-          </button>
-        )}
+        <Curtain
+          label="Expired"
+          count={decisionHistoryCount(expiredDecisions?.length)}
+          open={expiredOpen}
+          onToggle={() => setExpiredOpen((prev) => !prev)}
+        >
+          {expiredDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
+          ) : (expiredDecisions?.length ?? 0) > 0 ? (
+            expiredDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
+              <DecisionResolver
+                key={decision.id}
+                companyId={selectedCompanyId}
+                decisionId={decision.id}
+                agentMap={agentMap}
+                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
+              />
+            ))
+          ) : (
+            <p className="text-xs text-muted-foreground">No expired decisions.</p>
+          )}
+        </Curtain>
       </div>
-
-      {options.sourceKinds.length > 1 && (
-        <FilterSection title="Type">
-          {options.sourceKinds.map((kind) => (
-            <FilterRow
-              key={kind}
-              label={sourceMeta(kind).label}
-              checked={filters.sourceKinds.includes(kind)}
-              onToggle={() => toggle("sourceKinds", kind)}
-            />
-          ))}
-        </FilterSection>
-      )}
-
-      {options.severities.length > 1 && (
-        <FilterSection title="Severity">
-          {options.severities.map((severity) => (
-            <FilterRow
-              key={severity}
-              label={SEVERITY_LABELS[severity] ?? severity}
-              checked={filters.severities.includes(severity)}
-              onToggle={() => toggle("severities", severity)}
-            />
-          ))}
-        </FilterSection>
-      )}
-
-      {(options.projects.length > 0 || options.hasNoProject) && (
-        <FilterSection title="Project">
-          {options.projects.map((project) => (
-            <FilterRow
-              key={project.id}
-              label={project.name}
-              checked={filters.projectIds.includes(project.id)}
-              onToggle={() => toggle("projectIds", project.id)}
-            />
-          ))}
-          {options.hasNoProject && (
-            <FilterRow
-              label="No project"
-              checked={filters.projectIds.includes(NO_GROUP_SENTINEL)}
-              onToggle={() => toggle("projectIds", NO_GROUP_SENTINEL)}
-            />
-          )}
-        </FilterSection>
-      )}
-
-      {(options.workspaces.length > 0 || options.hasNoWorkspace) && (
-        <FilterSection title="Workspace">
-          {options.workspaces.map((workspace) => (
-            <FilterRow
-              key={workspace.id}
-              label={workspace.name}
-              checked={filters.workspaceIds.includes(workspace.id)}
-              onToggle={() => toggle("workspaceIds", workspace.id)}
-            />
-          ))}
-          {options.hasNoWorkspace && (
-            <FilterRow
-              label="No workspace"
-              checked={filters.workspaceIds.includes(NO_GROUP_SENTINEL)}
-              onToggle={() => toggle("workspaceIds", NO_GROUP_SENTINEL)}
-            />
-          )}
-        </FilterSection>
-      )}
     </div>
   );
 }
 
-function FilterSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="border-t border-border/60 px-2 py-1.5">
-      <p className="px-1 pb-1 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-        {title}
-      </p>
-      <div className="space-y-0.5">{children}</div>
-    </div>
-  );
-}
-
-function FilterRow({
-  label,
-  checked,
-  onToggle,
-}: {
-  label: string;
-  checked: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="flex w-full items-center gap-2 rounded-sm px-1 py-1 text-left text-sm hover:bg-accent/50"
-      onClick={onToggle}
-    >
-      <Checkbox checked={checked} className="pointer-events-none" tabIndex={-1} />
-      <span className="truncate">{label}</span>
-    </button>
-  );
-}
-
-function Curtain({
-  label,
+/**
+ * Violet left-rule strip over a run of decisions that share a bundle, e.g.
+ * "Planner proposed 6 decisions · from PAP-123 · routing review · 6 pending".
+ * Grouping is a surface only — each decision is still decided independently.
+ */
+export function DecisionBundleHeader({
+  agentName,
+  title,
+  originIssue,
   count,
-  open,
-  onToggle,
-  children,
 }: {
-  label: string;
+  agentName: string | null;
+  title: string | null;
+  originIssue: AttentionSubject | null;
   count: number;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
 }) {
+  const noun = count === 1 ? "decision" : "decisions";
   return (
-    <section className="space-y-2">
-      <IssueGroupHeader
-        label={`${label} (${count})`}
-        collapsible
-        collapsed={!open}
-        onToggle={onToggle}
-        className="text-muted-foreground"
-      />
-      {open && <div className="space-y-2">{children}</div>}
-    </section>
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-sm border-l-2 border-violet-500/60 bg-violet-500/5 px-3 py-1.5 text-xs">
+      <span className="font-semibold text-violet-800 dark:text-violet-200">
+        {agentName ?? "An agent"} proposed {count} {noun}
+      </span>
+      {originIssue && (originIssue.identifier || originIssue.title) && (
+        <span className="text-muted-foreground">
+          {"· from "}
+          {originIssue.href ? (
+            <a href={originIssue.href} className="hover:underline">
+              {originIssue.identifier ?? originIssue.title}
+            </a>
+          ) : (
+            originIssue.identifier ?? originIssue.title
+          )}
+        </span>
+      )}
+      {title && <span className="text-muted-foreground">· {title}</span>}
+      <span className="text-muted-foreground">· {count} pending</span>
+    </div>
   );
 }
 
-function CaughtUpNote({ filtered }: { filtered: boolean }) {
+const CAUGHT_UP_TEXT: Record<AttentionPersonalView, string> = {
+  mine: "You're all caught up.",
+  unassigned: "No cards need an owner.",
+  company: "No company alerts right now.",
+  archived: "Nothing archived.",
+  all: "No open cards for anyone.",
+};
+
+function CaughtUpNote({ filtered, view, snoozedBelow = false }: { filtered: boolean; view: AttentionPersonalView; snoozedBelow?: boolean }) {
   return (
     <div className="rounded-xl border border-dashed border-border py-10 text-center">
       <p className="text-sm font-medium text-foreground">
-        {filtered ? "No decisions match your filters." : "You're all caught up."}
+        {filtered
+          ? "No decisions match your search or filters."
+          : snoozedBelow ? "No archived cards. Snoozed cards are below." : CAUGHT_UP_TEXT[view]}
       </p>
       {filtered && (
-        <p className="mt-1 text-xs text-muted-foreground">Adjust or clear the filters to see the rest.</p>
+        <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
       )}
     </div>
   );
 }
 
-function ZeroState() {
+const ZERO_STATE_DETAIL: Record<AttentionPersonalView, string> = {
+  mine: "Nothing needs a decision from you right now.",
+  unassigned: "Every open card has an owner.",
+  company: "No failed runs, agent errors, budget stops or join requests.",
+  archived: "Cards you archive or snooze for yourself show here. Restore one to see it again.",
+  all: "Nobody has a card waiting right now.",
+};
+
+function ZeroState({ view }: { view: AttentionPersonalView }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-20 text-center">
       <div className="mb-4 rounded-full bg-green-500/10 p-4">
         <CheckCircle2 className="h-10 w-10 text-green-500" />
       </div>
-      <p className="text-lg font-semibold text-foreground">You're all caught up</p>
+      <p className="text-lg font-semibold text-foreground">{view === "mine" ? "You're all caught up" : CAUGHT_UP_TEXT[view]}</p>
       <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
         <Inbox className="h-4 w-4" />
-        Nothing needs a decision from you right now.
+        {ZERO_STATE_DETAIL[view]}
       </p>
     </div>
   );

@@ -14,17 +14,21 @@
  *   - Exact types:   "application/pdf"
  *   - Wildcards:     "image/*"  or  "application/vnd.openxmlformats-officedocument.*"
  */
-import {
-  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
-  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
-} from "@paperclipai/shared";
-
 export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/png",
   "image/jpeg",
   "image/jpg",
   "image/webp",
   "image/gif",
+  "image/heic",
+  "image/heif",
+  "image/heic-sequence",
+  "image/heif-sequence",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/ogg",
+  "audio/wav",
+  "audio/webm",
   "application/pdf",
   "application/zip",
   "text/markdown",
@@ -94,35 +98,14 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
   });
 }
 
-/**
- * Recover a multipart upload filename that was decoded as Latin-1.
- *
- * Multer/busboy decode the RFC 7578 `filename` parameter as Latin-1 (ISO-8859-1),
- * so a UTF-8 filename (e.g. Chinese characters) arrives as mojibake such as
- * "äºæ°...pptx" instead of "亚新...pptx". Re-encoding the string to its Latin-1
- * bytes and decoding those as UTF-8 restores the original name.
- *
- * Guards against corrupting names that were NOT Latin-1-mangled:
- *   - Pure-ASCII names round-trip identically, so they are returned as-is.
- *   - If the UTF-8 re-decode yields the Unicode replacement char (U+FFFD), the
- *     bytes were not valid UTF-8 (e.g. a client already sent a proper UTF-8
- *     string), so the original is kept unchanged.
- */
-export function decodeMultipartFilename(name: string | null | undefined): string | null {
-  if (!name) return null;
-  // eslint-disable-next-line no-control-regex
-  if (/^[\x00-\x7f]*$/.test(name)) return name;
-  try {
-    const decoded = Buffer.from(name, "latin1").toString("utf8");
-    if (decoded.includes("�")) return name;
-    return decoded;
-  } catch {
-    return name;
-  }
-}
-
 export function normalizeContentType(contentType: string | null | undefined): string {
-  const normalized = (contentType ?? "").trim().toLowerCase();
+  // Provider APIs commonly return a complete Content-Type header value (for
+  // example Discord uses `text/plain; charset=utf-8`) while Paperclip's
+  // allowlist and persisted asset metadata operate on the MIME essence. MIME
+  // parameters do not change the media type, so normalize them away before
+  // enforcing the allowlist. Invalid/empty essences still fail closed to the
+  // generic binary type.
+  const normalized = (contentType ?? "").split(";", 1)[0]!.trim().toLowerCase();
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
 }
 
@@ -173,12 +156,37 @@ export function isAllowedContentType(contentType: string): boolean {
   return matchesContentType(contentType, allowedPatterns);
 }
 
+/**
+ * The one attachment size ceiling for this deployment. Every upload path —
+ * assets, task attachments, cases, and company import — bounds itself by this
+ * value, so an operator raises or lowers the limit in exactly one place.
+ */
 export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 
-export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return Math.min(DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
+const ATTACHMENT_SIZE_UNITS: readonly string[] = ["KB", "MB", "GB"];
+
+/**
+ * Render a byte count the way a person reading an error message expects it:
+ * 1024-based steps under the conventional consumer labels, at most one decimal
+ * place, and no trailing ".0". The default cap renders as "10 MB" rather than
+ * "10485760 bytes". Sub-kilobyte values stay in bytes so a tiny configured cap
+ * does not collapse to "0 KB".
+ */
+export function formatAttachmentSize(bytes: number): string {
+  // Defensive: the cap itself can never be negative or NaN (`Number(env) || default`
+  // falls back on both), but never render "NaN bytes" at a user.
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 bytes";
+  if (bytes < 1024) return bytes === 1 ? "1 byte" : `${bytes} bytes`;
+
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < ATTACHMENT_SIZE_UNITS.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
   }
-  return Math.min(Math.floor(value), MAX_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
+
+  // toFixed(1) then strip a trailing ".0": 10.5 -> "10.5", 10.0 -> "10".
+  const rounded = value.toFixed(1).replace(/\.0$/, "");
+  return `${rounded} ${ATTACHMENT_SIZE_UNITS[unitIndex]}`;
 }

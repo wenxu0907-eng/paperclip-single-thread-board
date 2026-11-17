@@ -20,7 +20,7 @@ import { BoardChat } from "./BoardChat";
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockGoalsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({
-  list: vi.fn(),
+  listCompact: vi.fn(),
   listComments: vi.fn(),
   listFeedbackVotes: vi.fn(),
 }));
@@ -110,7 +110,7 @@ function hasWelcome(container: HTMLElement) {
 }
 
 function hasChips(container: HTMLElement) {
-  return (container.textContent ?? "").includes("Draft a Company Brief");
+  return (container.textContent ?? "").includes("Draft an Organization Brief");
 }
 
 describe("BoardChat staged typing intro", () => {
@@ -127,7 +127,7 @@ describe("BoardChat staged typing intro", () => {
     mockGoalsApi.list.mockResolvedValue([
       { id: "goal-1", title: "Build affordable robots", status: "active" },
     ]);
-    mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE]);
+    mockIssuesApi.listCompact.mockResolvedValue([BOARD_ISSUE]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
   });

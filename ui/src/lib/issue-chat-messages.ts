@@ -1,3 +1,4 @@
+import type { ExecutionProjection } from "@paperclipai/shared";
 import type {
   ReasoningMessagePart,
   TextMessagePart,
@@ -13,15 +14,19 @@ import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
+  shouldHideInteractionCard,
   type IssueThreadInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
+import { isLiveIssueRun } from "./liveIssueIds";
+import { findUIAdapter } from "../adapters/registry";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled", "interrupted"]);
 
 export interface IssueChatComment extends IssueComment {
   runId?: string | null;
@@ -33,20 +38,32 @@ export interface IssueChatComment extends IssueComment {
   queueTargetRunId?: string | null;
   queueReason?: "hold" | "active_run" | "other";
   followUpRequested?: boolean;
+  /** Causal conversation slot: the run that actually consumed this input. */
+  consumedByRunId?: string | null;
+  /** Same-turn PRP steering acknowledgement for this human input. */
+  steeredIntoRunId?: string | null;
+  conversationAnchorAt?: Date | string | null;
+  conversationAnchorSequence?: number;
 }
 
 export interface IssueChatLinkedRun {
+  execution?: ExecutionProjection | null;
   runId: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType?: string;
   agentName?: string;
+  responsibleUserId?: string | null;
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  error?: string | null;
+  scheduledRetryAt?: string | null;
+  nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
 }
 
@@ -62,7 +79,13 @@ export interface IssueChatTranscriptEntry {
     | "stderr"
     | "system"
     | "stdout"
-    | "diff";
+    | "diff"
+    | "provider_activity"
+    | "workspace_change"
+    | "workspace_file_reference"
+    | "runtime_request"
+    | "run_result"
+    | "run_terminal";
   ts: string;
   text?: string;
   delta?: boolean;
@@ -81,9 +104,28 @@ export interface IssueChatTranscriptEntry {
   cachedTokens?: number;
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
+  family?: "plan" | "plan_proposal" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "verification" | "provider_notice";
+  eventType?: string;
+  status?: "running" | "completed" | "failed" | "interrupted" | "informational" | "pending" | "resolved" | "expired" | "cancelled";
+  title?: string;
+  summary?: string;
+  payload?: Record<string, unknown>;
 }
 
 const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
+
+// Adapters whose backends stream verbosely can declare a wider window via
+// their UI adapter module (transcriptPresentation.maxVisibleEntries); every
+// adapter without a declaration keeps the long-standing 30-entry window.
+// Resolved through the registry so shared code never branches on adapter
+// identities.
+function issueChatTranscriptMaxVisibleEntries(adapterType: string | null | undefined): number {
+  if (!adapterType) return ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES;
+  return (
+    findUIAdapter(adapterType)?.transcriptPresentation?.maxVisibleEntries ??
+    ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES
+  );
+}
 
 type MessageWithOrder = {
   createdAtMs: number;
@@ -111,52 +153,6 @@ function toTimestamp(value: Date | string | null | undefined) {
 
 function fingerprintThreadMessage(message: ThreadMessage) {
   return JSON.stringify(message);
-}
-
-/**
- * Anchor id of the first comment that is "new since the viewer's last visit"
- * (COM-7 / 2b). Used to render a Slack-style "New" divider and to land the
- * thread on the first unread content instead of the top of an old thread.
- *
- * "First unread" mirrors `buildInboxThreadSummary`'s notion of a new reply:
- * the earliest message (in thread order) that is a real comment/system notice,
- * not deleted, created strictly after `myLastTouchAt`, and not authored by the
- * current user. A null/undefined marker means a first/never-touched visit, in
- * which case nothing is "old to you" and we return null (no divider).
- */
-export function findFirstUnreadCommentAnchorId(
-  messages: readonly ThreadMessage[],
-  myLastTouchAt: Date | string | null | undefined,
-  currentUserId: string | null | undefined,
-): string | null {
-  if (myLastTouchAt === null || myLastTouchAt === undefined) return null;
-  const lastTouch = toTimestamp(myLastTouchAt);
-  for (const message of messages) {
-    const custom = message.metadata?.custom as
-      | {
-          kind?: unknown;
-          anchorId?: unknown;
-          authorType?: unknown;
-          authorUserId?: unknown;
-          deletedAt?: unknown;
-        }
-      | undefined;
-    if (!custom) continue;
-    if (custom.kind !== "comment" && custom.kind !== "system_notice") continue;
-    if (custom.deletedAt) continue;
-    const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : null;
-    if (!anchorId) continue;
-    if (toTimestamp(message.createdAt) <= lastTouch) continue;
-    if (
-      custom.authorType === "user"
-      && currentUserId
-      && custom.authorUserId === currentUserId
-    ) {
-      continue;
-    }
-    return anchorId;
-  }
-  return null;
 }
 
 function issueChatMessageCustom(message: ThreadMessage): Record<string, unknown> {
@@ -304,60 +300,31 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
   });
 }
 
-// A stable "logical decision" key for a confirmation-like interaction, mirroring
-// the server invariant (COM-180). Deliberately ignores the target revisionId so a
-// plan card re-keyed per revision resolves to one decision. Returns null when
-// there is no stable target to key on.
-function confirmationLogicalTargetKey(interaction: IssueThreadInteraction): string | null {
-  if (interaction.kind !== "request_confirmation" && interaction.kind !== "request_checkbox_confirmation") {
-    return null;
-  }
-  const target = interaction.payload?.target ?? null;
-  if (!target) return null;
-  if (target.type === "issue_document") {
-    return `issue_document:${target.documentId ?? ""}:${target.key}`;
-  }
-  if (target.type === "custom") {
-    return `custom:${target.key}`;
-  }
-  return null;
-}
-
-// Belt-and-suspenders de-dup for the chat timeline: the server now supersedes
-// stale pending confirmation cards on create, but historical data (or an
-// in-flight race) can still surface multiple pending cards for one logical
-// decision. Render only the newest pending card per logical target; older
-// pending duplicates are dropped so the board sees one card, not a stack.
-function dropSupersededPendingConfirmations(
+function dedupeInteractionsById(
   interactions: readonly IssueThreadInteraction[],
 ): IssueThreadInteraction[] {
-  const newestByKey = new Map<string, IssueThreadInteraction>();
+  const byId = new Map<string, IssueThreadInteraction>();
   for (const interaction of interactions) {
-    if (interaction.status !== "pending") continue;
-    const key = confirmationLogicalTargetKey(interaction);
-    if (!key) continue;
-    const existing = newestByKey.get(key);
-    if (!existing || toTimestamp(interaction.createdAt) >= toTimestamp(existing.createdAt)) {
-      newestByKey.set(key, interaction);
+    const previous = byId.get(interaction.id);
+    if (!previous) {
+      byId.set(interaction.id, interaction);
+      continue;
+    }
+    const previousUpdatedAt = toTimestamp(previous.updatedAt);
+    const nextUpdatedAt = toTimestamp(interaction.updatedAt);
+    if (
+      nextUpdatedAt > previousUpdatedAt
+      || (nextUpdatedAt === previousUpdatedAt
+        && previous.status === "pending"
+        && interaction.status !== "pending")
+    ) {
+      byId.set(interaction.id, interaction);
     }
   }
-  if (newestByKey.size === 0) return [...interactions];
-  const superseded = new Set<string>();
-  for (const [key, newest] of newestByKey) {
-    for (const interaction of interactions) {
-      if (
-        interaction.status === "pending"
-        && interaction.id !== newest.id
-        && confirmationLogicalTargetKey(interaction) === key
-      ) {
-        superseded.add(interaction.id);
-      }
-    }
-  }
-  return interactions.filter((interaction) => !superseded.has(interaction.id));
+  return [...byId.values()];
 }
 
-function latestSameRunHandoffTimestamp(args: {
+export function latestSameRunHandoffTimestamp(args: {
   interactionCreatedAtMs: number;
   sourceRunId: string;
   comments: readonly IssueChatComment[];
@@ -482,7 +449,15 @@ function isIssueChatRenderableTranscriptEntry(entry: IssueChatTranscriptEntry) {
   return entry.kind !== "init"
     && entry.kind !== "stderr"
     && entry.kind !== "stdout"
-    && entry.kind !== "system";
+    && entry.kind !== "system"
+    // The classic task interface intentionally remains unchanged. Structured
+    // PRP surfaces are rendered by TaskChatThread and remain available in run
+    // details when the classic interface is enabled.
+    && entry.kind !== "workspace_change"
+    && entry.kind !== "workspace_file_reference"
+    && entry.kind !== "runtime_request"
+    && entry.kind !== "run_result"
+    && entry.kind !== "run_terminal";
 }
 
 function compactIssueChatTranscript(
@@ -557,36 +532,7 @@ function effectiveCommentRunAgentId(comment: IssueChatComment) {
 }
 
 function effectiveCommentAuthorType(comment: IssueChatComment) {
-  if (effectiveCommentAuthorAgentId(comment)) return "agent";
-  // A comment can be authored by an agent yet reach the UI with none of the
-  // agent ids populated (historically-written rows). Treat an explicit
-  // `authorType === "agent"` or the presence of a run context (only agents post
-  // comments inside a run) as agent authorship so it is not mis-attributed to
-  // the board. (COM-57)
-  if (isAgentAuthoredComment(comment)) return "agent";
-  return comment.authorType;
-}
-
-/**
- * Whether a comment should be rendered as an agent (assistant) message even when
- * `authorAgentId`/`runAgentId`/`derivedAuthorAgentId` are all null. This hardens
- * the read path against author-less agent rows: an `authorType === "agent"`
- * comment, or any comment carrying a run context (comments are only created
- * inside a run by agents), is agent-authored. Without this such rows fall
- * through to the right-aligned blue "Board" bubble. (COM-57)
- */
-function isAgentAuthoredComment(comment: IssueChatComment) {
-  if (effectiveCommentAuthorAgentId(comment)) return true;
-  if (comment.authorType === "agent") return true;
-  if (effectiveCommentRunId(comment)) return true;
-  // A row persisted with `createdByRunId` was created inside a heartbeat run —
-  // and only agents own runs (a board/user POST never carries a run context).
-  // Historical rows exist where an agent's answer was stamped `authorType:"user"`
-  // (e.g. posted through a user-scoped key) while still recording the run id in
-  // `createdByRunId`; without reading it here they fall through to the blue
-  // "Board" bubble even though the run id proves agent authorship. (COM-57)
-  if (comment.createdByRunId) return true;
-  return false;
+  return effectiveCommentAuthorAgentId(comment) ? "agent" : comment.authorType;
 }
 
 function authorNameForComment(
@@ -621,17 +567,27 @@ function createCommentMessage(args: {
 }): ThreadMessage {
   const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const isSystemNotice = comment.authorType === "system";
+  const isSystemAuthor = comment.authorType === "system";
+  // Presentation can route a comment to the system-notice renderer even when it
+  // is agent-authored (e.g. a recovery owner's short status update), letting it
+  // collapse like a system notice while keeping the real author's name/link.
+  // Comments without a presentation keep today's routing (graceful fallback for
+  // old data both directions).
+  const renderAsSystemNotice = isSystemAuthor || comment.presentation?.kind === "system_notice";
   const authorAgentId = effectiveCommentAuthorAgentId(comment);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, { isSystemNotice });
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, {
+    isSystemNotice: isSystemAuthor,
+  });
   const custom = {
-    kind: isSystemNotice ? "system_notice" : "comment",
+    kind: renderAsSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
     authorType: effectiveCommentAuthorType(comment),
     authorAgentId,
     authorUserId: comment.authorUserId,
+    // Responsible user this agent comment rode the authority of (the open cross-task write design (attribution)).
+    onBehalfOfUserId: comment.onBehalfOfUserId ?? null,
     companyId: companyId ?? comment.companyId,
     projectId: projectId ?? null,
     runId: effectiveCommentRunId(comment),
@@ -644,6 +600,8 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    origin: comment.origin ?? "comment",
+    fastResponseRequestId: comment.fastResponseRequestId ?? null,
     deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
     deletedByType: comment.deletedByType ?? null,
     deletedByAgentId: comment.deletedByAgentId ?? null,
@@ -653,7 +611,7 @@ function createCommentMessage(args: {
   };
   const contentText = comment.deletedAt ? "" : comment.body;
 
-  if (isSystemNotice) {
+  if (renderAsSystemNotice) {
     const message: ThreadSystemMessage = {
       id: comment.id,
       role: "system",
@@ -664,7 +622,7 @@ function createCommentMessage(args: {
     return message;
   }
 
-  if (authorAgentId || isAgentAuthoredComment(comment)) {
+  if (authorAgentId) {
     const message: ThreadAssistantMessage = {
       id: comment.id,
       role: "assistant",
@@ -797,7 +755,8 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "tool_call" ||
       entry.kind === "tool_result" ||
       entry.kind === "diff" ||
-      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
+      entry.kind === "provider_activity" ||
+      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text)); // query-error-ok: chat-message entry flag, not a query read
     const isText = entry.kind === "assistant" && !!entry.text;
 
     if (isCoT) {
@@ -890,6 +849,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentId: run.agentId,
         runAgentName: agentName,
         runStatus: run.status,
+      execution: run.execution,
         runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       },
     },
@@ -905,7 +865,7 @@ function createHistoricalTranscriptMessage(args: {
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
@@ -927,6 +887,7 @@ function createHistoricalTranscriptMessage(args: {
       runAgentId: run.agentId,
       runAgentName: agentName,
       runStatus: run.status,
+      execution: run.execution,
       runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       notices,
       waitingText,
@@ -973,6 +934,26 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
       orderedParts.push({ type: "text", text: entry.text });
       continue;
     }
+    if (entry.kind === "provider_activity") {
+      const toolCallId = `provider-activity-${index}`;
+      const args = normalizeToolArgs({
+        family: entry.family ?? "provider_notice",
+        eventType: entry.eventType ?? "provider.notice.recorded",
+        status: entry.status ?? "informational",
+        title: entry.title ?? "Provider activity",
+        summary: entry.summary ?? "",
+        payload: entry.payload ?? {},
+      });
+      orderedParts.push({
+        type: "tool-call",
+        toolCallId,
+        toolName: "paperclip_provider_activity",
+        args,
+        argsText: "",
+        ...(entry.status === "running" ? {} : { result: { status: entry.status ?? "informational" } }),
+      });
+      continue;
+    }
     if (entry.kind === "thinking" && entry.text) {
       orderedParts.push({ type: "reasoning", text: entry.text });
       continue;
@@ -1001,13 +982,17 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "tool_result") {
       const toolCallId = entry.toolUseId || `tool-result-${index}`;
       const existing = toolParts.get(toolCallId);
+      const existingResult = typeof existing?.result === "string" ? existing.result : "";
+      const result = entry.delta
+        ? `${existingResult}${entry.content ?? ""}`
+        : (entry.content || existingResult);
       const nextPart: ToolCallMessagePart<JsonObject, unknown> = {
         type: "tool-call",
         toolCallId,
         toolName: existing?.toolName || entry.toolName || "tool",
         args: existing?.args ?? {},
         argsText: existing?.argsText ?? "",
-        result: entry.content ?? "",
+        result,
         isError: entry.isError === true,
       };
       if (existing) {
@@ -1027,7 +1012,7 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "stdout") continue;
     if (entry.kind === "system") continue;
     if (entry.kind === "result") {
-      if (entry.isError && entry.errors?.length) {
+      if (entry.isError && entry.errors?.length) { // query-error-ok: chat-message entry flag, not a query read
         for (const error of entry.errors) {
           orderedParts.push({ type: "reasoning", text: `Run error: ${summarizeNotice(error)}` });
         }
@@ -1072,13 +1057,15 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
 function normalizeLiveRuns(
   liveRuns: readonly LiveRunForIssue[],
   activeRun: ActiveRunForIssue | null | undefined,
-  issueId?: string,
+  issueId: string | undefined,
+  issueStatus: string | null | undefined,
 ) {
   const deduped = new Map<string, LiveRunForIssue>();
   for (const run of liveRuns) {
+    if (!isLiveIssueRun(run, issueStatus)) continue;
     deduped.set(run.id, run);
   }
-  if (activeRun) {
+  if (activeRun && isLiveIssueRun(activeRun, issueStatus)) {
     deduped.set(activeRun.id, {
       id: activeRun.id,
       status: activeRun.status,
@@ -1120,7 +1107,7 @@ function createLiveRunMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
 }) {
   const { run, transcript } = args;
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
@@ -1143,6 +1130,7 @@ function createLiveRunMessage(args: {
       runAgentId: run.agentId,
       runAgentName: run.agentName,
       runStatus: run.status,
+      execution: run.execution,
       adapterType: run.adapterType,
       notices,
       waitingText,
@@ -1156,6 +1144,20 @@ function createLiveRunMessage(args: {
     }),
   };
   return message;
+}
+
+/** The durable AI interaction owns repair and its receipt; don't also show the
+ * escalation's diagnostic card for that same failure. Keep unmatched notices. */
+export function isRedundantAiRecoveryNotice(
+  comment: IssueChatComment,
+  interactions: readonly IssueThreadInteraction[] = [],
+): boolean {
+  return comment.presentation?.kind === "system_notice"
+    && ["AI connection needs attention", "Configuration incomplete"].includes(comment.presentation.title ?? "")
+    && Boolean(comment.metadata?.sourceRunId)
+    && interactions.some((interaction) => interaction.kind === "connection_intent"
+      && interaction.payload.purpose === "ai"
+      && interaction.sourceRunId === comment.metadata?.sourceRunId);
 }
 
 export function buildIssueChatMessages(args: {
@@ -1174,6 +1176,7 @@ export function buildIssueChatMessages(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  issueStatus?: string | null;
 }) {
   const {
     comments,
@@ -1191,11 +1194,13 @@ export function buildIssueChatMessages(args: {
     agentMap,
     currentUserId,
     userLabelMap,
+    issueStatus,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
 
   for (const comment of sortByCreated(comments)) {
+    if (isRedundantAiRecoveryNotice(comment, interactions)) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,
@@ -1203,7 +1208,16 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const interaction of sortByCreated(dropSupersededPendingConfirmations(interactions))) {
+  // A live-event cache patch and the polling response can briefly contain the
+  // same interaction. Collapse by id before constructing messages, preferring
+  // the newest/terminal snapshot so a resolved connection card updates in its
+  // existing thread slot instead of flashing a duplicate beside itself.
+  for (const interaction of sortByCreated(dedupeInteractionsById(interactions))) {
+    // A card IssueThreadInteractionCard never renders — a degenerate
+    // `ask_user_questions` (e.g. the onboarding `Test / A` placeholder) or a
+    // stale sibling superseded by a newer question (PAP-437) — is skipped here so
+    // it leaves no empty message slot in the thread (PAP-424, plan from PAP-420).
+    if (shouldHideInteractionCard(interaction)) continue;
     const createdAtMs = toTimestamp(interaction.createdAt);
     const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
       ? latestSameRunHandoffTimestamp({
@@ -1230,7 +1244,18 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
+  const linkedRunsById = new Map(linkedRuns.map((run) => [run.runId, run]));
+  const liveRunsById = new Map(normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus).map((run) => [run.id, run]));
+  // History can settle before the live cache drops the same run. Select one
+  // representation before creating messages: terminal history is authoritative;
+  // otherwise keep the streaming snapshot and its live metadata.
+  for (const [runId, run] of linkedRunsById) {
+    if (!liveRunsById.has(runId)) continue;
+    if (TERMINAL_RUN_STATUSES.has(run.status)) liveRunsById.delete(runId);
+    else linkedRunsById.delete(runId);
+  }
+
+  for (const run of [...linkedRunsById.values()].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
     const transcript = transcriptsByRunId?.get(run.runId) ?? [];
     const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
     if (hasRunOutput || run.status !== "succeeded") {
@@ -1257,7 +1282,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId)) {
+  for (const run of liveRunsById.values()) {
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,

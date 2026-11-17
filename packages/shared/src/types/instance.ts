@@ -6,9 +6,6 @@ export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
 export const MAX_TOTAL_COUNT_PRESETS = [24, 48, 96, 200] as const;
 export const MAX_TOTAL_GB_PRESETS = [10, 20, 50, 100] as const;
-export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
-export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
-export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
 
 /**
  * Backup retention policy. Backups thin out as they age: every backup inside
@@ -56,7 +53,6 @@ export type InstanceExecutionMode = "kubernetes" | "any";
 
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
-  keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**
@@ -68,27 +64,122 @@ export interface InstanceGeneralSettings {
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
+  /**
+   * Exposes the experimental Paperclip Runner adapter for new selections.
+   * Existing native runs ignore later flag changes so they remain recoverable.
+   */
+  enableNativeRunner: boolean;
+  enableAiConnectionRouters: boolean;
+  /**
+   * Hide the local environment and run all agents in the platform-managed
+   * sandbox environment. Run selection refuses local while this is on.
+   */
+  enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
+  /** Enroll eligible native sandbox workspaces in remote, snapshot-backed storage. */
+  remoteWorkspaceStorageEnabled: boolean;
+  /**
+   * Move the execution workspace default for a project that carries no policy
+   * of its own from the shared project checkout to an isolated per-task
+   * worktree. Inert unless `enableIsolatedWorkspaces` is also on, and never
+   * overrides a project that stores its own policy.
+   */
+  enableIsolatedWorkspacesByDefault: boolean;
   enableStreamlinedLeftNavigation: boolean;
+  /**
+   * Use the streamlined shell, navigation, and contextual-sidebar experience.
+   * Missing legacy values default on; the retired left-navigation preference
+   * remains separate so an old opt-out cannot disable the broader UI.
+   */
+  enableStreamlinedUi: boolean;
+  /** @deprecated Compatibility key only. Apps is always enabled. */
   enableApps: boolean;
-  enablePipelines: boolean;
+  /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
+  enableChatConnectors: boolean;
+  /** Show GitHub review bot setup and management independently of chat connectors. */
+  enableGitHubReviewBots: boolean;
+  /** Allow person-authorized assistant tools and task event delivery. */
+  enablePublicMcp: boolean;
+  /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
+  enableOpenAiDot: boolean;
+  /** Enable experimental Grok Bot agents; requires MCP and the managed/native Runner. */
+  enableGrokBot: boolean;
+  enableMuse: boolean;
+  /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
+  enableMcpAggregators: boolean;
+  /** Show experimental memory connection setup. Existing connections remain usable. */
+  enableMemoryConnectors: boolean;
+  enablePaperclipNotebook: boolean;
+  /** Show and allow the built-in Google Workspace connector while its Google verification is pending. */
+  enableGoogleWorkspaceConnector: boolean;
   enableCases: boolean;
+  enableAgentChat: boolean;
+  /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
+  enableCombinedInboxTasks: boolean;
+  /** The artifact presentation from the artifact directions lab (MVP V1) on the Artifacts page, the panel's Artifacts tab and the task thread. */
+  enableArtifactsV1: boolean;
   enableConferenceRoomChat: boolean;
-  enableTaskWatchdogs: boolean;
+  enableClassicTaskInterface: boolean;
+  /** Require Cmd/Ctrl+Enter to submit task replies and new tasks. */
+  enableLegacyComposerSubmit: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
-  enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
+  enableBetaSkills: boolean;
   enableSummaries: boolean;
+  enableStatusCards: boolean;
   enableDecisions: boolean;
+  /** Show company connection settings and allow contextual fast-response acknowledgements. */
+  enableFastResponses: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
+  /** Shows internal Paperclip maintainer tools and observability links. */
+  enablePaperclipDeveloperMode: boolean;
+  /**
+   * Instructs agents to write user-interaction content (confirmations,
+   * questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified
+   * Technical English with brief decision context. Prompt-side only; no
+   * behavior change outside interaction wording.
+   */
+  enableSimplifiedEnglishInteractions: boolean;
+  /**
+   * When the user's first onboarding request is a single task, the chief of
+   * staff proposes with a short plan document and a checkbox card instead of a
+   * one-card confirmation. Read once, when the onboarding first task is created;
+   * flipping it later does not change an existing first task.
+   */
+  enableFirstTaskPlanProposal: boolean;
   autoRestartDevServerWhenIdle: boolean;
-  enableIssueGraphLivenessAutoRecovery: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
+  /**
+   * On cloud-managed instances, grant the stack owner instance-admin access
+   * to their own dedicated instance. Elevation is computed per request at the
+   * trusted-header auth boundary (owner stack role + this flag); no
+   * `instance_user_roles` row is ever written. Inert on self-hosted
+   * instances, which have no trusted cloud tenant path.
+   */
+  enableOwnerInstanceAdmin: boolean;
+  /**
+   * Kill switch for the sandbox duplex command-stream bridge. Default off. The
+   * host reads this per run before it selects the callback bridge transport.
+   * Off forces the file bridge for every run with no manifest change and no
+   * redeploy.
+   */
+  enableSandboxDuplexBridge: boolean;
+  /**
+   * MCP Tasks: long provider tool calls become durable tasks that survive
+   * timeouts, restarts, and deploys. Default off: the extension is not
+   * declared, so behavior matches a client without it.
+   */
+  enableMcpTasks: boolean;
+  /**
+   * @deprecated Compatibility-only. Provider WebSocket ingress now follows
+   * enableNativeRunner and this value has no runtime effect.
+   */
+  enableRunnerPreviewIngress: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
@@ -106,7 +197,6 @@ export interface InstanceExperimentalSettings {
    * from another instance fail closed.
    */
   worktreeRunExecutionActivationInstanceId: string | null;
-  issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 
 /**
@@ -144,35 +234,4 @@ export interface InstanceSettings {
   experimental: InstanceExperimentalSettingsWithManaged;
   createdAt: Date;
   updatedAt: Date;
-}
-
-export interface IssueGraphLivenessAutoRecoveryPreviewItem {
-  issueId: string;
-  identifier: string | null;
-  title: string;
-  state: string;
-  severity: string;
-  reason: string;
-  recoveryIssueId: string;
-  recoveryIdentifier: string | null;
-  recoveryTitle: string | null;
-  recommendedOwnerAgentId: string | null;
-  incidentKey: string;
-  latestDependencyUpdatedAt: string;
-  dependencyPath: Array<{
-    issueId: string;
-    identifier: string | null;
-    title: string;
-    status: string;
-  }>;
-}
-
-export interface IssueGraphLivenessAutoRecoveryPreview {
-  lookbackHours: number;
-  cutoff: string;
-  generatedAt: string;
-  findings: number;
-  recoverableFindings: number;
-  skippedOutsideLookback: number;
-  items: IssueGraphLivenessAutoRecoveryPreviewItem[];
 }

@@ -1,6 +1,8 @@
 import type {
   IssueOriginKind,
   IssuePriority,
+  RoutineActivityGatePolicy,
+  RoutineActivityGateScope,
   RoutineCatchUpPolicy,
   RoutineConcurrencyPolicy,
   RoutineStatus,
@@ -71,6 +73,7 @@ export interface Routine {
   id: string;
   companyId: string;
   projectId: string | null;
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   folderId?: string | null;
   goalId: string | null;
   parentIssueId: string | null;
@@ -81,6 +84,8 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  activityGatePolicy: string;
+  activityGateScope: string;
   originKind?: string;
   originId?: string | null;
   variables: RoutineVariable[];
@@ -124,6 +129,8 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  activityGatePolicy: RoutineActivityGatePolicy;
+  activityGateScope: RoutineActivityGateScope;
   originKind?: string;
   originId?: string | null;
   variables: RoutineVariable[];
@@ -132,6 +139,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {
+  setupPending?: boolean;
   id: string;
   kind: RoutineTriggerKind;
   label: string | null;
@@ -167,6 +175,12 @@ export interface RoutineRevision {
   createdAt: Date;
 }
 
+export interface RoutineWebhookDelivery {
+  status: "received" | "rejected";
+  receivedAt: string;
+  test: boolean;
+}
+
 export interface RoutineTrigger {
   id: string;
   companyId: string;
@@ -179,6 +193,10 @@ export interface RoutineTrigger {
   nextRunAt: Date | null;
   lastFiredAt: Date | null;
   publicId: string | null;
+  webhookUrl?: string | null;
+  setupPending?: boolean;
+  archived?: boolean;
+  lastWebhookDelivery?: RoutineWebhookDelivery | null;
   secretId: string | null;
   signingMode: string | null;
   replayWindowSec: number | null;
@@ -203,6 +221,7 @@ export interface RoutineRun {
   routineRevisionId?: string | null;
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
+  createdByRunId?: string | null;
   dispatchFingerprint: string | null;
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
@@ -218,6 +237,8 @@ export interface RoutineTriggerSecretMaterial {
 }
 
 export interface RoutineDetail extends Routine {
+  /** Actor-specific affordance. The update route remains authoritative. */
+  canChangeResponsibleUser?: boolean;
   project: RoutineProjectSummary | null;
   assignee: RoutineAgentSummary | null;
   parentIssue: RoutineIssueSummary | null;

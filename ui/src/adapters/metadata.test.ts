@@ -34,6 +34,7 @@ describe("adapter metadata", () => {
 
   it("keeps intentionally withheld built-in adapters marked as coming soon", () => {
     expect(isEnabledAdapterType("process")).toBe(false);
+    expect(isEnabledAdapterType("http")).toBe(false);
   });
 
   it("marks the retired ACPX adapter as unavailable for new selections", () => {

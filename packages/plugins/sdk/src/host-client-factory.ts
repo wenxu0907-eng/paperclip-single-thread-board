@@ -48,9 +48,10 @@
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 
+import { isDeepStrictEqual } from "node:util";
 import type { PluginCapability } from "@paperclipai/shared";
 import type { WorkerHostCallContext, WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
-import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
+import { PLUGIN_RPC_ERROR_CODES, validateProjectSnapshotRequest } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -139,6 +140,8 @@ export interface HostServices {
 
   /** Provides `events.emit` and `events.subscribe`. */
   events: {
+    listLifecycle(params: WorkerToHostMethods["events.listLifecycle"][0]): Promise<WorkerToHostMethods["events.listLifecycle"][1]>;
+    acknowledgeLifecycle(params: WorkerToHostMethods["events.acknowledgeLifecycle"][0]): Promise<void>;
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
     subscribe(params: WorkerToHostMethods["events.subscribe"][0]): Promise<void>;
   };
@@ -182,6 +185,14 @@ export interface HostServices {
     log(params: WorkerToHostMethods["log"][0]): Promise<void>;
   };
 
+  /** Provides `span.record`. The context carries the host-minted `traceparent`. */
+  tracer: {
+    record(
+      params: WorkerToHostMethods["span.record"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<void>;
+  };
+
   /** Provides `companies.list`, `companies.get`. */
   companies: {
     list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
@@ -192,6 +203,8 @@ export interface HostServices {
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
     get(params: WorkerToHostMethods["projects.get"][0]): Promise<WorkerToHostMethods["projects.get"][1]>;
+    resolveGitCredential(params: WorkerToHostMethods["projects.resolveGitCredential"][0], context: WorkerHostCallContext): Promise<string | null>;
+    getInstanceSecrets(params: WorkerToHostMethods["projects.getInstanceSecrets"][0]): Promise<WorkerToHostMethods["projects.getInstanceSecrets"][1]>;
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
@@ -263,6 +276,8 @@ export interface HostServices {
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
+    getRuntimeIdentity?(params: WorkerToHostMethods["agents.getRuntimeIdentity"][0]): Promise<WorkerToHostMethods["agents.getRuntimeIdentity"][1]>;
+    getRuntime?(params: WorkerToHostMethods["agents.getRuntime"][0]): Promise<WorkerToHostMethods["agents.getRuntime"][1]>;
     get(params: WorkerToHostMethods["agents.get"][0]): Promise<WorkerToHostMethods["agents.get"][1]>;
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
@@ -397,6 +412,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Events
   "events.emit": "events.emit",
   "events.subscribe": "events.subscribe",
+  "events.listLifecycle": "events.subscribe",
+  "events.acknowledgeLifecycle": "events.subscribe",
 
   // HTTP
   "http.fetch": "http.outbound",
@@ -416,6 +433,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Logger — always allowed
   "log": null,
 
+  // Timing sink for environment drivers or workspace providers. Parentage
+  // still derives solely from the current host-owned invocation.
+  "span.record": "environment.drivers.register",
+
   // Companies
   "companies.list": "companies.read",
   "companies.get": "companies.read",
@@ -423,6 +444,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Projects
   "projects.list": "projects.read",
   "projects.get": "projects.read",
+  "projects.getInstanceSecrets": "projects.instance-secrets",
+  "projects.readSnapshots": "projects.instance-secrets",
+  "projects.resolveGitCredential": "projects.git-credentials",
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
@@ -475,6 +499,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Agents
   "agents.list": "agents.read",
   "agents.get": "agents.read",
+  "agents.getRuntime": "agents.lifecycle.manage",
+  "agents.getRuntimeIdentity": "agents.lifecycle.manage",
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
@@ -595,17 +621,6 @@ export function createHostClientHandlers(
       );
     }
 
-    // A gateway-ingress worker resolves its no-id nested calls to an EXPLICIT
-    // global (null) invocation scope (see plugin-worker-manager
-    // `contextForWorkerMessage`). Unlike an absent/lost scope — which upstream
-    // hardening rejects below — an explicit global scope is trusted to reach any
-    // company, mirroring the handleWebhook global invocation (COM-154). This is
-    // reachable only for gateway-ingress workers; scoped dispatches always carry
-    // an invocation id and never produce a null scope. Capability gating still
-    // applies. (`=== null` is true only when the key is present and null;
-    // undefined/absent scopes fall through to the strict checks.)
-    if (context?.invocationScope === null) return;
-
     const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
 
     if (requested.kind === "all") {
@@ -647,16 +662,6 @@ export function createHostClientHandlers(
     }
 
     const requested = requestedCompanyScope(method, params);
-
-    // Explicit global (null) scope from a gateway-ingress worker: trusted to
-    // reach any company (COM-154). A company-scoped method still needs a target,
-    // so honor the request's own companyId; without one there is nothing to
-    // resolve. See the matching note in requireInvocationCompanyScope.
-    if (context?.invocationScope === null) {
-      if (requested.kind === "single") return requested.companyId;
-      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-    }
-
     const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
     if (requested.kind === "single") {
       if (!scopedCompanyId) {
@@ -687,6 +692,7 @@ export function createHostClientHandlers(
     const required = METHOD_CAPABILITY_MAP[method];
     if (required === null) return; // No capability required
     if (capabilitySet.has(required)) return;
+    if (method === "span.record" && capabilitySet.has("workspaces.manage")) return;
     throw new CapabilityDeniedError(pluginId, method, required);
   }
 
@@ -771,6 +777,8 @@ export function createHostClientHandlers(
     }),
 
     // Events
+    "events.listLifecycle": gated("events.listLifecycle", async (params) => services.events.listLifecycle(params)),
+    "events.acknowledgeLifecycle": gated("events.acknowledgeLifecycle", async (params) => services.events.acknowledgeLifecycle(params)),
     "events.emit": gated("events.emit", async (params) => {
       return services.events.emit(params);
     }),
@@ -809,6 +817,11 @@ export function createHostClientHandlers(
       return services.logger.log(params);
     }),
 
+    // Provider span sink. The context carries the host-minted `traceparent`.
+    "span.record": gated("span.record", async (params, context) => {
+      return services.tracer.record(params, context);
+    }),
+
     // Companies
     "companies.list": gated("companies.list", async (params, context) => {
       const rows = await services.companies.list(params);
@@ -825,6 +838,44 @@ export function createHostClientHandlers(
     // Projects
     "projects.list": gated("projects.list", async (params) => {
       return services.projects.list(params);
+    }),
+    "projects.resolveGitCredential": gated("projects.resolveGitCredential", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.resolveGitCredential", params, context);
+      const scope = context?.invocationScope?.projectGit;
+      if (!scope || scope.projectId !== params.projectId || (scope.workspaceId && scope.workspaceId !== params.workspaceId)) {
+        throw new Error("Git credentials require a matching host project operation");
+      }
+      return services.projects.resolveGitCredential({ ...params, companyId }, context!);
+    }),
+    "projects.getInstanceSecrets": gated("projects.getInstanceSecrets", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.getInstanceSecrets", params, context);
+      return services.projects.getInstanceSecrets({ ...params, companyId });
+    }),
+    "projects.readSnapshots": gated("projects.readSnapshots", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.readSnapshots", params, context);
+      requireCapability("projects.get");
+      requireCapability("projects.listWorkspaces");
+      const { projectIds, entityType } = params;
+      validateProjectSnapshotRequest(projectIds, entityType);
+      const snapshots: WorkerToHostMethods["projects.readSnapshots"][1] = [];
+      for (const projectId of projectIds) {
+        const scope = { companyId, projectId };
+        const project = await services.projects.get(scope);
+        if (project?.id !== projectId || project.companyId !== companyId || project.archivedAt) {
+          throw new Error("Project snapshot unavailable");
+        }
+        const query = { entityType, scopeKind: "company" as const, scopeId: companyId, externalId: projectId, limit: 1 };
+        const [entity] = await services.entities.list(query);
+        const instanceSecrets = await services.projects.getInstanceSecrets(scope);
+        const workspaces = await services.projects.listWorkspaces(scope);
+        const current = await services.projects.get(scope);
+        const [latest] = await services.entities.list(query);
+        if (!isDeepStrictEqual(current, project) || !isDeepStrictEqual(latest, entity)) {
+          throw new Error("Project snapshot changed during read");
+        }
+        snapshots.push({ projectId, workspaces, entity: entity ?? null, instanceSecrets });
+      }
+      return snapshots;
     }),
     "projects.get": gated("projects.get", async (params) => {
       return services.projects.get(params);
@@ -976,6 +1027,14 @@ export function createHostClientHandlers(
     // Agents
     "agents.list": gated("agents.list", async (params) => {
       return services.agents.list(params);
+    }),
+    "agents.getRuntimeIdentity": gated("agents.getRuntimeIdentity", async (params) => {
+      if (!services.agents.getRuntimeIdentity) throw new Error("Agent runtime identity is unavailable");
+      return services.agents.getRuntimeIdentity(params);
+    }),
+    "agents.getRuntime": gated("agents.getRuntime", async (params) => {
+      if (!services.agents.getRuntime) throw new Error("Agent runtime state is unavailable");
+      return services.agents.getRuntime(params);
     }),
     "agents.get": gated("agents.get", async (params) => {
       return services.agents.get(params);
