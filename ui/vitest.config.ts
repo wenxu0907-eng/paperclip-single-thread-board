@@ -10,7 +10,6 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    css: { include: [/motion-tokens\.css/] },
     setupFiles: ["./vitest.setup.ts"],
   },
 });

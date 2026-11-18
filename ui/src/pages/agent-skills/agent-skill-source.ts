@@ -1,5 +1,4 @@
-import { Boxes, Folder, Link2, Paperclip, type LucideIcon } from "lucide-react";
-import { GithubIcon } from "@/components/icons/github-icon";
+import { Boxes, Folder, Github, Link2, Paperclip, type LucideIcon } from "lucide-react";
 import type { CompanySkillListItem } from "@paperclipai/shared";
 
 export interface AgentSkillSourceMeta {
@@ -91,12 +90,12 @@ function displayCatalogSourceLabel(label: string | null | undefined) {
 export function buildAgentSkillSourceMeta(skill: SourceSkill): AgentSkillSourceMeta {
   if (skill.sourceBadge === "github" || skill.sourceType === "github") {
     const repo = githubRepoLabel(skill.sourceLabel) ?? githubRepoLabel(skill.sourceLocator);
-    return { icon: GithubIcon, label: repo ? `GitHub · ${repo}` : "GitHub" };
+    return { icon: Github, label: repo ? `GitHub · ${repo}` : "GitHub" };
   }
 
   if (skill.sourceBadge === "skills_sh" || skill.sourceType === "skills_sh") {
     const repo = githubRepoLabel(skill.sourceLabel) ?? githubRepoLabel(skill.sourceLocator);
-    return { icon: GithubIcon, label: repo ? `skills.sh · ${repo}` : "skills.sh" };
+    return { icon: Github, label: repo ? `skills.sh · ${repo}` : "skills.sh" };
   }
 
   if (skill.sourceBadge === "url" || skill.sourceType === "url") {

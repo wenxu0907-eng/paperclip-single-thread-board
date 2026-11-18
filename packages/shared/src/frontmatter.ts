@@ -44,7 +44,7 @@ const skillMetadataValueSchema: z.ZodType<unknown> = z.lazy(() =>
     z.boolean(),
     z.null(),
     z.array(skillMetadataValueSchema),
-    z.record(z.string(), skillMetadataValueSchema),
+    z.record(skillMetadataValueSchema),
   ])
 );
 
@@ -52,7 +52,7 @@ export const skillFrontmatterSchema = z.object({
   name: z.string().regex(SKILL_FRONTMATTER_SLUG_RE, "Expected a lowercase URL slug."),
   description: z.string().min(1),
   "allowed-tools": z.array(z.string()).optional(),
-  metadata: z.record(z.string(), skillMetadataValueSchema).optional(),
+  metadata: z.record(skillMetadataValueSchema).optional(),
 }).passthrough();
 
 export const skillFrontmatterKnownKeys = [
@@ -207,20 +207,6 @@ export function joinFrontmatterBlock(block: FrontmatterBlock): string {
  */
 export function parseFrontmatterFields(frontmatterText: string): Record<string, unknown> {
   return parseYamlFrontmatter(frontmatterText);
-}
-
-/**
- * Parse a standalone YAML document with the same dependency-free subset parser
- * the frontmatter path uses. Unlike {@link parseFrontmatterFields} this returns
- * the top-level value as-is, so callers expecting a list — the agent-memory
- * `items.yaml` files — can test for an array. Lenient: input that parses to
- * nothing yields `null` rather than throwing.
- */
-export function parseYamlDocument(raw: string): unknown {
-  const prepared = prepareYamlLines(raw);
-  const firstContentIndex = prepared.findIndex((line) => !line.isBlank && !line.isComment);
-  if (firstContentIndex < 0) return null;
-  return parseYamlBlock(prepared, firstContentIndex, prepared[firstContentIndex]!.indent).value;
 }
 
 export interface FrontmatterAnalysis {
@@ -647,10 +633,6 @@ function parseYamlScalar(rawValue: string): unknown {
   if (trimmed === "[]") return [];
   if (trimmed === "{}") return {};
   if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  // YAML single-quoted scalar: '' is the only escape.
-  if (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'")) {
-    return trimmed.slice(1, -1).replace(/''/g, "'");
-  }
   if (
     trimmed.startsWith("\"") ||
     trimmed.startsWith("[") ||

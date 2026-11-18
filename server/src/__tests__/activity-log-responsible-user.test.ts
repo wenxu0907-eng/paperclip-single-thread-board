@@ -14,7 +14,6 @@ import {
 import {
   logActivity,
   resolveResponsibleUserIdForActivity,
-  type ActivityPublication,
   type LogActivityInput,
 } from "../services/activity-log.js";
 import {
@@ -75,7 +74,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("prefers the heartbeat run responsible user", async () => {
-    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
+    const db = createReader(new Map([
       [heartbeatRuns, [{ responsibleUserId: "run-user" }]],
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
@@ -89,7 +88,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("falls back to issue attribution when the run is unavailable", async () => {
-    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
+    const db = createReader(new Map([
       [heartbeatRuns, []],
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: "creator-user" }]],
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
@@ -103,7 +102,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("uses explicit issue context for non-issue activity", async () => {
-    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
+    const db = createReader(new Map([
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -116,7 +115,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("uses the active agent API key responsible user for no-run actions", async () => {
-    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
+    const db = createReader(new Map([
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -129,7 +128,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("falls back to the company default responsible user", async () => {
-    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
+    const db = createReader(new Map([
       [agentApiKeys, []],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -142,7 +141,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("uses issue creator attribution when responsibleUserId is absent", async () => {
-    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
+    const db = createReader(new Map([
       [issues, [{ responsibleUserId: null, createdByUserId: "creator-user" }]],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -151,7 +150,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("ignores malformed UUID-backed identifiers", async () => {
-    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
+    const db = createReader(new Map([
       [heartbeatRuns, [{ responsibleUserId: "run-user" }]],
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
@@ -215,7 +214,6 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
       responsibleUserId: "key-user",
     });
 
-    const postCommitPublications: ActivityPublication[] = [];
     await logActivity(db, activityInput({
       companyId,
       actorId: agentId,
@@ -223,17 +221,7 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
       entityType: "agent",
       entityId: agentId,
       agentApiKeyId,
-    }), postCommitPublications);
-
-    expect(postCommitPublications).toHaveLength(1);
-    expect(postCommitPublications[0]).toMatchObject({
-      companyId,
-      payload: {
-        action: "issue.updated",
-        entityType: "agent",
-        entityId: agentId,
-      },
-    });
+    }));
 
     const row = await db
       .select({ responsibleUserId: activityLog.responsibleUserId })

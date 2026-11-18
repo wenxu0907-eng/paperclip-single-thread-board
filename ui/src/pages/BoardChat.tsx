@@ -1,4 +1,3 @@
-import { AgentAvatar } from "@/components/AgentAvatar";
 import {
   useEffect,
   useLayoutEffect,
@@ -30,6 +29,7 @@ import {
   AgentBubbleActionRow,
   agentBubbleDateLabel,
 } from "../components/AgentBubbleActionRow";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { cn, formatDateTime } from "../lib/utils";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -63,8 +63,21 @@ function agentInitials(name: string): string {
  * Icon-adjacent-to-name header rendered directly above an agent bubble —
  * the shared `[agent icon][agent name]` convention (PAP-105 / PAP-97).
  */
-function AgentBubbleHeader({ agent }: { agent: import("../components/AgentAvatar").AvatarAgent }) {
-  return <div className="mb-1 flex items-center gap-1.5 pl-1"><AgentAvatar agent={agent} size={24} /><span className="text-sm font-medium text-foreground">{agent.name}</span></div>;
+function AgentBubbleHeader({ name, icon }: { name: string; icon: string | null }) {
+  return (
+    <div className="mb-1 flex items-center gap-1.5 pl-1">
+      <Avatar size="sm" className="shrink-0">
+        <AvatarFallback>
+          {icon ? (
+            <AgentIcon icon={icon} className="h-3.5 w-3.5" />
+          ) : (
+            agentInitials(name)
+          )}
+        </AvatarFallback>
+      </Avatar>
+      <span className="text-sm font-medium text-foreground">{name}</span>
+    </div>
+  );
 }
 
 /** Agent-styled chat bubble containing the three-dot typing indicator. */
@@ -286,8 +299,8 @@ export function BoardChat() {
 
   // Find or detect the board operations issue
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.listIndex(selectedCompanyId!),
-    queryFn: ({ signal }) => issuesApi.listCompact(selectedCompanyId!, { projection: "index" }, { signal }),
+    queryKey: queryKeys.issues.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -645,9 +658,9 @@ export function BoardChat() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center max-w-sm">
-          <h2 className="text-lg font-semibold">No organization selected</h2>
+          <h2 className="text-lg font-semibold">No company selected</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Select an organization to start chatting with your board concierge.
+            Select a company to start chatting with your board concierge.
           </p>
         </div>
       </div>
@@ -679,7 +692,7 @@ export function BoardChat() {
                 {ceoAgent?.name ?? "Conference Room"}
               </h3>
               <p className="text-xs text-muted-foreground">
-                {selectedCompany?.name ?? "Your organization"}
+                {selectedCompany?.name ?? "Your company"}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
@@ -743,8 +756,8 @@ export function BoardChat() {
 
                 const chips: Array<{ label: string; prompt: string }> = [
                   {
-                    label: "Draft an Organization Brief",
-                    prompt: `Draft a one-page Organization Brief for ${companyName} — include our mission, team roster, and first priorities.`,
+                    label: "Draft a Company Brief",
+                    prompt: `Draft a one-page Company Brief for ${companyName} — include our mission, team roster, and first priorities.`,
                   },
                   {
                     label: "Create a hiring plan",
@@ -763,7 +776,7 @@ export function BoardChat() {
                 return (
                   <>
                     <div className="flex flex-col items-start">
-                      <AgentBubbleHeader agent={{ ...ceoAgent, name: ceoName }} />
+                      <AgentBubbleHeader name={ceoName} icon={ceoAgent.icon} />
                       <div
                         className={cn(
                           boardChatBubbleShell,
@@ -820,7 +833,7 @@ export function BoardChat() {
                 const agentIconValue = agent?.icon ?? null;
                 return (
                   <div key={comment.id} className="flex flex-col items-start">
-                    <AgentBubbleHeader agent={agent ?? { id: comment.authorAgentId ?? undefined, name: agentName }} />
+                    <AgentBubbleHeader name={agentName} icon={agentIconValue} />
                     <div
                       className={cn(
                         boardChatBubbleShell,
@@ -870,7 +883,7 @@ export function BoardChat() {
               {streamingText && (
                 <div className="flex flex-col items-start">
                   {ceoAgent && (
-                    <AgentBubbleHeader agent={ceoAgent} />
+                    <AgentBubbleHeader name={ceoAgent.name} icon={ceoAgent.icon} />
                   )}
                   <div
                     className={cn(
@@ -954,7 +967,7 @@ export function BoardChat() {
               value={input}
               onChange={setInput}
               onSubmit={handleSend}
-              placeholder="Ask anything about your organization..."
+              placeholder="Ask anything about your company..."
               submitKey="enter"
               surface="translucent"
               submitting={sending}

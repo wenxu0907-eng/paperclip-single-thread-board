@@ -35,10 +35,6 @@ vi.mock("@/lib/router", () => ({
   ),
 }));
 
-const visibility = vi.hoisted(() => ({ visible: true, loaded: true }));
-vi.mock("@/hooks/useWorkspaceIsolationControls", () => ({ useWorkspaceIsolationControls: () => visibility }));
-beforeEach(() => { visibility.visible = true; visibility.loaded = true; });
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -53,7 +49,6 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     strategyType: "git_worktree",
     name: "Issue sandbox",
     status: "active",
-    deliveryState: "unknown",
     cwd: "/tmp/issue-sandbox",
     repoUrl: null,
     baseRef: null,
@@ -95,7 +90,6 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "in_progress",
     priority: "medium",
-    reviewPolicy: null,
     assigneeAgentId: "agent-1",
     assigneeUserId: null,
     responsibleUserId: null,
@@ -150,31 +144,6 @@ describe("IssueWorkspaceCard", () => {
     container.remove();
   });
 
-  it("keeps workspace details and files while suppressing editing and draft writes", () => {
-    visibility.visible = false;
-    useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => ({
-      data: options.queryKey[0] === "instance" ? { enableIsolatedWorkspaces: true } : [],
-    }));
-    const root = createRoot(container);
-    const onUpdate = vi.fn();
-    const onDraftChange = vi.fn();
-    const onBrowseFiles = vi.fn();
-    act(() => root.render(<IssueWorkspaceCard
-      issue={createIssue({ currentExecutionWorkspace: createExecutionWorkspace() })}
-      project={{ id: "project-1", executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } }}
-      initialEditing livePreview onUpdate={onUpdate} onDraftChange={onDraftChange} onBrowseFiles={onBrowseFiles}
-    />));
-    expect(container.querySelector("select")).toBeNull();
-    expect(container.textContent).not.toContain("Save");
-    expect(container.textContent).toContain("View workspace details");
-    const browse = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Browse files"));
-    act(() => browse!.click());
-    expect(onBrowseFiles).toHaveBeenCalledOnce();
-    expect(onUpdate).not.toHaveBeenCalled();
-    expect(onDraftChange).not.toHaveBeenCalled();
-    act(() => root.unmount());
-  });
-
   it("clears the legacy issue environment override when reusing a workspace", () => {
     const root = createRoot(container);
     const onUpdate = vi.fn();
@@ -204,6 +173,7 @@ describe("IssueWorkspaceCard", () => {
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "isolated_workspace",
+              environmentId: "env-project",
             },
           }}
           onUpdate={onUpdate}
@@ -265,6 +235,7 @@ describe("IssueWorkspaceCard", () => {
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "isolated_workspace",
+              environmentId: "env-project",
             },
           }}
           onUpdate={vi.fn()}

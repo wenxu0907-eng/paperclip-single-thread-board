@@ -22,10 +22,6 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import { teamCatalogApi } from "../api/teamCatalog";
 import { agentsApi } from "../api/agents";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
-import {
-  useAdapterRegistryLoaded,
-  useDisabledAdaptersSync,
-} from "../adapters/use-disabled-adapters";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -39,8 +35,6 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { QueryErrorState, useQueryView } from "@/components/QueryView";
-import { describeError } from "../api/errors";
 import {
   Dialog,
   DialogContent,
@@ -101,6 +95,7 @@ import {
   Folder,
   FolderKanban,
   FolderOpen,
+  Github,
   KeyRound,
   Link2,
   Loader2,
@@ -113,36 +108,10 @@ import {
   XCircle,
   XOctagon,
 } from "lucide-react";
-import { GithubIcon } from "../components/icons/github-icon";
 
 // Matches design §11 breakpoints. Module-level so stories and the page agree.
 const DESKTOP_MIN = 1024;
 const MOBILE_MAX = 767;
-const TEAM_INSTALL_FALLBACK_ADAPTER_TYPE = "claude_local";
-const TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
-
-export function listTeamInstallAdapterTypes(
-  disabledTypes: Set<string>,
-  adapterRegistryLoaded: boolean,
-) {
-  return AGENT_ADAPTER_TYPES.filter(
-    (type) =>
-      !TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES.has(type) &&
-      !disabledTypes.has(type) &&
-      (type !== "paperclip_runner" || adapterRegistryLoaded),
-  );
-}
-
-export function resolveTeamInstallAdapterType(
-  requestedType: string,
-  selectableAdapterTypes: readonly string[],
-) {
-  if (selectableAdapterTypes.includes(requestedType)) return requestedType;
-  if (selectableAdapterTypes.includes(TEAM_INSTALL_FALLBACK_ADAPTER_TYPE)) {
-    return TEAM_INSTALL_FALLBACK_ADAPTER_TYPE;
-  }
-  return selectableAdapterTypes[0] ?? null;
-}
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() =>
@@ -361,7 +330,7 @@ function RiskBanner({ team }: { team: CatalogTeam }) {
 function sourceKindIcon(type: CatalogTeamSourceRef["type"]) {
   switch (type) {
     case "github":
-      return GithubIcon;
+      return Github;
     case "url":
       return Link2;
     case "local_path":
@@ -1016,7 +985,7 @@ export function useInstallTeamCatalogEntry({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(describeError(error, { action: "load the install preview" }).body);
+      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
     },
   });
 
@@ -1034,7 +1003,7 @@ export function useInstallTeamCatalogEntry({
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(describeError(error, { action: "install the team" }).body);
+      setApplyError(error instanceof Error ? error.message : "Install failed.");
     },
   });
 
@@ -1064,34 +1033,24 @@ export function useInstallTeamCatalogEntry({
   };
 }
 
-export function TeamInstallerDialog({
+function TeamInstallerDialog({
   team,
   companyId,
   agents,
   open,
   onClose,
   onInstalled,
-  onReturnFocus,
-  defaultCollisionStrategy = "rename",
 }: {
   team: CatalogTeam;
   companyId: string;
   agents: Agent[];
   open: boolean;
   onClose: () => void;
-  onReturnFocus?: () => void;
-  defaultCollisionStrategy?: CompanyPortabilityCollisionStrategy;
-  onInstalled: (result: CatalogTeamInstallResult) => void;
+  onInstalled: () => void;
 }) {
   const steps = useMemo(() => computeSteps(team), [team]);
   const [stepIndex, setStepIndex] = useState(0);
   const [phase, setPhase] = useState<ApplyPhase>("form");
-  const disabledAdapterTypes = useDisabledAdaptersSync({ enabled: open });
-  const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: open });
-  const selectableAdapterTypes = useMemo(
-    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded),
-    [adapterRegistryLoaded, disabledAdapterTypes],
-  );
 
   // Step 1 — target manager
   const [targetManagerAgentId, setTargetManagerAgentId] = useState<string | null>(null);
@@ -1104,7 +1063,7 @@ export function TeamInstallerDialog({
   const [allowLocalPathSources, setAllowLocalPathSources] = useState(false);
 
   // Step 4 — preview controls
-  const [collisionStrategy, setCollisionStrategy] = useState<CompanyPortabilityCollisionStrategy>(defaultCollisionStrategy);
+  const [collisionStrategy, setCollisionStrategy] = useState<CompanyPortabilityCollisionStrategy>("rename");
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
   // slug -> adapterType override (the install schema accepts adapterOverrides).
   const [adapterOverrides, setAdapterOverrides] = useState<Record<string, string>>({});
@@ -1127,7 +1086,7 @@ export function TeamInstallerDialog({
       setAllowExternalSources(false);
       setAllowUnpinnedOptionalSources(false);
       setAllowLocalPathSources(false);
-      setCollisionStrategy(defaultCollisionStrategy);
+      setCollisionStrategy("rename");
       setNameOverrides({});
       setAdapterOverrides({});
       setSecretValues({});
@@ -1138,7 +1097,7 @@ export function TeamInstallerDialog({
       setApplyError(null);
       setInstallResult(null);
     }
-  }, [open, defaultCollisionStrategy]);
+  }, [open]);
 
   const currentStep = steps[stepIndex];
 
@@ -1158,31 +1117,7 @@ export function TeamInstallerDialog({
   const buildInstallOptions = () => {
     const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
     for (const [slug, adapterType] of Object.entries(adapterOverrides)) {
-      if (adapterType) {
-        const resolvedAdapterType = resolveTeamInstallAdapterType(
-          adapterType,
-          selectableAdapterTypes,
-        );
-        if (!resolvedAdapterType) {
-          throw new Error("Enable a legacy adapter before installing this team.");
-        }
-        overrides[slug] = {
-          adapterType: resolvedAdapterType,
-        };
-      }
-    }
-    for (const agent of previewResult?.portabilityPreview.manifest.agents ?? []) {
-      if (overrides[agent.slug]) continue;
-      const adapterType = resolveTeamInstallAdapterType(
-        agent.adapterType,
-        selectableAdapterTypes,
-      );
-      if (!adapterType) {
-        throw new Error("Enable a legacy adapter before installing this team.");
-      }
-      if (adapterType !== agent.adapterType) {
-        overrides[agent.slug] = { adapterType };
-      }
+      if (adapterType) overrides[slug] = { adapterType };
     }
     const enteredSecretValues = Object.fromEntries(
       Object.entries(secretValues).filter(([, value]) => value.trim().length > 0),
@@ -1201,7 +1136,7 @@ export function TeamInstallerDialog({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(describeError(error, { action: "load the install preview" }).body);
+      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
     },
   });
 
@@ -1214,11 +1149,11 @@ export function TeamInstallerDialog({
     onSuccess: (result) => {
       setInstallResult(result);
       setPhase("done");
-      onInstalled(result);
+      onInstalled();
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(describeError(error, { action: "install the team" }).body);
+      setApplyError(error instanceof Error ? error.message : "Install failed.");
     },
   });
 
@@ -1251,16 +1186,7 @@ export function TeamInstallerDialog({
   const missingRequiredSecretInputs = (previewResult?.portabilityPreview.envInputs ?? [])
     .filter((input) => input.requirement === "required" && (secretValues[envInputFormKey(input)] ?? "").trim().length === 0);
   const missingRequiredSecretCount = missingRequiredSecretInputs.length;
-  const missingEnabledAdapter = Boolean(
-    previewResult?.portabilityPreview.manifest.agents.some(
-      (agent) =>
-        !resolveTeamInstallAdapterType(
-          adapterOverrides[agent.slug] ?? agent.adapterType,
-          selectableAdapterTypes,
-        ),
-    ),
-  );
-  const installBlocked = hasErrors || missingRequiredSecretCount > 0 || missingEnabledAdapter;
+  const installBlocked = hasErrors || missingRequiredSecretCount > 0;
   const needsScriptsConfirm = team.trustLevel === "scripts_executables";
 
   function goNext() {
@@ -1352,7 +1278,6 @@ export function TeamInstallerDialog({
                 nameOverrides={nameOverrides}
                 onRename={(slug, name) => setNameOverrides((cur) => ({ ...cur, [slug]: name }))}
                 adapterOverrides={adapterOverrides}
-                selectableAdapterTypes={selectableAdapterTypes}
                 onAdapterChange={(slug, adapterType) => setAdapterOverrides((cur) => ({ ...cur, [slug]: adapterType }))}
                 secretValues={secretValues}
                 visibleSecretKeys={visibleSecretKeys}
@@ -1374,7 +1299,7 @@ export function TeamInstallerDialog({
                 <p className="font-medium">Install failed</p>
                 <p className="mt-0.5 text-xs">{applyError}</p>
                 <p className="mt-1 text-xs opacity-80">
-                  Partial state is not rolled back. Review the organization activity log before retrying.
+                  Partial state is not rolled back. Review the company activity log before retrying.
                 </p>
               </div>
             </div>
@@ -1402,11 +1327,6 @@ export function TeamInstallerDialog({
           {currentStep === "preview" && !hasErrors && missingRequiredSecretCount > 0 && (
             <span className="text-xs text-rose-600 dark:text-rose-300">
               Required secrets missing: {missingRequiredSecretCount}
-            </span>
-          )}
-          {currentStep === "preview" && !hasErrors && missingRequiredSecretCount === 0 && missingEnabledAdapter && (
-            <span className="text-xs text-rose-600 dark:text-rose-300">
-              Enable a legacy adapter to install this team
             </span>
           )}
           {currentStep === "preview" ? (
@@ -1438,7 +1358,7 @@ export function TeamInstallerDialog({
   if (isMobileSheet) {
     return (
       <Sheet open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
-        <SheetContent onCloseAutoFocus={onReturnFocus ? (event) => { event.preventDefault(); onReturnFocus(); } : undefined} side="bottom" className="flex h-(--sz-100dvh) flex-col gap-0 p-0">
+        <SheetContent side="bottom" className="flex h-(--sz-100dvh) flex-col gap-0 p-0">
           <SheetHeader className="border-b border-border">
             <SheetTitle>{headerTitle}</SheetTitle>
             {headerDescription && <SheetDescription>{headerDescription}</SheetDescription>}
@@ -1452,7 +1372,7 @@ export function TeamInstallerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
-      <DialogContent onCloseAutoFocus={onReturnFocus ? (event) => { event.preventDefault(); onReturnFocus(); } : undefined} className="max-w-3xl">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>{headerTitle}</DialogTitle>
           {headerDescription && <DialogDescription>{headerDescription}</DialogDescription>}
@@ -1487,7 +1407,7 @@ export function StepTargetManager({
         className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2.5 text-sm text-blue-700 dark:text-blue-300"
         id="target-manager-help"
       >
-        This team&apos;s root agents need a manager in your organization. Pick the agent who will become
+        This team&apos;s root agents need a manager in your company. Pick the agent who will become
         their parent. Internal team hierarchy is preserved.
       </div>
 
@@ -1498,7 +1418,7 @@ export function StepTargetManager({
             <li key={slug} className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-sm last:border-b-0">
               <Crown className="h-3.5 w-3.5 text-amber-500" />
               <span className="font-medium">{titleCase(slug)}</span>
-              <Badge variant="ghost" className="ml-auto bg-accent text-(length:--text-micro) text-accent-foreground">
+              <Badge variant="ghost" className="ml-auto bg-amber-500/15 text-(length:--text-micro) text-amber-600 dark:text-amber-300">
                 → ?
               </Badge>
             </li>
@@ -1509,7 +1429,7 @@ export function StepTargetManager({
       {!fullCompany && (
         <div className="space-y-1.5" aria-describedby="target-manager-help">
           <SectionHeader>Target manager</SectionHeader>
-          {agents.length === 0 ? <p role="status" className="rounded-md border border-border p-3 text-sm text-muted-foreground">No agents are available to manage this team. Create an agent in your company, then try again.</p> : <Command className="rounded-md border border-border">
+          <Command className="rounded-md border border-border">
             <CommandInput placeholder="Search agents…" />
             <CommandList>
               <CommandEmpty>No agents found.</CommandEmpty>
@@ -1523,14 +1443,14 @@ export function StepTargetManager({
                     <div className="flex w-full items-center gap-2">
                       <Users2 className="h-3.5 w-3.5 text-muted-foreground" />
                       <span className="font-medium">{agent.name}</span>
-                      <span className="text-xs capitalize">{agent.role}</span>
+                      <span className="text-xs text-muted-foreground capitalize">{agent.role}</span>
                       {targetManagerAgentId === agent.id && <Check className="ml-auto h-4 w-4 text-emerald-500" />}
                     </div>
                   </CommandItem>
                 ))}
               </CommandGroup>
             </CommandList>
-          </Command>}
+          </Command>
         </div>
       )}
 
@@ -1541,7 +1461,7 @@ export function StepTargetManager({
             checked={fullCompany}
             onChange={(e) => onToggleFullCompany(e.target.checked)}
           />
-          Use this team as a full-organization package (no target manager)
+          Use this team as a full-company package (no target manager)
         </label>
       )}
     </div>
@@ -1776,7 +1696,6 @@ export function StepPreview({
   nameOverrides,
   onRename,
   adapterOverrides,
-  selectableAdapterTypes,
   onAdapterChange,
   secretValues = {},
   visibleSecretKeys = {},
@@ -1793,7 +1712,6 @@ export function StepPreview({
   nameOverrides: Record<string, string>;
   onRename: (slug: string, name: string) => void;
   adapterOverrides: Record<string, string>;
-  selectableAdapterTypes: readonly string[];
   onAdapterChange: (slug: string, adapterType: string) => void;
   secretValues?: Record<string, string>;
   visibleSecretKeys?: Record<string, boolean>;
@@ -1921,31 +1839,22 @@ export function StepPreview({
       {manifestAgents.length > 0 && (
         <PreviewSection title={`Adapter selection · ${manifestAgents.length}`}>
           {manifestAgents.map((agent) => {
-            const selected = resolveTeamInstallAdapterType(
-              adapterOverrides[agent.slug] ?? agent.adapterType,
-              selectableAdapterTypes,
-            );
+            const selected = adapterOverrides[agent.slug] ?? agent.adapterType;
             return (
               <li key={agent.slug} className="flex items-center gap-2 px-3 py-2 text-sm">
                 <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="min-w-0 truncate">{agent.name}</span>
                 <span className="font-mono text-(length:--text-micro) text-muted-foreground">{agent.slug}</span>
-                {selected ? (
-                  <Select value={selected} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
-                    <SelectTrigger className="ml-auto h-8 w-48">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {selectableAdapterTypes.map((type) => (
-                        <SelectItem key={type} value={type}>{getAdapterLabel(type)}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <span className="ml-auto text-xs text-rose-600 dark:text-rose-300">
-                    No enabled legacy adapter
-                  </span>
-                )}
+                <Select value={selected} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
+                  <SelectTrigger className="ml-auto h-8 w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AGENT_ADAPTER_TYPES.map((type) => (
+                      <SelectItem key={type} value={type}>{getAdapterLabel(type)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </li>
             );
           })}
@@ -2089,7 +1998,7 @@ export function ApplySuccess({
         <p className="text-base font-semibold">Team installed</p>
       </div>
       <p className="text-sm text-muted-foreground">
-        {team.name} was imported into your organization. Imported entities are stamped with catalog provenance.
+        {team.name} was imported into your company. Imported entities are stamped with catalog provenance.
       </p>
       {result && (
         <ul className="divide-y divide-border/60 rounded-md border border-border px-3">
@@ -2303,7 +2212,6 @@ export function TeamCatalog() {
     queryFn: () => teamCatalogApi.catalogList(kindFilter === "all" ? {} : { kind: kindFilter }),
     enabled: Boolean(selectedCompanyId),
   });
-  const catalogView = useQueryView(catalogQuery);
 
   const teams = catalogQuery.data ?? [];
 
@@ -2391,7 +2299,7 @@ export function TeamCatalog() {
   if (!selectedCompanyId) {
     return (
       <div className="p-8">
-        <EmptyState icon={Users2} message="Select an organization to browse the team catalog." />
+        <EmptyState icon={Users2} message="Select a company to browse the team catalog." />
       </div>
     );
   }
@@ -2399,7 +2307,7 @@ export function TeamCatalog() {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div data-canonical-toolbar="teams" role="toolbar" aria-label="Teams controls" className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
         <h1 className="text-lg font-semibold">Teams</h1>
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -2494,20 +2402,20 @@ export function TeamCatalog() {
             !isDesktop && selectedTeam && "hidden",
           )}
         >
-          {catalogView.kind === "loading" || catalogView.kind === "reconnecting" ? (
+          {catalogQuery.isLoading ? (
             <div className="space-y-2 p-3">
               {Array.from({ length: 6 }).map((_, i) => (
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : catalogView.kind === "error" ? (
+          ) : catalogQuery.isError ? (
             <div className="p-4">
-              <QueryErrorState
-                error={catalogView.error}
-                action="load the team catalog"
-                onRetry={catalogView.retry}
-                retrying={catalogView.isFetching}
-              />
+              <div role="alert" className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-700 dark:text-rose-300">
+                Failed to load team catalog.
+              </div>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => catalogQuery.refetch()}>
+                <RotateCcw className="h-3.5 w-3.5" /> Retry
+              </Button>
             </div>
           ) : teams.length === 0 ? (
             <EmptyState icon={Users2} message="No team catalog configured." />

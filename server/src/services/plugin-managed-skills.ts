@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   pluginManagedResources,
 } from "@paperclipai/db";
-import { joinFrontmatterBlock, normalizeAgentUrlKey, splitFrontmatterBlock } from "@paperclipai/shared";
+import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import type {
   CompanySkill,
   PaperclipPluginManifestV1,
@@ -30,11 +30,6 @@ function canonicalSkillKey(pluginKey: string, skillKey: string) {
   return `plugin/${pluginKeySlug(pluginKey)}/${skillKey}`;
 }
 
-function managedSkillName(pluginKey: string, declaration: PluginManagedSkillDeclaration) {
-  const shortPlugin = pluginKeySlug(pluginKey.split(".").at(-1)!).replace(/^plugin-/, "");
-  return `plugin-${shortPlugin}-${normalizeAgentUrlKey(declaration.slug ?? declaration.skillKey) ?? declaration.skillKey}`;
-}
-
 function yamlString(value: string) {
   return JSON.stringify(value);
 }
@@ -46,8 +41,7 @@ function buildDefaultMarkdown(
   const description = declaration.description?.trim() || `${declaration.displayName} plugin skill.`;
   return [
     "---",
-    `name: ${yamlString(managedSkillName(pluginKey, declaration))}`,
-    `slug: ${yamlString(managedSkillName(pluginKey, declaration))}`,
+    `name: ${yamlString(declaration.displayName)}`,
     `description: ${yamlString(description)}`,
     `key: ${yamlString(canonicalSkillKey(pluginKey, declaration.skillKey))}`,
     "---",
@@ -59,24 +53,25 @@ function buildDefaultMarkdown(
   ].join("\n");
 }
 
-function withManagedSkillKey(markdown: string, canonicalKey: string, name: string) {
-  const block = splitFrontmatterBlock(markdown.replace(/\r\n/g, "\n"));
-  const fields: Record<string, string> = { key: canonicalKey, name, slug: name };
-  const seen = new Set<string>();
-  let continuation = false;
-  const lines = block.frontmatterText.split("\n").flatMap(line => {
-    const field = /^(key|name|slug|"(?:key|name|slug)"|'(?:key|name|slug)')\s*:/.exec(line);
-    if (field) {
-      const key = field[1].replace(/["']/g, "");
-      seen.add(key); continuation = true;
-      return [`${key}: ${yamlString(fields[key])}`];
-    }
-    if (continuation && /^(?:\s|$)/.test(line)) return [];
-    continuation = false;
-    return [line];
-  });
-  for (const [key, value] of Object.entries(fields)) if (!seen.has(key)) lines.push(`${key}: ${yamlString(value)}`);
-  return joinFrontmatterBlock({ ...block, hasFrontmatter: true, frontmatterText: lines.join("\n") });
+function withManagedSkillKey(markdown: string, canonicalKey: string) {
+  const keyLine = `key: ${yamlString(canonicalKey)}`;
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const frontmatter = /^---\n([\s\S]*?)\n---(\n?)/.exec(normalized);
+  if (!frontmatter) {
+    return [
+      "---",
+      keyLine,
+      "---",
+      "",
+      normalized,
+    ].join("\n");
+  }
+
+  const currentBody = frontmatter[1] ?? "";
+  const nextBody = /^key\s*:/m.test(currentBody)
+    ? currentBody.replace(/^key\s*:.*$/m, keyLine)
+    : [currentBody, keyLine].filter(Boolean).join("\n");
+  return `---\n${nextBody}\n---${frontmatter[2] ?? ""}${normalized.slice(frontmatter[0].length)}`;
 }
 
 function buildPackageFiles(
@@ -87,7 +82,7 @@ function buildPackageFiles(
   const canonicalKey = canonicalSkillKey(pluginKey, declaration.skillKey);
   const files: Record<string, string> = {
     [`${root}/SKILL.md`]: declaration.markdown?.trim()
-      ? withManagedSkillKey(declaration.markdown, canonicalKey, managedSkillName(pluginKey, declaration))
+      ? withManagedSkillKey(declaration.markdown, canonicalKey)
       : buildDefaultMarkdown(pluginKey, declaration),
   };
   for (const file of declaration.files ?? []) {
@@ -117,7 +112,7 @@ function buildSkillDefaults(
   return {
     skillKey: declaration.skillKey,
     displayName: declaration.displayName,
-    slug: managedSkillName(pluginKey, declaration),
+    slug: declaration.slug ?? declaration.skillKey,
     description: declaration.description ?? null,
     canonicalKey: canonicalSkillKey(pluginKey, declaration.skillKey),
     files: [
@@ -291,7 +286,7 @@ export function pluginManagedSkillService(
     const results = await skills.importPackageFiles(
       companyId,
       buildPackageFiles(options.pluginKey, declaration),
-      { onConflict: "replace", allowSlugCollision: true },
+      { onConflict: "replace" },
     );
     const imported = results.find((result) =>
       result.skill.key === canonicalSkillKey(options.pluginKey, declaration.skillKey)

@@ -1,22 +1,15 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, UserRound, UserRoundPen } from "lucide-react";
-import {
-  hidesInstancePage,
-  type UserProfileDailyPoint,
-  type UserProfileWindowStats,
-} from "@paperclipai/shared";
+import { AlertCircle, UserRound } from "lucide-react";
+import type { UserProfileDailyPoint, UserProfileWindowStats } from "@paperclipai/shared";
 import { Link, useParams } from "@/lib/router";
-import { authApi } from "../api/auth";
 import { userProfilesApi } from "../api/userProfiles";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
-import { Button } from "../components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueStatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
-import { useHiddenSettings } from "../hooks/useHiddenSettings";
 import { queryKeys } from "../lib/queryKeys";
 import {
   formatCents,
@@ -28,10 +21,8 @@ import {
   providerDisplayName,
   relativeTime,
 } from "../lib/utils";
-import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const NO_COMPANY = "__none__";
-const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 
 function initials(name: string | null | undefined) {
   const value = name?.trim() || "User";
@@ -214,17 +205,6 @@ export function UserProfile() {
     queryFn: () => userProfilesApi.get(companyId, userSlug),
     enabled: !!selectedCompanyId && !!userSlug,
   });
-  // The edit link only belongs on the viewer's own profile, and never when the
-  // hosting operator hides the profile settings surface the link points at.
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-  });
-  const { hidden: hiddenSettings } = useHiddenSettings();
-  const canEditProfile =
-    Boolean(data?.user.id) &&
-    data?.user.id === session?.user.id &&
-    !hidesInstancePage(hiddenSettings, "instance.profile");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Users" }, { label: data?.user.name ?? userSlug }]);
@@ -238,7 +218,7 @@ export function UserProfile() {
     () =>
       (data?.topAgents ?? []).map((row) => ({
         key: row.agentId ?? "unknown",
-        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "Paperclip services"),
+        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "unknown"),
         sublabel: "Task-linked usage",
         costCents: row.costCents,
         inputTokens: row.inputTokens,
@@ -263,7 +243,7 @@ export function UserProfile() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={UserRound} message="Select an organization to view user profiles." />;
+    return <EmptyState icon={UserRound} message="Select a company to view user profiles." />;
   }
 
   if (isLoading) {
@@ -271,7 +251,7 @@ export function UserProfile() {
   }
 
   if (error || !data) {
-    return <EmptyState icon={AlertCircle} message="User profile not found for this organization." />;
+    return <EmptyState icon={AlertCircle} message="User profile not found for this company." />;
   }
 
   const allTimeTokens = allTime ? totalTokens(allTime) : 0;
@@ -300,14 +280,6 @@ export function UserProfile() {
               <span>{metaParts.join(" · ")}</span>
             </div>
           </div>
-          {canEditProfile ? (
-            <Button asChild variant="outline" size="sm">
-              <Link to={PROFILE_SETTINGS_PATH}>
-                <UserRoundPen />
-                Edit profile
-              </Link>
-            </Button>
-          ) : null}
         </div>
 
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -343,7 +315,7 @@ export function UserProfile() {
                     <span className="font-mono text-xs text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
                     <span className="truncate text-sm">{issue.title}</span>
                     <span className="flex items-center gap-3 sm:justify-end">
-                      <IssueStatusBadge {...taskStatusIconProps(issue)} />
+                      <IssueStatusBadge status={issue.status} />
                       <span className="text-xs tabular-nums text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
                     </span>
                   </Link>

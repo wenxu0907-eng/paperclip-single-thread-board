@@ -1,29 +1,24 @@
 #!/usr/bin/env node
 /**
  * check-pr-lockfile.mjs
- * Advisory check that lock content was not edited by hand. `pr-trusted.yml` enforces the
- * same rule with `lockfile-trust.mjs`, which also verifies Dependabot commit signatures.
+ * Checks that pnpm-lock.yaml was not manually edited.
  * Export: checkLockfile(files, prAuthor, prBranch) → { passed, failures }
  */
 import { fileURLToPath } from 'node:url';
-import { DEPENDABOT_LOGIN, LOCKFILES, REFRESH_BRANCH, REFRESH_PR_AUTHOR, REPORT_LOCK_FILES } from './lockfile-trust.mjs';
 
 export function checkLockfile(files, prAuthor, prBranch) {
-  const changed = files.map(f => f.filename);
-  const lockfilesChanged = changed.filter(f => LOCKFILES.includes(f));
-  const proofChanged = changed.filter(f => REPORT_LOCK_FILES.includes(f));
-  if (lockfilesChanged.length === 0 && proofChanged.length === 0) return { passed: true, failures: [] };
+  const lockfileChanged = files.some(f => f.filename === 'pnpm-lock.yaml');
+  if (!lockfileChanged) return { passed: true, failures: [] };
 
-  if (prAuthor === REFRESH_PR_AUTHOR && prBranch === REFRESH_BRANCH) return { passed: true, failures: [] };
-  if (prAuthor === DEPENDABOT_LOGIN && proofChanged.length === 0) return { passed: true, failures: [] };
+  const isRefreshBot =
+    prAuthor === 'github-actions[bot]' && prBranch === 'chore/refresh-lockfile';
 
-  const edited = [...lockfilesChanged, ...proofChanged].map(f => `\`${f}\``).join(', ');
   return {
-    passed: false,
-    failures: [
-      `You have changes to ${edited} — \`pr.yml\` will hard-fail this PR because only the lockfile refresh workflow and Dependabot may change lock content. ` +
+    passed: isRefreshBot,
+    failures: isRefreshBot ? [] : [
+      'You have changes to `pnpm-lock.yaml` — `pr.yml` will hard-fail this PR with a confusing message about lockfile edits. ' +
       'To fix: run `pnpm install` locally, exclude the lockfile from your commit, push again. ' +
-      'The refresh bot regenerates every managed lockfile after your PR merges.',
+      'The lockfile is regenerated automatically by the refresh bot on a schedule.',
     ],
   };
 }

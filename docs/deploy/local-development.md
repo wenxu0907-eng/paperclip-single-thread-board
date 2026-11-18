@@ -7,7 +7,7 @@ Run Paperclip locally with zero external dependencies.
 
 ## Prerequisites
 
-- Node.js 24.11+
+- Node.js 20+
 - pnpm 9+
 
 ## Start Dev Server
@@ -64,7 +64,7 @@ pnpm dev --authenticated-private
 Allow additional private hostnames:
 
 ```sh
-npx paperclipai allowed-hostname dotta-macbook-pro
+pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
 For full setup and troubleshooting, see [Tailscale Private Access](/deploy/tailscale-private-access).
@@ -84,10 +84,10 @@ curl http://localhost:3100/api/companies
 For safer parallel local experiments, initialize a dedicated worktree instance instead of reusing your main checkout:
 
 ```sh
-npx paperclipai worktree:make local-lab --seed-mode minimal
+pnpm paperclipai worktree:make local-lab --seed-mode minimal
 cd ~/paperclip-local-lab
 pnpm paperclipai worktree env                       # inspect generated env exports
-eval "$(npx paperclipai worktree env)"             # bash/zsh
+eval "$(pnpm paperclipai worktree env)"             # bash/zsh
 pnpm paperclipai run
 pnpm paperclipai doctor
 ```
@@ -95,15 +95,14 @@ pnpm paperclipai doctor
 If the experiment gets noisy, repair or reseed the worktree without touching the main branch:
 
 ```sh
-# worktree repair rebuilds the local checkout metadata, so run the checked-out CLI through the direct-exec form.
-node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts worktree repair --branch paperclip-local-lab
-npx paperclipai worktree reseed --from . --to paperclip-local-lab
+pnpm paperclipai worktree repair --branch paperclip-local-lab
+pnpm paperclipai worktree reseed --from . --to paperclip-local-lab
 ```
 
 When done, shut it down and remove the isolated state explicitly:
 
 ```sh
-npx paperclipai worktree:cleanup local-lab --force
+pnpm paperclipai worktree:cleanup local-lab --force
 ```
 
 ## Reset Dev Data

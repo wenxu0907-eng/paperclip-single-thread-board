@@ -181,6 +181,7 @@ describe("CompanyEnvironments", () => {
       id: "company-1",
       name: "Paperclip",
       description: null,
+      brandColor: null,
       logoUrl: null,
       issuePrefix: "PAP",
     });
@@ -215,7 +216,7 @@ describe("CompanyEnvironments", () => {
     });
   });
 
-  it("omits the Local driver option and lists Sandbox before SSH and Tailscale", async () => {
+  it("omits the Local driver option and lists Sandbox before SSH", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -242,7 +243,7 @@ describe("CompanyEnvironments", () => {
     await flushReact();
     await flushReact();
 
-    const addEnvironmentButton = container.querySelector('[aria-label="Add environment"]');
+    const addEnvironmentButton = findAction(container, "Add environment");
     expect(addEnvironmentButton).toBeTruthy();
 
     await act(async () => {

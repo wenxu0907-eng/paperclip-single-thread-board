@@ -1,5 +1,5 @@
 import type { PluginDetailTabProps } from "@paperclipai/plugin-sdk/ui";
-import { copyTextToClipboard, usePluginData, usePluginToast } from "@paperclipai/plugin-sdk/ui";
+import { usePluginData, usePluginToast } from "@paperclipai/plugin-sdk/ui";
 import { DIFFS_TAG_NAME, getSingularPatch } from "@pierre/diffs";
 import type { PatchDiffProps } from "@pierre/diffs/react";
 import { useFileDiffInstance } from "@pierre/diffs/react";
@@ -255,9 +255,6 @@ function WorkspacePatchDiff({
   const { ref } = useFileDiffInstance({
     fileDiff,
     options,
-    // This tab only shows a diff; it does not open an edit session.
-    edit: false,
-    editorOptions: undefined,
     metrics: undefined,
     lineAnnotations: undefined,
     selectedLines: undefined,
@@ -596,7 +593,7 @@ export function ChangesTab({ context }: PluginDetailTabProps) {
 
   const copyPath = async (filePath: string) => {
     try {
-      await copyTextToClipboard(filePath);
+      await navigator.clipboard.writeText(filePath);
       toast({ title: "Path copied", body: filePath });
     } catch {
       toast({ title: "Copy failed", body: filePath, tone: "error" });

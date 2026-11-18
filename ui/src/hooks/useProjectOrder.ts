@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { sidebarPreferencesApi } from "../api/sidebarPreferences";
 import { sortProjectsByStoredOrder } from "../lib/project-order";
 import { queryKeys } from "../lib/queryKeys";
-import { useAccountBoundMutation } from "./useAccountBoundMutation";
 
 type UseProjectOrderParams = {
   projects: Project[];
@@ -46,16 +45,8 @@ export function useProjectOrder({ projects, companyId, userId }: UseProjectOrder
     setOrderedIds((current) => (areEqual(current, nextIds) ? current : nextIds));
   }, [data?.orderedIds, projects]);
 
-  // The server saves for the request's user, so a restored sidebar must not
-  // send (or optimistically apply) an order before the session is verified.
-  const mutation = useAccountBoundMutation({
+  const mutation = useMutation({
     mutationFn: (nextIds: string[]) => sidebarPreferencesApi.updateProjectOrder(companyId!, { orderedIds: nextIds }),
-    onMutate: (nextIds) => {
-      queryClient.setQueryData(queryKey, (current: { orderedIds?: string[]; updatedAt?: Date | null } | undefined) => ({
-        orderedIds: nextIds,
-        updatedAt: current?.updatedAt ?? null,
-      }));
-    },
     onSuccess: (preference) => {
       queryClient.setQueryData(queryKey, preference);
     },
@@ -77,9 +68,13 @@ export function useProjectOrder({ projects, companyId, userId }: UseProjectOrder
       setOrderedIds((current) => (areEqual(current, filtered) ? current : filtered));
       if (!companyId || !userId) return;
 
+      queryClient.setQueryData(queryKey, (current: { orderedIds?: string[]; updatedAt?: Date | null } | undefined) => ({
+        orderedIds: filtered,
+        updatedAt: current?.updatedAt ?? null,
+      }));
       mutation.mutate(filtered);
     },
-    [companyId, mutation, projects, userId],
+    [companyId, mutation, projects, queryClient, queryKey, userId],
   );
 
   return {

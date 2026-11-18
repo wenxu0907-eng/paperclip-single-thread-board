@@ -1,5 +1,3 @@
-import { agentAvatarUrl } from "@/lib/agent-avatar-url";
-import { resolveAgentAppearance } from "@paperclipai/shared";
 /**
  * Work Timeline — custom-SVG Gantt (board-locked Direction C, PAP-12422).
  *
@@ -14,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
 import type { WorkTimelineActor, WorkTimelineResult } from "@paperclipai/shared";
 import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "@/lib/company-routes";
+import { getAgentIcon } from "@/lib/agent-icons";
 import {
   AXIS_H,
   actorType,
@@ -183,10 +182,19 @@ function ActorGlyph({
   clipId: string;
 }) {
   if (actor.type === "agent") {
-    const size = r > 10 ? 24 : 16;
-    const appearance = resolveAgentAppearance(actor.appearance, actor.id.replace(/^agent:/, ""));
-    return <image data-testid="timeline-agent-icon" href={agentAvatarUrl(appearance, size, 2)}
-      x={cx - size / 2} y={cy - size / 2} width={size} height={size} preserveAspectRatio="xMidYMid meet" />;
+    const Icon = getAgentIcon(actor.avatar);
+    const size = r > 10 ? 16 : 13;
+    return (
+      <Icon
+        data-testid="timeline-agent-icon"
+        x={cx - size / 2}
+        y={cy - size / 2}
+        width={size}
+        height={size}
+        strokeWidth={2.2}
+        color="var(--color-muted-foreground)"
+      />
+    );
   }
 
   const stroke = "var(--color-foreground)";

@@ -1,8 +1,6 @@
-import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
-import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, exists, isNull, sql, type Placeholder } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -14,40 +12,13 @@ import {
   heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
-import {
-  MAX_ISSUE_PREFIX_ATTEMPTS,
-  deriveIssuePrefixBase,
-  isIssuePrefixConflict,
-  issuePrefixSuffixForAttempt,
-  pickAvailableIssuePrefix,
-  rekeyCompanyIssueIdentifiers,
-} from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { agentRunSupersededByFreshContinuation, agentRunWritesRevoked } from "../agent-run-cancellation.js";
-import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
-import { resolveRequestRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
-import { preparedStatement } from "../services/prepared-statements.js";
-import { retryIdempotentDatabaseOperation } from "../database-retry.js";
-import { beginIdleTrackedWork } from "../services/task-admission.js";
-import { notifyChatCompanyAuthorityChange } from "../services/chat-run-milestone-notifications.js";
-
-export {
-  isTransientDbConnectionError,
-  retryIdempotentDatabaseOperation as retryOnTransientDbConnectionError,
-} from "../database-retry.js";
-
-import { syncCloudTenantWrites } from "./cloud-tenant-sync.js";
-import { resolveOwnerInstanceAdmin } from "../services/cloud-tenant-authority.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unauthorized, unprocessable } from "../errors.js";
-
-export { isCloudManagedInstance } from "../services/cloud-instance.js";
-import { cloudTenantPrimaryCompanyId, isCloudManagedInstance } from "../services/cloud-instance.js";
+import { forbidden, unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -57,106 +28,53 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-function invalidAgentTokenMessage(token: string) {
-  try {
-    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
-      exp?: unknown;
-    };
-    if (typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000)) {
-      return "Expired agent token; obtain fresh credentials and retry";
-    }
-  } catch {
-    // Malformed and incorrectly signed tokens share the generic failure below.
-  }
-  return "Agent token did not verify; obtain fresh credentials and retry";
-}
-
-const agentAuthenticationFields = {
-  companyId: agents.companyId,
-  status: agents.status,
-  lifecycleHolds: agents.lifecycleHolds,
-};
-
-type Bound<Value> = Value | Placeholder;
-
-export function agentAuthenticationQuery(db: Db, agentId: Bound<string>) {
-  return db.select(agentAuthenticationFields).from(agents).where(eq(agents.id, agentId));
-}
-
-const agentAuthenticationStatement = preparedStatement(db =>
-  agentAuthenticationQuery(db, sql.placeholder("agentId")).prepare("agent_authentication"));
-
-function loadAgentAuthentication(db: Db, agentId: string) {
-  return agentAuthenticationStatement(db).execute({ agentId }).then((rows) => rows[0] ?? null);
-}
-
-export function responsibleUserMembershipsQuery(db: Db, input: { companyId: Bound<string>; userId: Bound<string> }) {
-  return db
-    .select({
-      companyId: companyMemberships.companyId,
-      membershipRole: companyMemberships.membershipRole,
-      status: companyMemberships.status,
-    })
-    .from(companyMemberships)
+async function resolveLegacyRunResponsibleUserId(
+  db: Db,
+  input: { companyId: string; agentId: string; runId: string },
+) {
+  if (!isUuidLike(input.runId)) return null;
+  const run = await db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
     .where(
       and(
-        eq(companyMemberships.companyId, input.companyId),
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, input.userId),
-        eq(companyMemberships.status, "active"),
-        exists(db.select({ id: authUsers.id }).from(authUsers).where(eq(authUsers.id, input.userId))),
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
       ),
-    );
+    )
+    .then((rows) => rows[0] ?? null);
+  return normalizeOptionalString(run?.responsibleUserId);
 }
-
-const responsibleUserMembershipsStatement = preparedStatement(db => responsibleUserMembershipsQuery(db, {
-  companyId: sql.placeholder("companyId"),
-  userId: sql.placeholder("userId"),
-}).prepare("responsible_user_memberships"));
 
 async function loadResponsibleUserMemberships(
   db: Db,
   input: { companyId: string; userId: string | null },
 ) {
   if (!input.userId) return [];
-  return responsibleUserMembershipsStatement(db).execute({ companyId: input.companyId, userId: input.userId });
-}
-
-/**
- * The user's own active company memberships — the exact company scope a
- * locally authenticated session actor carries. Shared by the session path
- * and the Cloud trusted-header path so both resolve the same access set.
- */
-function activeUserMembershipFilter(userId: string) {
-  return and(
-    eq(companyMemberships.principalType, "user"),
-    eq(companyMemberships.principalId, userId),
-    eq(companyMemberships.status, "active"),
-  );
-}
-
-async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
-  return db
-    .select({
-      companyId: companyMemberships.companyId,
-      membershipRole: companyMemberships.membershipRole,
-      status: companyMemberships.status,
-    })
-    .from(companyMemberships)
-    .where(activeUserMembershipFilter(userId));
-}
-
-async function loadCloudTenantMembershipsWithStaleAdmin(db: Db, userId: string) {
-  return db
-    .select({
-      companyId: companyMemberships.companyId,
-      membershipRole: companyMemberships.membershipRole,
-      status: companyMemberships.status,
-      staleInstanceAdmin: sql<boolean>`exists (select 1 from ${instanceUserRoles}
-        where ${instanceUserRoles.userId} = ${userId} and ${instanceUserRoles.role} = 'instance_admin')`,
-    })
-    .from(companyMemberships)
-    .where(activeUserMembershipFilter(userId));
+  const [user, memberships] = await Promise.all([
+    db
+      .select({ id: authUsers.id })
+      .from(authUsers)
+      .where(eq(authUsers.id, input.userId))
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({
+        companyId: companyMemberships.companyId,
+        membershipRole: companyMemberships.membershipRole,
+        status: companyMemberships.status,
+      })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, input.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, input.userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      ),
+  ]);
+  return user ? memberships : [];
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -164,18 +82,6 @@ async function auditAgentJwtRunHeaderMismatch(
   input: { companyId: string; agentId: string; claimRunId: string; headerRunId: string; method: string; url: string },
 ) {
   try {
-    // The claimed run id is untrusted input from a rejected token. activity_log
-    // .run_id is a real FK to heartbeat_runs, so writing it unconditionally
-    // makes the insert fail — and the catch swallows it — exactly when the
-    // claim is bogus. Keep the claim in entityId/details and populate the FK
-    // column only when the row actually exists.
-    const claimedRunExists = isUuidLike(input.claimRunId)
-      ? await db
-          .select({ id: heartbeatRuns.id })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.claimRunId))
-          .then((rows) => rows.length > 0)
-      : false;
     await db.insert(activityLog).values({
       companyId: input.companyId,
       actorType: "agent",
@@ -184,7 +90,7 @@ async function auditAgentJwtRunHeaderMismatch(
       entityType: "heartbeat_run",
       entityId: input.claimRunId,
       ...(isUuidLike(input.agentId) ? { agentId: input.agentId } : {}),
-      ...(claimedRunExists ? { runId: input.claimRunId } : {}),
+      ...(isUuidLike(input.claimRunId) ? { runId: input.claimRunId } : {}),
       details: {
         claimRunId: input.claimRunId,
         headerRunId: input.headerRunId,
@@ -229,19 +135,11 @@ async function auditAgentKeyMissingResponsibleUser(
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
-  localAgentProcessBoundary?: LocalAgentProcessBoundary | null;
 }
-
-const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
-
-const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  const localBoundary = opts.deploymentMode === "local_trusted"
-    ? opts.localAgentProcessBoundary === undefined ? localAgentProcessBoundary() : opts.localAgentProcessBoundary
-    : null;
-  const authenticate: RequestHandler = async (req, _res, next) => {
+  return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? {
@@ -254,32 +152,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    // Routine ingress authenticates its own bearer/signature. Never interpret
-    // webhook credentials as agent keys or attach an ambient browser session.
-    if (req.method === "POST" && publicRoutineWebhookPath.test(req.path)) {
-      req.actor = { type: "none", source: "none" };
-      next();
-      return;
-    }
-
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
-    const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
-
-    // Public MCP gateway protocol requests carry a pcgw_* bearer that is
-    // validated by the gateway service itself. Do not interpret that bearer as
-    // a board key or agent JWT here: doing so rejects the MCP handshake before
-    // the protocol route can verify its run-scoped credential. Keep this bypass
-    // restricted to the unguessable public gateway path; all /api routes retain
-    // the normal actor authentication path below.
-    if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
-      if (runIdHeader) req.actor.runId = runIdHeader;
-      next();
-      return;
-    }
-
-    if (!hasBearerCredentials) {
+    if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
@@ -308,7 +184,20 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .from(instanceUserRoles)
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
-            loadActiveUserCompanyMemberships(db, userId),
+            db
+              .select({
+                companyId: companyMemberships.companyId,
+                membershipRole: companyMemberships.membershipRole,
+                status: companyMemberships.status,
+              })
+              .from(companyMemberships)
+              .where(
+                and(
+                  eq(companyMemberships.principalType, "user"),
+                  eq(companyMemberships.principalId, userId),
+                  eq(companyMemberships.status, "active"),
+                ),
+              ),
           ]);
           req.actor = {
             type: "board",
@@ -326,23 +215,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
-      if (req.actor.source === "local_implicit"
-        && !(await localBoundary?.grantsImplicitBoard(req.socket))) {
-        req.actor = { type: "none", source: "none" };
-      }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
     }
 
-    const token = authHeader!.slice("bearer".length).trim();
+    const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
-      next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
+      next();
       return;
     }
 
-    const verifiedClaims = verifyLocalAgentJwt(token);
-    const boardKey = verifiedClaims ? null : await boardAuth.findBoardApiKeyByToken(token);
+    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
@@ -359,44 +243,38 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           runId: runIdHeader || undefined,
           source: "board_key",
         };
-        if (isCloudManagedInstance() && (access.isInstanceAdmin || access.companyIds.length)) {
-          _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
-        }
         next();
         return;
       }
     }
 
-    const key = verifiedClaims ? null : await db
+    const tokenHash = hashToken(token);
+    const key = await db
       .select()
       .from(agentApiKeys)
-      .where(and(eq(agentApiKeys.keyHash, hashToken(token)), isNull(agentApiKeys.revokedAt)))
+      .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifiedClaims;
+      const claims = verifyLocalAgentJwt(token);
       if (!claims) {
-        next(unauthorized(invalidAgentTokenMessage(token)));
+        next();
         return;
       }
 
-      const agentRecord = await loadAgentAuthentication(db, claims.sub);
+      const agentRecord = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, claims.sub))
+        .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
+        next();
         return;
       }
 
-      if (agentRecord.lifecycleHolds?.includes("setup")) {
-        next(unauthorized("Agent setup is incomplete and cannot authenticate"));
-        return;
-      }
-      if (agentRecord.status === "terminated") {
-        next(unauthorized("Agent is terminated and cannot authenticate"));
-        return;
-      }
-      if (agentRecord.status === "pending_approval") {
-        next(unauthorized("Agent is pending approval and cannot authenticate"));
+      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+        next();
         return;
       }
 
@@ -420,56 +298,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
-      const [identityRun] = await loadAgentRunAuthentication(db, {
-        runId: claims.run_id,
-        companyId: claims.company_id,
-        agentId: claims.sub,
-      });
-      if (agentRunWritesRevoked(identityRun)
-        && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-        const conversation = identityRun?.contextSnapshot?.conversationMode === true;
-        if (agentRunSupersededByFreshContinuation(identityRun)) {
-          _res.status(403).json({ error: "A newer run continues this task. End the turn.", code: "agent_run_superseded" });
-          return;
-        }
-        _res.status(403).json({ error: conversation ? "This conversation turn was cancelled" : "This run was cancelled",
-          code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
-        return;
-      }
-      if (identityRun) {
-        Object.assign(identityRun, await resolveRequestRunIdentity(db,
-          { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id }, identityRun));
-      }
-      if (claims.authorizing_user_id) {
-        // This signed projection exists only for internal native tools. Recheck
-        // the admitted run and current immutable binding on every API call.
-        try {
-          const { parseNativeExecutionInput } = await import("../vendor/paperclip-runner/index.js");
-          const { museRunnerBroker } = await import("../services/muse-runner-broker.js");
-          const [nativeRun] = await db.select({ status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
-            nativeExecutionInput: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'`,
-          }).from(heartbeatRuns).where(and(
-            eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id), eq(heartbeatRuns.agentId, claims.sub),
-          ));
-          const execution = parseNativeExecutionInput(nativeRun?.nativeExecutionInput);
-          if (nativeRun?.status !== "running" || nativeRun.runtimeMode !== "native" || execution.schema !== "paperclip.native-execution-input.v8"
-            || execution.binding.runId !== claims.run_id || execution.binding.agentId !== claims.sub || execution.binding.companyId !== claims.company_id
-            || await museRunnerBroker(db).authorizingUserIdForBinding(execution.provider.binding) !== claims.authorizing_user_id) {
-            throw new Error("Muse internal tool authority mismatch");
-          }
-          await museRunnerBroker(db).assertRunAuthority(execution);
-        } catch {
-          _res.status(403).json({ error: "Muse native tool authority is unavailable" });
-          return;
-        }
-      }
-      const onBehalfOfUserId = identityRun?.activeIdentityContextId
-        ? identityRun.responsibleUserId
-        : claims.responsible_user_id !== undefined
+      const onBehalfOfUserId = claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        : isUuidLike(claims.run_id)
-        ? normalizeOptionalString(identityRun?.responsibleUserId)
-        : null;
+        : await resolveLegacyRunResponsibleUserId(db, {
+            companyId: claims.company_id,
+            agentId: claims.sub,
+            runId: claims.run_id,
+          });
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
@@ -483,8 +318,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         keyScope: normalizeAgentApiKeyScope(claims.key_scope),
         runId: claims.run_id,
         onBehalfOfUserId,
-        ...(claims.authorizing_user_id ? { authorizingUserId: claims.authorizing_user_id } : {}),
-        identityContextId: identityRun?.activeIdentityContextId ?? null,
         onBehalfOfMemberships,
         source: "agent_jwt",
       };
@@ -497,22 +330,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .set({ lastUsedAt: new Date() })
       .where(eq(agentApiKeys.id, key.id));
 
-    const agentRecord = await loadAgentAuthentication(db, key.agentId);
+    const agentRecord = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, key.agentId))
+      .then((rows) => rows[0] ?? null);
 
-    if (!agentRecord || agentRecord.companyId !== key.companyId) {
-      next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
-      return;
-    }
-    if (agentRecord.lifecycleHolds?.includes("setup")) {
-      next(unauthorized("Agent setup is incomplete and cannot authenticate"));
-      return;
-    }
-    if (agentRecord.status === "terminated") {
-      next(unauthorized("Agent is terminated and cannot authenticate"));
-      return;
-    }
-    if (agentRecord.status === "pending_approval") {
-      next(unauthorized("Agent is pending approval and cannot authenticate"));
+    if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+      next();
       return;
     }
 
@@ -545,70 +370,25 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
-    if (isCloudManagedInstance() && req.actor.onBehalfOfMemberships?.length) {
-      _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
-    }
+
     next();
   };
-  return async (req, res, next) => {
-    // Health and task-drain requests bypass tenant admission, but resolving
-    // their actor can still write users, companies, memberships and key usage.
-    // Finish all authentication before entering the next handler: the report
-    // must count concurrent authentication, without counting its own auth.
-    const finish = beginIdleTrackedWork();
-    let continueRequest: (() => void) | undefined;
-    try {
-      await authenticate(req, res, (error?: unknown) => {
-        continueRequest = () => next(error);
-      });
-    } finally {
-      finish();
-    }
-    continueRequest?.();
-  };
 }
 
 /**
- * Minimal header accessor `resolveCloudTenantActor` needs. Express `Request`
- * satisfies it directly; websocket upgrade paths adapt a raw
- * `IncomingMessage` with {@link cloudActorHeaderSourceFromHeaders} since
- * trusted-header authentication must work identically for upgrades — a
- * cloud-proxied browser has no local Better Auth session to fall back on.
+ * Whether this instance is managed by a Paperclip Cloud control plane.
+ * When the tenant server token is configured, the control plane owns the
+ * user/identity lifecycle for this instance: users arrive through trusted
+ * headers (resolveCloudTenantActor) and are deliberately never granted
+ * instance_admin. Surfaces that assume a self-hosted operator will claim
+ * the instance (e.g. the first-admin bootstrap gate) should treat a
+ * cloud-managed instance as already set up.
  */
-export interface CloudActorHeaderSource {
-  header(name: string): string | undefined;
+export function isCloudManagedInstance(): boolean {
+  return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
 }
 
-/** Adapts a raw header map (e.g. `IncomingMessage.headers`) to {@link CloudActorHeaderSource}. */
-export function cloudActorHeaderSourceFromHeaders(
-  headers: Record<string, string | string[] | undefined>,
-): CloudActorHeaderSource {
-  return {
-    header(name: string) {
-      const value = headers[name.toLowerCase()];
-      return Array.isArray(value) ? value[0] : value;
-    },
-  };
-}
-
-/**
- * Trusted-header actor resolution with bounded transient-connection retries.
- * The tenant sync inside is idempotent end to end — every write is an
- * upsert/on-conflict/delete and the write debounce records only after the
- * whole sync succeeds — so replaying it after a dropped connection is safe,
- * and turns a golden-path authentication 500 into a served request.
- */
-export async function resolveCloudTenantActor(
-  db: Db,
-  req: CloudActorHeaderSource,
-): Promise<Express.Request["actor"] | null> {
-  return retryIdempotentDatabaseOperation(() => resolveCloudTenantActorOnce(db, req));
-}
-
-async function resolveCloudTenantActorOnce(
-  db: Db,
-  req: CloudActorHeaderSource,
-): Promise<Express.Request["actor"] | null> {
+export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
@@ -621,185 +401,111 @@ async function resolveCloudTenantActorOnce(
   const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
   const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
-  const paperclipCompanyName = req
-    .header("x-paperclip-cloud-paperclip-company-name")
-    ?.trim();
   const companyId = cloudTenantCompanyId(stackId);
-  const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
-  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-  const syncFingerprint = JSON.stringify([
-    userEmail, userName, stackId, stackRole, paperclipCompanyId ?? "", paperclipCompanyName ?? "",
-  ]);
-  let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
-    companyId,
-    membershipRole,
-    status: "active",
-  };
+  const companyName = paperclipCompanyId || `${stackId} Paperclip`;
+  const now = new Date();
+
+  await db
+    .insert(authUsers)
+    .values({
+      id: userId,
+      name: userName,
+      email: userEmail,
+      emailVerified: true,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: authUsers.id,
+      set: {
+        name: userName,
+        email: userEmail,
+        emailVerified: true,
+        updatedAt: now,
+      },
+    });
 
   // Earlier cloud_tenant builds granted every tenant user `instance_admin`.
   // Stale rows from those deployments would still elevate this user through
   // the BetterAuth session path, board API keys, and the authorization
   // service's own instanceUserRoles lookup — so actively purge them on every
   // trusted-header authentication instead of merely no longer inserting them.
-  //
-  // Every request runs this path, static files included. The membership read
-  // below reports whether such a row exists, so the purge runs only when one
-  // does, or when that read cannot tell. A loaded database then costs one
-  // round trip per request rather than three in a row.
-  const membershipRowsRead = loadCloudTenantMembershipsWithStaleAdmin(db, userId);
-  const purgeStaleInstanceAdmin = async () => {
-    await db
-      .delete(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
-  };
-  const purge = membershipRowsRead.then(
-    (rows) => rows.length === 0 || rows.some((row) => row.staleInstanceAdmin) ? purgeStaleInstanceAdmin() : undefined,
-    () => purgeStaleInstanceAdmin(),
-  );
-  const tenantSync = (async () => {
-    await syncCloudTenantWrites(db, userId, syncFingerprint, async () => {
-      const now = new Date();
-      await db
-        .insert(authUsers)
-        .values({
-          id: userId,
-          name: userName,
-          email: userEmail,
-          emailVerified: true,
-          image: null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: authUsers.id,
-          set: { name: userName, email: userEmail, emailVerified: true, updatedAt: now },
-          setWhere: sql`${authUsers.name} is distinct from ${userName}
-            or ${authUsers.email} is distinct from ${userEmail}
-            or ${authUsers.emailVerified} is distinct from true`,
-        });
+  await db
+    .delete(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-      await insertCloudTenantCompany(db, { companyId, companyName, now });
-      if (paperclipCompanyName) {
-        await repairCloudTenantCompanyName(db, {
-          companyId,
-          paperclipCompanyId,
-          paperclipCompanyName,
-          now,
-        });
-      }
-      // Derive any legacy prefix from the repaired name, preserving the helper's
-      // exact legacy-marker guards and the operator's own edits.
-      await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
-
-      effectiveMembership = await db.transaction(async tx => {
-        const [existing] = await tx.select({
-          status: companyMemberships.status,
-          membershipRole: companyMemberships.membershipRole,
-        }).from(companyMemberships).where(and(
-          eq(companyMemberships.companyId, companyId),
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, userId),
-        )).for("update");
-        // Serialize authority restoration and its notice while retaining the
-        // guarded upsert that leaves unchanged memberships untouched.
-        if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
-          await notifyChatCompanyAuthorityChange(tx, { companyId });
-          await notifyMuseContactVerification(tx, { companyId, operatorId: userId });
-        }
-        return tx
-          .insert(companyMemberships)
-          .values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole, updatedAt: now })
-          .onConflictDoUpdate({
-            target: [companyMemberships.companyId, companyMemberships.principalType, companyMemberships.principalId],
-            set: { status: "active", membershipRole, updatedAt: now },
-            setWhere: sql`${companyMemberships.status} is distinct from 'active'
-              or ${companyMemberships.membershipRole} is distinct from ${membershipRole}`,
-          })
-          .returning({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole, status: companyMemberships.status })
-          // PostgreSQL returns no row for an unchanged ON CONFLICT ... WHERE.
-          // That condition itself proves the existing role/status match the input.
-          .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
-      });
-
-      // An unchanged membership can still lack default grants after a partial
-      // sync or an older deployment; keep this repair inside every actual sync.
-      await ensureHumanRoleDefaultGrants(db, {
-        companyId,
-        principalId: userId,
-        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
-        grantedByUserId: null,
-      });
+  await db
+    .insert(companies)
+    .values({
+      id: companyId,
+      name: companyName,
+      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
+      status: "active",
+      issuePrefix: issuePrefixForCloudStack(stackId),
+      updatedAt: now,
+    })
+    .onConflictDoNothing({
+      target: companies.id,
     });
-  })();
 
-  // The stack's seeded company is only where Cloud provisioned this user.
-  // Companies created afterwards on the instance (imports, in-app company
-  // creation) attach real membership rows for the user, so union those with
-  // the pinned primary — the same active-membership scope a locally
-  // authenticated session actor carries. Strictly this user's own rows; the
-  // membership-creating flows seed their own permission grants, so nothing
-  // needs seeding per request here. The sync above writes only the primary
-  // company's membership, which this read excludes, so it need not wait for
-  // the sync. A read failure degrades to the pinned primary instead of
-  // blocking authentication, mirroring the fail-closed owner-elevation
-  // resolution below.
-  const additionalMembershipsRead: Promise<{ companyId: string; membershipRole: string | null; status: string }[]> =
-    membershipRowsRead.then(
-      (rows) => rows
-        .filter((row) => row.companyId !== companyId)
-        .map((row) => ({ companyId: row.companyId, membershipRole: row.membershipRole, status: row.status })),
-      (err) => {
-        logger.warn(
-          { err, userId, stackId },
-          "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
-        );
-        return [];
+  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+  const membership = await db
+    .insert(companyMemberships)
+    .values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [
+        companyMemberships.companyId,
+        companyMemberships.principalType,
+        companyMemberships.principalId,
+      ],
+      set: {
+        status: "active",
+        membershipRole,
+        updatedAt: now,
       },
-    );
-  // Computed per request, never persisted: the stack owner is elevated to
-  // instance admin of their own dedicated instance only while the
-  // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
-  // company-scoped. Turning the flag off de-elevates on the next request —
-  // there is no role row to clean up.
-  const ownerInstanceAdminRead = resolveOwnerInstanceAdmin(db, stackRole);
+    })
+    .returning()
+    .then((rows) => rows[0] ?? {
+      companyId,
+      membershipRole,
+      status: "active",
+    });
 
-  // Settle every started statement before an error leaves: the caller stops
-  // counting authentication work for idle and drain checks when this throws,
-  // and the owner-settings read can insert the missing settings row.
-  const [purged, synced, membershipsRead, ownerRead] = await Promise.allSettled([
-    purge,
-    tenantSync,
-    additionalMembershipsRead,
-    ownerInstanceAdminRead,
-  ]);
-  if (purged.status === "rejected") throw purged.reason;
-  if (synced.status === "rejected") throw synced.reason;
-  if (membershipsRead.status === "rejected") throw membershipsRead.reason;
-  if (ownerRead.status === "rejected") throw ownerRead.reason;
-  const additionalMemberships = membershipsRead.value;
-  const isInstanceAdmin = ownerRead.value;
+  // Without instance-admin elevation, cloud tenant users are authorized purely
+  // through company-scoped permission grants — seed the same role defaults the
+  // regular membership flows create.
+  await ensureHumanRoleDefaultGrants(db, {
+    companyId,
+    principalId: userId,
+    membershipRole: membership.membershipRole,
+    grantedByUserId: null,
+  });
 
   return {
     type: "board",
     userId,
     userName,
     userEmail,
-    companyIds: [companyId, ...additionalMemberships.map((row) => row.companyId)],
-    memberships: [
-      {
-        companyId,
-        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
-        status: effectiveMembership.status,
-      },
-      ...additionalMemberships,
-    ],
-    isInstanceAdmin,
-    canManageExperimentalSettings: stackRole === "admin",
+    companyIds: [companyId],
+    memberships: [{
+      companyId,
+      membershipRole: membership.membershipRole,
+      status: membership.status,
+    }],
+    isInstanceAdmin: false,
     source: "cloud_tenant",
   };
 }
 
-function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
+function requiredCloudHeader(req: Request, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {
     throw new Error(`Missing trusted Cloud tenant header ${name}`);
@@ -821,244 +527,16 @@ function constantTimeStringEqual(left: string, right: string): boolean {
 }
 
 function cloudTenantCompanyId(stackId: string): string {
-  return cloudTenantPrimaryCompanyId(stackId);
+  const bytes = createHash("sha256").update(`paperclip-cloud-tenant-company:${stackId}`).digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function humanizeCloudStackSlug(stackId: string): string {
-  const slug = stackId
-    .trim()
-    .replace(/^paperclip-stack-/i, "")
-    .replace(/^stack-/i, "");
-  const displayName = slug
-    .split(/[-_]+/)
-    .filter(Boolean)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join(" ");
-  return displayName || "Workspace";
-}
-
-export function isKnownBadCloudCompanyName(
-  name: string,
-  ids: { companyId: string; paperclipCompanyId?: string },
-): boolean {
-  const normalized = name.trim();
-  return (
-    /^paperclip-stack-.+/i.test(normalized) ||
-    /^stack-.+\s+paperclip$/i.test(normalized) ||
-    normalized === ids.companyId ||
-    (ids.paperclipCompanyId !== undefined &&
-      normalized === ids.paperclipCompanyId)
-  );
-}
-
-async function repairCloudTenantCompanyName(
-  db: Db,
-  input: {
-    companyId: string;
-    paperclipCompanyId?: string;
-    paperclipCompanyName: string;
-    now: Date;
-  },
-): Promise<void> {
-  try {
-    const existing = await db
-      .select({ name: companies.name })
-      .from(companies)
-      .where(eq(companies.id, input.companyId))
-      .then((rows) => rows[0]);
-    if (
-      !existing ||
-      !isKnownBadCloudCompanyName(existing.name, {
-        companyId: input.companyId,
-        paperclipCompanyId: input.paperclipCompanyId,
-      })
-    ) {
-      return;
-    }
-    await db.transaction(async (tx) => {
-      const [updated] = await tx
-        .update(companies)
-        .set({ name: input.paperclipCompanyName, updatedAt: input.now })
-        .where(
-          and(
-            eq(companies.id, input.companyId),
-            // A user may rename the company between the read above and this
-            // repair. Match the exact observed machine name so that concurrent
-            // genuine renames always win.
-            eq(companies.name, existing.name),
-          ),
-        )
-        .returning({ id: companies.id });
-      if (!updated) return;
-
-      await tx.insert(activityLog).values({
-        companyId: input.companyId,
-        actorType: "system",
-        actorId: "cloud-tenant-auth",
-        action: "company.updated",
-        entityType: "company",
-        entityId: input.companyId,
-        details: {
-          source: "cloud_tenant_auth",
-          reason: "legacy_machine_name_repair",
-          previousName: existing.name,
-          name: input.paperclipCompanyName,
-        },
-      });
-    });
-  } catch (err) {
-    logger.warn(
-      { err, companyId: input.companyId },
-      "Failed to repair legacy Cloud tenant company name",
-    );
-  }
-}
-
-/**
- * Claims the tenant company row for this stack.
- *
- * The prefix derives from the company name, exactly as it does for a
- * self-hosted company. Each attempt is a standalone INSERT, so a failed
- * attempt is its own implicit transaction and cannot poison a surrounding
- * one. `onConflictDoNothing` only absorbs the `companies.id` conflict — a
- * prefix that another company already holds still raises `23505`, so the loop
- * moves on to the next suffix.
- */
-async function insertCloudTenantCompany(
-  db: Db,
-  input: { companyId: string; companyName: string; now: Date },
-): Promise<void> {
-  const base = deriveIssuePrefixBase(input.companyName);
-  for (let attempt = 1; attempt <= MAX_ISSUE_PREFIX_ATTEMPTS; attempt += 1) {
-    try {
-      await db
-        .insert(companies)
-        .values({
-          id: input.companyId,
-          name: input.companyName,
-          description: null,
-          status: "active",
-          issuePrefix: `${base}${issuePrefixSuffixForAttempt(attempt)}`,
-          updatedAt: input.now,
-        })
-        .onConflictDoNothing({
-          target: companies.id,
-        });
-      return;
-    } catch (error) {
-      if (!isIssuePrefixConflict(error)) throw error;
-    }
-  }
-  throw new Error("Unable to allocate a unique issue prefix for the tenant company");
-}
-
-/**
- * The issue prefix that pre-name-derivation builds gave a tenant company.
- *
- * This derivation survives only as the detector for the one-time repair
- * below. Nothing mints a prefix this way any more.
- */
-function legacyProvisionedIssuePrefix(stackId: string): string {
+function issuePrefixForCloudStack(stackId: string): string {
   const hash = createHash("sha256").update(stackId).digest("hex").slice(0, 4).toUpperCase();
   return `PC${hash}`;
-}
-
-/** The placeholder description that pre-name-derivation builds wrote. */
-const LEGACY_PROVISIONED_DESCRIPTION_PREFIX = "Provisioned by Paperclip Cloud for stack ";
-
-/**
- * One-time repair for companies claimed by a pre-name-derivation build.
- *
- * Those companies carry an opaque hash prefix and a placeholder description
- * that the operator never chose. Re-derive the prefix from the company's
- * current name, re-key the stored issue and case identifiers onto it, and drop
- * the placeholder. Both guards stop matching once the repair lands, so a later
- * pass is a no-op.
- */
-async function repairCloudTenantCompanyProvisionDefaults(
-  db: Db,
-  input: { companyId: string; stackId: string; now: Date },
-): Promise<void> {
-  try {
-    const existing = await db
-      .select({
-        name: companies.name,
-        issuePrefix: companies.issuePrefix,
-        description: companies.description,
-      })
-      .from(companies)
-      .where(eq(companies.id, input.companyId))
-      .then((rows) => rows[0]);
-    if (!existing) return;
-
-    const legacyPrefix = legacyProvisionedIssuePrefix(input.stackId);
-    const legacyDescription = existing.description?.startsWith(LEGACY_PROVISIONED_DESCRIPTION_PREFIX)
-      ? existing.description
-      : null;
-    if (existing.issuePrefix !== legacyPrefix) {
-      if (!legacyDescription) return;
-      // The prefix was already re-derived, so only the placeholder is left.
-      await db
-        .update(companies)
-        .set({ description: null, updatedAt: input.now })
-        .where(and(
-          eq(companies.id, input.companyId),
-          eq(companies.description, legacyDescription),
-        ));
-      return;
-    }
-
-    await db.transaction(async (tx) => {
-      const candidate = await pickAvailableIssuePrefix(tx, deriveIssuePrefixBase(existing.name));
-      if (!candidate || candidate === legacyPrefix) return;
-
-      const [updated] = await tx
-        .update(companies)
-        .set({
-          issuePrefix: candidate,
-          ...(legacyDescription ? { description: null } : {}),
-          updatedAt: input.now,
-        })
-        .where(and(
-          eq(companies.id, input.companyId),
-          // A user may rename the company between the read above and this
-          // repair. Match the exact observed legacy prefix so that concurrent
-          // genuine renames always win.
-          eq(companies.issuePrefix, legacyPrefix),
-        ))
-        .returning({ id: companies.id });
-      if (!updated) return;
-
-      const rekeyed = await rekeyCompanyIssueIdentifiers(tx, {
-        companyId: input.companyId,
-        fromPrefix: legacyPrefix,
-        toPrefix: candidate,
-      });
-
-      await tx.insert(activityLog).values({
-        companyId: input.companyId,
-        actorType: "system",
-        actorId: "cloud-tenant-auth",
-        action: "company.updated",
-        entityType: "company",
-        entityId: input.companyId,
-        details: {
-          source: "cloud_tenant_auth",
-          reason: "legacy_provision_defaults_repair",
-          previousIssuePrefix: legacyPrefix,
-          issuePrefix: candidate,
-          descriptionCleared: legacyDescription !== null,
-          issuesRekeyed: rekeyed.issues,
-          casesRekeyed: rekeyed.cases,
-        },
-      });
-    });
-  } catch (err) {
-    logger.warn(
-      { err, companyId: input.companyId },
-      "Failed to repair legacy tenant company provisioning defaults",
-    );
-  }
 }
 
 export function requireBoard(req: Express.Request) {

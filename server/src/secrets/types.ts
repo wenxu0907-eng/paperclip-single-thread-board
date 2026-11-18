@@ -150,12 +150,6 @@ export interface SecretProviderModule {
     context?: SecretProviderWriteContext;
     providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<PreparedSecretVersion>;
-  updateExternalSecretValue?(input: {
-    externalRef: string;
-    value: string;
-    context?: SecretProviderWriteContext;
-    providerConfig?: SecretProviderVaultRuntimeConfig | null;
-  }): Promise<PreparedSecretVersion>;
   listRemoteSecrets?(input: {
     providerConfig?: SecretProviderVaultRuntimeConfig | null;
     query?: string | null;

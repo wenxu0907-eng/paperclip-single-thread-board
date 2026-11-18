@@ -12,7 +12,6 @@ export const defaultCreateValues: CreateConfigValues = {
   search: false,
   fastMode: false,
   dangerouslyBypassSandbox: false,
-  codexLegacySandboxBypass: undefined,
   command: "",
   args: "",
   extraArgs: "",

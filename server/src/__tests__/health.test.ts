@@ -42,9 +42,8 @@ vi.mock("../dev-server-status.js", () => ({
 
 function createApp(
   db?: Db,
-  serverInfo: NonNullable<Parameters<typeof healthRoutes>[1]>["serverInfo"] = testServerInfo,
-  databaseBackupHealth?: NonNullable<Parameters<typeof healthRoutes>[1]>["databaseBackupHealth"],
-  runtimeEnv?: NonNullable<Parameters<typeof healthRoutes>[1]>["runtimeEnv"],
+  serverInfo = testServerInfo,
+  databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
 ) {
   const app = express();
   app.use(
@@ -56,7 +55,6 @@ function createApp(
       companyDeletionEnabled: true,
       serverInfo,
       databaseBackupHealth,
-      runtimeEnv,
     }),
   );
   return app;
@@ -76,104 +74,8 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, serverInfo: testServerInfo });
   }, 15_000);
-
-  it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {});
-
-    const res = await request(app).get("/health");
-
-    const baseline = {
-      status: "ok",
-      version: serverVersion,
-      serverVersion,
-      commit: testServerInfo.git.fullSha,
-      serverInfo: testServerInfo,
-    };
-    expect(res.text).toBe(JSON.stringify(baseline));
-    expect(Object.prototype.hasOwnProperty.call(res.body, "cloud")).toBe(false);
-  });
-
-  it("exposes public stack metadata on cloud-simulated health", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {
-      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
-      PAPERCLIP_CLOUD_STACK_ID: "stack-1",
-      PAPERCLIP_STACK_SLUG: "acme",
-      PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID: "account-group-1",
-      PAPERCLIP_PRIMARY_HOST: "acme.paperclip.app",
-      PAPERCLIP_CLOUD_API_ORIGIN: "https://app.paperclip.app",
-    });
-
-    const res = await request(app).get("/health");
-
-    expect(res.status).toBe(200);
-    expect(res.body.cloud).toEqual({
-      managed: true,
-      managedBy: "paperclip-cloud",
-      stackSlug: "acme",
-      cloudBaseUrl: "https://app.paperclip.app",
-    });
-  });
-
-  it("lists operator-hidden settings and drops unknown keys", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {
-      PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.adapters,instance.bogus",
-    });
-
-    const res = await request(app).get("/health");
-
-    expect(res.status).toBe(200);
-    expect(res.body.hiddenSettings).toEqual(["instance.plugins", "instance.adapters"]);
-  });
-
-  it("omits hiddenSettings entirely when nothing is hidden", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {});
-
-    const res = await request(app).get("/health");
-
-    expect(res.status).toBe(200);
-    expect(Object.prototype.hasOwnProperty.call(res.body, "hiddenSettings")).toBe(false);
-  });
-
-  it("reveals staging experiments while retaining other Cloud settings restrictions", async () => {
-    const env = {
-      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
-      PAPERCLIP_PRIMARY_HOST: "team.paperclip.app",
-      PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental,instance.experimental.*",
-    };
-    const app = createApp(undefined, testServerInfo, undefined, env);
-    const production = await request(app).get("/health");
-    expect(production.body.hiddenSettings).toContain("instance.experimental");
-    expect(production.body.hiddenSettings).toContain("instance.experimental.enableChatConnectors");
-
-    env.PAPERCLIP_PRIMARY_HOST = "team.staging.paperclip.app";
-    const staging = await request(app).get("/health");
-    expect(staging.body.hiddenSettings).toContain("instance.plugins");
-    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableManagedSandboxOnly");
-    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableOwnerInstanceAdmin");
-    expect(staging.body.hiddenSettings).not.toContain("instance.experimental");
-    expect(staging.body.hiddenSettings).not.toContain("instance.experimental.enableChatConnectors");
-
-    env.PAPERCLIP_PRIMARY_HOST = "team.paperclip.app";
-    expect((await request(app).get("/health")).body.hiddenSettings).toEqual(production.body.hiddenSettings);
-  });
-
-  it("publishes concrete wildcard restrictions to the UI and refreshes changed exceptions", async () => {
-    const env = { PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental.*,!instance.experimental.enableEnvironments" };
-    const app = createApp(undefined, testServerInfo, undefined, env);
-    const first = await request(app).get("/health");
-    expect(first.status).toBe(200);
-    expect(first.body.hiddenSettings).toContain("instance.plugins");
-    expect(first.body.hiddenSettings).toContain("instance.experimental.enableMemoryConnectors");
-    expect(first.body.hiddenSettings).not.toContain("instance.experimental.enableEnvironments");
-    expect(first.body.hiddenSettings.some((key: string) => key.includes("*") || key.startsWith("!"))).toBe(false);
-
-    env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental.*,!instance.experimental.enableMemoryConnectors";
-    const second = await request(app).get("/health");
-    expect(second.body.hiddenSettings).toContain("instance.experimental.enableEnvironments");
-    expect(second.body.hiddenSettings).not.toContain("instance.experimental.enableMemoryConnectors");
-  });
 
   it("returns 200 when the database probe succeeds", async () => {
     const db = {
@@ -205,7 +107,6 @@ describe("GET /health", () => {
       status: "unhealthy",
       version: serverVersion,
       serverVersion,
-      commit: testServerInfo.git.fullSha,
       error: "database_unreachable",
       serverInfo: testServerInfo,
     });
@@ -230,8 +131,6 @@ describe("GET /health", () => {
         unavailableReason: "git_unavailable",
       },
     });
-    // With no git metadata baked in, the exposed commit is null (not omitted).
-    expect(res.body.commit).toBeNull();
   });
 
   it("surfaces a stale database backup warning in full health details", async () => {
@@ -382,8 +281,6 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
-      localAiLoginSupported: false,
-      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       databaseBackup: {
@@ -407,7 +304,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -440,8 +337,6 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
-      localAiLoginSupported: false,
-      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -450,7 +345,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata when authenticated mode is reached without auth middleware", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -479,8 +374,6 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
-      localAiLoginSupported: false,
-      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -489,7 +382,7 @@ describe("GET /health", () => {
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

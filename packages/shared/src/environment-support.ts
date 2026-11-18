@@ -1,33 +1,6 @@
 import type { AgentAdapterType, EnvironmentDriver } from "./constants.js";
 import type { SandboxEnvironmentProvider } from "./types/environment.js";
-import type {
-  JsonSchema,
-  PluginEnvironmentTemplateConfigBinding,
-  SandboxProviderCapabilities,
-} from "./types/plugin.js";
-
-/**
- * Resolve the DECLARED sandbox capabilities of a provider driver, with the
- * legacy `supportsReusableLeases` flag folded in for compatibility.
- *
- * The result is a partial: a key is present only when the driver declared it,
- * so a caller can tell a declared `false` from an absent key. The nested
- * `sandboxCapabilities.reusableLeases` wins over the legacy flag when both are
- * present. This is the DECLARATION only; the runtime still intersects it with
- * the verified worker methods and any narrowing before it grants a capability.
- */
-export function resolveDeclaredSandboxCapabilities(
-  driver: {
-    supportsReusableLeases?: boolean;
-    sandboxCapabilities?: SandboxProviderCapabilities;
-  },
-): SandboxProviderCapabilities {
-  const declared: SandboxProviderCapabilities = { ...(driver.sandboxCapabilities ?? {}) };
-  if (declared.reusableLeases === undefined && driver.supportsReusableLeases !== undefined) {
-    declared.reusableLeases = driver.supportsReusableLeases;
-  }
-  return declared;
-}
+import type { JsonSchema, PluginEnvironmentTemplateConfigBinding } from "./types/plugin.js";
 
 export type EnvironmentSupportStatus = "supported" | "unsupported";
 
@@ -49,7 +22,6 @@ export interface EnvironmentProviderCapability {
   templateRefKind?: string;
   templateConfigBinding?: PluginEnvironmentTemplateConfigBinding;
   supportsTemplateDelete: boolean;
-  supportsLoginPty: boolean;
   displayName?: string;
   description?: string;
   source?: "builtin" | "plugin";
@@ -59,8 +31,6 @@ export interface EnvironmentProviderCapability {
 }
 
 export interface EnvironmentCapabilities {
-  /** Namespaced plugin driver keys that can host a login on a saved agent. */
-  loginPtyDrivers?: Record<string, { supportsLoginPty: boolean; supportsCodexLogin?: boolean }>;
   adapters: AdapterEnvironmentSupport[];
   drivers: Record<EnvironmentDriver, EnvironmentSupportStatus>;
   sandboxProviders: Record<SandboxEnvironmentProvider, EnvironmentProviderCapability>;
@@ -69,11 +39,9 @@ export interface EnvironmentCapabilities {
 const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
   "claude_local",
   "codex_local",
-  "paperclip_runner",
   "cursor",
   "gemini_local",
   "grok_local",
-  "kimi_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -83,7 +51,6 @@ export function adapterSupportsRemoteManagedEnvironments(adapterType: string): b
 }
 
 export function supportedEnvironmentDriversForAdapter(adapterType: string): EnvironmentDriver[] {
-  if (adapterType === "paperclip_runner") return ["local", "ssh", "sandbox", "plugin"];
   return adapterSupportsRemoteManagedEnvironments(adapterType)
     ? ["local", "ssh", "sandbox"]
     : ["local"];
@@ -155,14 +122,11 @@ export function getEnvironmentCapabilities(
       supportsSavedProbe: true,
       supportsUnsavedProbe: true,
       supportsRunExecution: false,
-      // The fake provider runtime declares false. The presentation must match
-      // it, so execution and presentation agree.
-      supportsReusableLeases: false,
+      supportsReusableLeases: true,
       supportsInteractiveSetup: false,
       interactiveSetupConnectionTypes: [],
       supportsTemplateCapture: false,
       supportsTemplateDelete: false,
-      supportsLoginPty: false,
       displayName: "Fake",
       source: "builtin",
     },
@@ -173,16 +137,13 @@ export function getEnvironmentCapabilities(
       supportsSavedProbe: capability.supportsSavedProbe ?? true,
       supportsUnsavedProbe: capability.supportsUnsavedProbe ?? true,
       supportsRunExecution: capability.supportsRunExecution ?? true,
-      // Default absent to false. A manifest that does not declare reusable
-      // leases must present as false, so execution (=== true) agrees.
-      supportsReusableLeases: capability.supportsReusableLeases ?? false,
+      supportsReusableLeases: capability.supportsReusableLeases ?? true,
       supportsInteractiveSetup: capability.supportsInteractiveSetup ?? false,
       interactiveSetupConnectionTypes: capability.interactiveSetupConnectionTypes ?? [],
       supportsTemplateCapture: capability.supportsTemplateCapture ?? false,
       templateRefKind: capability.templateRefKind,
       templateConfigBinding: capability.templateConfigBinding,
       supportsTemplateDelete: capability.supportsTemplateDelete ?? false,
-      supportsLoginPty: capability.supportsLoginPty ?? false,
       displayName: capability.displayName,
       description: capability.description,
       source: capability.source ?? "plugin",
@@ -197,20 +158,8 @@ export function getEnvironmentCapabilities(
       local: "supported",
       ssh: "supported",
       sandbox: "supported",
-      plugin: adapterTypes.includes("paperclip_runner") ? "supported" : "unsupported",
+      plugin: "unsupported",
     },
     sandboxProviders,
   };
-}
-
-/** Shared presentation rule for both temporary sandboxes and existing computers. */
-export function environmentSupportsLoginPty(environment: { driver: string; config: Record<string, unknown> } | null | undefined, capabilities: EnvironmentCapabilities | null | undefined, adapterType?: string): boolean {
-  if (!environment || !capabilities) return false;
-  if (environment.driver === "sandbox") return typeof environment.config.provider === "string" && capabilities.sandboxProviders[environment.config.provider]?.supportsLoginPty === true;
-  if (environment.driver === "plugin") {
-    const driver = capabilities.loginPtyDrivers?.[`${environment.config.pluginKey}:${environment.config.driverKey}`];
-    return driver?.supportsLoginPty === true
-      && (adapterType === undefined || adapterType === "claude_local" || (adapterType === "codex_local" && driver.supportsCodexLogin === true));
-  }
-  return false;
 }

@@ -69,8 +69,6 @@ export async function assertLowTrustWorkspaceIsolation(input: {
   }
   if (
     !input.issue ||
-    !(input.resolution.humanDirectedIssueId && input.issue.companyId === input.resolution.boundary.companyId &&
-      input.issue.id === input.resolution.humanDirectedIssueId) &&
     !(await workspaceIssueWithinLowTrustBoundary({
       db: input.db,
       boundary: input.resolution.boundary,

@@ -16,11 +16,11 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "select",
         default: "auto",
         options: [
-          { value: "auto", label: "Default (ACP)" },
+          { value: "auto", label: "Auto (ACP preferred)" },
           { value: "cli", label: "Codex CLI" },
           { value: "acp", label: "ACP" },
         ],
-        hint: "Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.",
+        hint: "Auto uses ACP when prerequisites pass and falls back to Codex CLI with diagnostics.",
       },
       {
         key: "agentCommand",

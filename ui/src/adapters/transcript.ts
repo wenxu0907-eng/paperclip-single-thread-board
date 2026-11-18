@@ -19,12 +19,7 @@ function resolveStdoutParser(source: StdoutLineParser | TranscriptParserSource) 
 export function appendTranscriptEntry(entries: TranscriptEntry[], entry: TranscriptEntry) {
   if ((entry.kind === "thinking" || entry.kind === "assistant") && entry.delta) {
     const last = entries[entries.length - 1];
-    if (
-      last &&
-      last.kind === entry.kind &&
-      last.delta &&
-      last.channel === entry.channel
-    ) {
+    if (last && last.kind === entry.kind && last.delta) {
       last.text += entry.text;
       last.ts = entry.ts;
       return;

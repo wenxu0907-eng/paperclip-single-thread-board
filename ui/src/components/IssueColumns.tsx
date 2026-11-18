@@ -1,7 +1,3 @@
-import { AgentIdentity } from "@/components/AgentIdentity";
-import { AgentQueueWaitChip } from "./AgentQueueWait";
-import type { IssueWaiting } from "../lib/liveIssueIds";
-import type { AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
 import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
 import { Columns3 } from "lucide-react";
@@ -24,7 +20,6 @@ import { timeAgo } from "../lib/timeAgo";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Badge } from "@/components/ui/badge";
-import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffBy", "project", "workspace", "parent", "labels", "updated"];
 
@@ -52,25 +47,8 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   updated: "Latest visible activity time.",
 };
 
-export function issueColumnDescription(
-  column: InboxIssueColumn,
-  presentation: "legacy" | "task" = "legacy",
-): string {
-  if (column === "id" && presentation === "task") {
-    return "Task identifier like PAP-1009 on the trailing edge.";
-  }
-  if (column === "status" && presentation === "task") {
-    return "Task state icon on the leading edge.";
-  }
-  return issueColumnDescriptions[column];
-}
-
-export function issueActivityTimestamp(issue: Issue): string {
-  return timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
-}
-
 export function issueActivityText(issue: Issue): string {
-  return `Updated ${issueActivityTimestamp(issue)}`;
+  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -91,22 +69,16 @@ export function IssueColumnPicker({
   availableColumns,
   visibleColumnSet,
   onToggleColumn,
-  showDateGroupSeparators,
-  onToggleDateGroupSeparators,
   onResetColumns,
   title,
   iconOnly = false,
-  rowPresentation = "legacy",
 }: {
   availableColumns: InboxIssueColumn[];
   visibleColumnSet: ReadonlySet<InboxIssueColumn>;
   onToggleColumn: (column: InboxIssueColumn, enabled: boolean) => void;
-  showDateGroupSeparators?: boolean;
-  onToggleDateGroupSeparators?: (enabled: boolean) => void;
   onResetColumns: () => void;
   title: string;
   iconOnly?: boolean;
-  rowPresentation?: "legacy" | "task";
 }) {
   return (
     <DropdownMenu>
@@ -147,28 +119,11 @@ export function IssueColumnPicker({
                 {issueColumnLabels[column]}
               </span>
               <span className="text-xs leading-relaxed text-muted-foreground">
-                {issueColumnDescription(column, rowPresentation)}
+                {issueColumnDescriptions[column]}
               </span>
             </span>
           </DropdownMenuCheckboxItem>
         ))}
-        {showDateGroupSeparators !== undefined && onToggleDateGroupSeparators ? (
-          <DropdownMenuCheckboxItem
-            checked={showDateGroupSeparators}
-            onSelect={(event) => event.preventDefault()}
-            onCheckedChange={(checked) => onToggleDateGroupSeparators(checked === true)}
-            className="items-start rounded-lg px-3 py-2.5 pl-8"
-          >
-            <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium text-foreground">
-                Date group separators
-              </span>
-              <span className="text-xs leading-relaxed text-muted-foreground">
-                Show Today, Yesterday, and Earlier rules on newest-first task lists.
-              </span>
-            </span>
-          </DropdownMenuCheckboxItem>
-        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={onResetColumns}
@@ -185,7 +140,6 @@ export function IssueColumnPicker({
 export function InboxIssueMetaLeading({
   issue,
   isLive,
-  waiting = null,
   subtreeLiveCount = 0,
   showSubtreeLiveChip = true,
   showStatus = true,
@@ -195,8 +149,6 @@ export function InboxIssueMetaLeading({
 }: {
   issue: Issue;
   isLive: boolean;
-  /** Set when every live run of the task is still waiting to start. */
-  waiting?: IssueWaiting | null;
   subtreeLiveCount?: number;
   showSubtreeLiveChip?: boolean;
   showStatus?: boolean;
@@ -208,7 +160,7 @@ export function InboxIssueMetaLeading({
     <>
       {showStatus ? (
         <span className="hidden shrink-0 items-center sm:inline-flex">
-          {statusSlot ?? <StatusIcon {...taskStatusIconProps(issue)} />}
+          {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
         </span>
       ) : null}
       {checklistStepNumber !== null ? (
@@ -221,9 +173,7 @@ export function InboxIssueMetaLeading({
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
       ) : null}
-      {isLive && waiting ? (
-        <AgentQueueWaitChip queue={waiting.queue} />
-      ) : isLive && (
+      {isLive && (
         <Badge variant="ghost"
           className={cn(
             "px-1.5 sm:gap-1.5 sm:px-2",
@@ -281,8 +231,6 @@ export function InboxIssueTrailingColumns({
   workspaceId,
   workspaceName,
   assigneeName,
-  assigneeAgent,
-  creatorAgent,
   assigneeUserName,
   assigneeUserAvatarUrl,
   creatorAgentName,
@@ -302,8 +250,6 @@ export function InboxIssueTrailingColumns({
   workspaceId?: string | null;
   workspaceName: string | null;
   assigneeName: string | null;
-  assigneeAgent?: AvatarAgent;
-  creatorAgent?: AvatarAgent;
   assigneeUserName?: string | null;
   assigneeUserAvatarUrl?: string | null;
   creatorAgentName?: string | null;
@@ -316,7 +262,7 @@ export function InboxIssueTrailingColumns({
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
-  const activityText = issueActivityTimestamp(issue);
+  const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
   const originatingActor = deriveOriginatingActor(issue);
   const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
@@ -336,10 +282,11 @@ export function InboxIssueTrailingColumns({
           if (issue.assigneeAgentId) {
             return (
               <span key={column} className="min-w-0 text-xs text-foreground">
-                <AgentIdentity
-                  agent={assigneeAgent ?? { id: issue.assigneeAgentId, name: assigneeName ?? issue.assigneeAgentId.slice(0, 8) }}
+                <Identity
+                  name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
                   size="sm"
-                  className="min-w-0 max-w-full"
+                  shape="square"
+                  className="min-w-0"
                 />
               </span>
             );
@@ -352,7 +299,7 @@ export function InboxIssueTrailingColumns({
                   name={userLabel}
                   avatarUrl={assigneeUserAvatarUrl}
                   size="sm"
-                  className="min-w-0 max-w-full"
+                  className="min-w-0"
                 />
               </span>
             );
@@ -372,10 +319,11 @@ export function InboxIssueTrailingColumns({
               <Tooltip key={column}>
                 <TooltipTrigger asChild>
                   <span className="min-w-0 text-xs text-foreground">
-                    <AgentIdentity
-                      agent={creatorAgent ?? { id: originatingActor.id, name }}
+                    <Identity
+                      name={name}
                       size="sm"
-                      className="min-w-0 max-w-full"
+                      shape="square"
+                      className="min-w-0"
                     />
                   </span>
                 </TooltipTrigger>
@@ -394,7 +342,7 @@ export function InboxIssueTrailingColumns({
                       name={creatorUserLabel}
                       avatarUrl={creatorUserAvatarUrl}
                       size="sm"
-                      className="min-w-0 max-w-full"
+                      className="min-w-0"
                     />
                   </span>
                 </TooltipTrigger>

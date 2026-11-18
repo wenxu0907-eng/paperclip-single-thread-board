@@ -126,23 +126,9 @@ describe("ImageGalleryModal", () => {
     expect(document.body.textContent).toContain("1 / 2");
 
     await act(async () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it.each(["/images/original.png", undefined])("offers the original image separately from download with openPath %s", async (openPath) => {
-    const item = makeMediaItem({ openPath });
-    await act(async () => {
-      root.render(<ImageGalleryModal items={[item]} initialIndex={0} open onOpenChange={() => undefined} />);
-    });
-    await flushReact();
-
-    const original = document.body.querySelector<HTMLAnchorElement>('a[aria-label="Open original screenshot.png"]');
-    expect(original?.getAttribute("href")).toBe(openPath ?? item.contentPath);
-    expect(original?.target).toBe("_blank");
-    expect(original?.rel).toContain("noopener");
-    expect(document.body.querySelector('a[aria-label="Download screenshot.png"]')?.getAttribute("href")).toBe(item.downloadPath);
   });
 });

@@ -9,14 +9,10 @@ import { StatusIcon } from "../components/StatusIcon";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { formatDate } from "../lib/utils";
 import { ListTodo } from "lucide-react";
-import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
-import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export function MyIssues() {
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
@@ -24,40 +20,18 @@ export function MyIssues() {
     setBreadcrumbs([{ label: "My Tasks" }]);
   }, [setBreadcrumbs]);
 
-  const issuesQuery = useQuery({
+  const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: issues, isLoading } = issuesQuery;
-  const issuesView = useQueryView(issuesQuery);
 
   if (!selectedCompanyId) {
-    return (
-      <EmptyState
-        icon={ListTodo}
-        message={streamlinedUiEnabled
-          ? "Select an organization to view your tasks."
-          : "Select a company to view your tasks."}
-      />
-    );
+    return <EmptyState icon={ListTodo} message="Select a company to view your tasks." />;
   }
 
-  // Keep a loaded list on screen through a failed refetch; only a real
-  // failure, or an outage before the first load, replaces the page.
-  if (isLoading || issuesView.kind === "reconnecting") {
+  if (isLoading) {
     return <PageSkeleton variant="list" />;
-  }
-  if (issuesView.kind === "error") {
-    return (
-      <QueryErrorState
-        size="page"
-        error={issuesView.error}
-        action="load your tasks"
-        onRetry={issuesView.retry}
-        retrying={issuesView.isFetching}
-      />
-    );
   }
 
   // Show issues that are not assigned (user-created or unassigned)
@@ -67,6 +41,8 @@ export function MyIssues() {
 
   return (
     <div className="space-y-4">
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
+
       {myIssues.length === 0 && (
         <EmptyState icon={ListTodo} message="No tasks assigned to you." />
       )}
@@ -80,7 +56,7 @@ export function MyIssues() {
               title={issue.title}
               to={`/issues/${issue.identifier ?? issue.id}`}
               leading={
-                <StatusIcon {...taskStatusIconProps(issue)} />
+                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
               }
               trailing={
                 <span className="text-xs text-muted-foreground">

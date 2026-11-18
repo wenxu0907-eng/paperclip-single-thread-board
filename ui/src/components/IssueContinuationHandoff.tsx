@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { IssueDocument } from "@paperclipai/shared";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
-import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
+import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
-import { ChevronDown, ChevronRight, History } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 type IssueContinuationHandoffProps = {
@@ -19,8 +19,18 @@ export function IssueContinuationHandoff({
   externalReferences,
 }: IssueContinuationHandoffProps) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [highlighted, setHighlighted] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current) {
+        clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!document || focusSignal <= 0) return;
@@ -30,6 +40,16 @@ export function IssueContinuationHandoff({
     const timer = setTimeout(() => setHighlighted(false), 3000);
     return () => clearTimeout(timer);
   }, [document, focusSignal]);
+
+  const copyBody = useCallback(async () => {
+    if (!document) return;
+    await navigator.clipboard?.writeText(document.body);
+    setCopied(true);
+    if (copiedTimerRef.current) {
+      clearTimeout(copiedTimerRef.current);
+    }
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
+  }, [document]);
 
   if (!document) return null;
 
@@ -67,13 +87,10 @@ export function IssueContinuationHandoff({
             {document.latestRevisionNumber > 0 ? ` - revision ${document.latestRevisionNumber}` : ""}
           </div>
         </div>
-        <AgentSetupPrompt
-          prompt={document.body}
-          label="Continue with an agent"
-          title="Task handoff"
-          description="Paste this into your agent to continue from this handoff."
-          align="end"
-        />
+        <Button variant="ghost" size="sm" onClick={copyBody} className="shrink-0">
+          {copied ? <Check className="mr-1.5 h-3.5 w-3.5" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
+          {copied ? "Copied" : "Copy"}
+        </Button>
       </div>
       {expanded ? (
         <div className="mt-3 rounded-md border border-border bg-background/80 p-3">

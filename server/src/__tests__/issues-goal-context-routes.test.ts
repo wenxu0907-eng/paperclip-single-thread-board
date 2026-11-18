@@ -12,7 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
-  listReviewAttention: vi.fn(),
+  listProductivityReviews: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   getActiveInboxArchiveFields: vi.fn(),
   listAttachments: vi.fn(),
@@ -34,21 +34,14 @@ const mockDocumentsService = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
-  getById: vi.fn(() => { throw new Error("Task routes must not inspect a workspace"); }),
-  getStoredById: vi.fn(),
+  getById: vi.fn(),
 }));
 
-const mockAccessService = vi.hoisted(() => {
-  const decide = vi.fn();
-  return {
-    canUser: vi.fn(),
-    decide,
-    // The batched read asks the mocked decision once per task.
-    decideReads: async (actor: unknown, resources: unknown[]) =>
-      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
-    hasPermission: vi.fn(),
-  };
-});
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  decide: vi.fn(),
+  hasPermission: vi.fn(),
+}));
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -106,15 +99,9 @@ const mockDb = vi.hoisted(() => ({
   execute: vi.fn(),
 }));
 
-vi.mock("../services/task-interruption-presentation.js", () => ({
-  taskInterruptionPresentation: vi.fn(async () => null),
-  taskInterruptionPresentations: vi.fn(async () => new Map()),
-  taskRetryRefusal: vi.fn(async () => null),
-}));
-
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1" })),
+    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
@@ -149,7 +136,6 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
-  STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
 }));
 
 function createApp() {
@@ -203,7 +189,7 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
-describe("issue goal context routes", () => {
+describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -223,17 +209,16 @@ describe("issue goal context routes", () => {
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
-    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+    mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.getActiveInboxArchiveFields.mockResolvedValue({});
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
-    mockExecutionWorkspaceService.getStoredById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
-    emptyQuery.leftJoin = vi.fn(() => emptyQuery);
     emptyQuery.where = vi.fn(() => emptyQuery);
     emptyQuery.orderBy = vi.fn(() => emptyQuery);
     emptyQuery.limit = vi.fn(async () => []);
@@ -281,24 +266,6 @@ describe("issue goal context routes", () => {
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
   });
 
-  it.each(["", "/heartbeat-context"])("reads historical review tasks without computed productivity fields: %s", async (suffix) => {
-    mockIssueService.getById.mockResolvedValue({
-      ...legacyProjectLinkedIssue,
-      originKind: "issue_productivity_review",
-      originId: "historical-source",
-    });
-    const res = await request(createApp()).get(`/api/issues/${legacyProjectLinkedIssue.id}${suffix}`);
-    expect(res.status).toBe(200);
-    const issue = suffix ? res.body.issue : res.body;
-    expect(issue).toMatchObject({
-      originKind: "issue_productivity_review",
-      originId: "historical-source",
-      assigneeAgentId: legacyProjectLinkedIssue.assigneeAgentId,
-      status: legacyProjectLinkedIssue.status,
-    });
-    expect(issue).not.toHaveProperty("productivityReview");
-  });
-
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
     const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
@@ -312,7 +279,7 @@ describe("issue goal context routes", () => {
     );
     expect(mockIssueService.findMentionedProjectIds).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { includeCommentBodies: false, issue: expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }) },
+      { includeCommentBodies: false },
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
@@ -401,7 +368,7 @@ describe("issue goal context routes", () => {
         updatedAt: new Date("2026-03-20T00:00:00Z"),
       },
     });
-    mockExecutionWorkspaceService.getStoredById.mockResolvedValueOnce({
+    mockExecutionWorkspaceService.getById.mockResolvedValueOnce({
       id: workspaceId,
       companyId: "company-1",
       projectId: legacyProjectLinkedIssue.projectId,
@@ -475,9 +442,6 @@ describe("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
-    expect(res.body.taskQuestionContext).toEqual({
-      questions: [], truncated: false, guidance: expect.stringContaining("Historical questions remain answerable"),
-    });
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
@@ -534,12 +498,12 @@ describe("issue goal context routes", () => {
     ]);
   });
 
-  it.each(["", "/heartbeat-context"])("reads stored workspace context without Git inspection: %s", async (suffix) => {
+  it("surfaces the current execution workspace from GET /issues/:id/heartbeat-context", async () => {
     mockIssueService.getById.mockResolvedValue({
       ...legacyProjectLinkedIssue,
       executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
     });
-    mockExecutionWorkspaceService.getStoredById.mockResolvedValue({
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
       id: "55555555-5555-4555-8555-555555555555",
       name: "PAP-581 workspace",
       mode: "isolated_workspace",
@@ -557,12 +521,11 @@ describe("issue goal context routes", () => {
     });
 
     const res = await request(createApp()).get(
-      `/api/issues/11111111-1111-4111-8111-111111111111${suffix}`,
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
 
     expect(res.status).toBe(200);
-    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
-    expect(mockExecutionWorkspaceService.getStoredById).toHaveBeenCalledWith("company-1", "55555555-5555-4555-8555-555555555555", { includeRuntimeServices: true });
+    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
     expect(res.body.currentExecutionWorkspace).toEqual(expect.objectContaining({
       id: "55555555-5555-4555-8555-555555555555",
       mode: "isolated_workspace",

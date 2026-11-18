@@ -1,4 +1,3 @@
-import { AgentAvatar } from "@/components/AgentAvatar";
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
@@ -27,6 +26,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ListFilter, Layers, ChevronDown, ChevronRight, User, Settings } from "lucide-react";
+import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
 
 /* ------------------------------------------------------------------ */
@@ -280,7 +280,7 @@ function CollapsedFeedGroup({
           : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
         }
         {group.latestEvent.actorType === "agent"
-          ? <AgentAvatar agent={actor} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
+          ? <AgentIcon icon={actor?.icon ?? null} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           : group.latestEvent.actorType === "user"
             ? <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             : <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -369,8 +369,8 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
 
   // Fetch issues for name resolution
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.listIndex(selectedCompanyId ?? ""),
-    queryFn: ({ signal }) => issuesApi.listCompact(selectedCompanyId!, { projection: "index" }, { signal }),
+    queryKey: queryKeys.issues.list(selectedCompanyId ?? ""),
+    queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 

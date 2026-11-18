@@ -6,7 +6,7 @@ import type {
   AgentDesiredSkillEntry,
   CompanySkillDetail,
   CompanySkillUsageAgent,
-  CompanySkillVersionSummary,
+  CompanySkillVersion,
 } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
@@ -130,7 +130,7 @@ export function AgentsUsingSkillDialog({
     if (!open) setConfirmRemoveId(null);
   }, [open]);
 
-  const versions = useMemo<CompanySkillVersionSummary[]>(
+  const versions = useMemo<CompanySkillVersion[]>(
     () => [...(versionsQuery.data ?? [])].sort((a, b) => b.revisionNumber - a.revisionNumber),
     [versionsQuery.data],
   );
@@ -189,7 +189,7 @@ export function AgentsUsingSkillDialog({
       if (desiredSetsEqual(currentEntries, nextEntries)) {
         return { agentId: agent.id, changed: false };
       }
-      await agentsApi.syncSkills(agent.id, nextEntries, "replace", companyId);
+      await agentsApi.syncSkills(agent.id, nextEntries, companyId);
       return { agentId: agent.id, changed: true };
     },
     onSuccess: async ({ agentId }) => {
@@ -308,7 +308,7 @@ function AgentRow({
   icon: string | null;
   canManage: boolean;
   hasVersions: boolean;
-  versions: CompanySkillVersionSummary[];
+  versions: CompanySkillVersion[];
   latestRevision: number | null;
   pinnedRevision: number | null;
   busy: boolean;

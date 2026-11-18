@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  costEvents,
   activityLog,
   agentRuntimeState,
   agentWakeupRequests,
@@ -23,7 +22,6 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
-import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -71,15 +69,11 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
   afterEach(async () => {
     runningProcesses.clear();
-    // Await every in-flight background heartbeat run to quiescence before the
-    // deletes below. A wakeup claims a run and dispatches its execution
-    // fire-and-forget, and that run can dispatch a follow-up wakeup, so a run or
-    // wakeup can still write heartbeat_runs and issues rows when teardown starts
-    // and would race the deletes (a heartbeat_runs delete deadlocks on the ON
-    // DELETE SET NULL cascade to issues). The shared drain also awaits an
-    // in-flight wakeup that is still before run registration, which a plain run
-    // table status poll cannot see.
-    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      if (!runs.some((run) => run.status === "queued" || run.status === "running")) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     // Post-run bookkeeping (run-event records, follow-up wake scheduling) can
     // still write for a moment after a run reaches a terminal status, so a
     // single delete sweep can hit a foreign-key violation when a late insert
@@ -91,7 +85,6 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
         await db.delete(issues);
         await db.delete(heartbeatRunEvents);
         await db.delete(activityLog);
-        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         await db.delete(agentWakeupRequests);
         await db.delete(agentRuntimeState);
@@ -160,7 +153,6 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     status?: string;
     finishedSecondsAgo: number;
     startedSecondsAgo?: number;
-    sessionIdAfter?: string;
   }) {
     const runId = randomUUID();
     const finishedAt = new Date(Date.now() - input.finishedSecondsAgo * 1000);
@@ -177,7 +169,6 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       createdAt: startedAt,
       startedAt,
       finishedAt,
-      sessionIdAfter: input.sessionIdAfter,
       contextSnapshot: { issueId: input.issueId, wakeReason: "issue_assigned" },
     });
     return runId;
@@ -249,7 +240,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(admittedWake).not.toBeNull();
   });
 
-  it("does not throttle system comment-driven wakes even during a no-progress streak", async () => {
+  it("does not throttle comment-driven wakes even during a no-progress streak", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
@@ -265,180 +256,6 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       requestedByActorId: "test",
     });
     expect(commentWake).not.toBeNull();
-  });
-
-  it("keeps agent comments throttled without hiding genuinely new human input", async () => {
-    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
-
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
-
-    const agentCommentId = randomUUID();
-    await db.insert(activityLog).values({
-      companyId,
-      actorType: "agent",
-      actorId: randomUUID(),
-      action: "issue.comment_added",
-      entityType: "issue",
-      entityId: issueId,
-    });
-    const throttledAgentCommentWake = await heartbeat.wakeup(agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_commented",
-      payload: { issueId, commentId: agentCommentId },
-      contextSnapshot: {
-        issueId,
-        wakeReason: "issue_commented",
-        wakeCommentId: agentCommentId,
-      },
-      requestedByActorType: "agent",
-      requestedByActorId: randomUUID(),
-    });
-    expect(throttledAgentCommentWake).toBeNull();
-    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
-
-    await db.insert(activityLog).values({
-      companyId,
-      actorType: "user",
-      actorId: "board-user",
-      action: "issue.comment_added",
-      entityType: "issue",
-      entityId: issueId,
-    });
-    const nextAgentCommentId = randomUUID();
-    const admittedAfterHumanInput = await heartbeat.wakeup(agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_commented",
-      payload: { issueId, commentId: nextAgentCommentId },
-      contextSnapshot: {
-        issueId,
-        wakeReason: "issue_commented",
-        wakeCommentId: nextAgentCommentId,
-      },
-      requestedByActorType: "agent",
-      requestedByActorId: randomUUID(),
-    });
-    expect(admittedAfterHumanInput).not.toBeNull();
-  });
-
-  it("keeps agent-authored explicit resume comments inside the no-progress cooldown", async () => {
-    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
-
-    const resumeFromRunId = await seedTerminalRun({
-      companyId,
-      agentId,
-      issueId,
-      finishedSecondsAgo: 40,
-      sessionIdAfter: randomUUID(),
-    });
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
-
-    const commentId = randomUUID();
-    const resumeWake = await heartbeat.wakeup(agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_reopened_via_comment",
-      payload: { issueId, commentId, resumeFromRunId, resumeIntent: true },
-      contextSnapshot: {
-        issueId,
-        wakeReason: "issue_reopened_via_comment",
-        wakeCommentId: commentId,
-        resumeIntent: true,
-      },
-      requestedByActorType: "agent",
-      requestedByActorId: randomUUID(),
-    });
-
-    expect(resumeWake).toBeNull();
-    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
-  });
-
-  function nativeStatusWake(agentId: string, issueId: string, payload: Record<string, unknown>) {
-    return heartbeat.wakeup(agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_status_changed",
-      payload: { issueId, nativeDecisionId: randomUUID(), ...payload },
-      contextSnapshot: { issueId, wakeReason: "issue_status_changed", source: "native_status_decision" },
-      requestedByActorType: "system",
-      requestedByActorId: "native-status-committer",
-    });
-  }
-
-  async function recordNativeStatusDecision(companyId: string, issueId: string, runId: string) {
-    await db.insert(activityLog).values({
-      companyId,
-      actorType: "system",
-      actorId: "native-status-committer",
-      runId,
-      action: "issue.updated",
-      entityType: "issue",
-      entityId: issueId,
-      details: { source: "native_status_decision", reasonCode: "live_continuation_registered" },
-      createdAt: new Date(Date.now() - 11_000),
-    });
-  }
-
-  it.each(["same_agent", "response_wake", "retry"])(
-    "throttles a %s continuation the agent declared after consecutive no-progress runs",
-    async (continuationKind) => {
-      const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
-      for (const finishedSecondsAgo of [40, 10]) {
-        const runId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo });
-        await recordNativeStatusDecision(companyId, issueId, runId);
-      }
-
-      const wake = await nativeStatusWake(agentId, issueId, {
-        continuationKind,
-        continuationSummary: "Nothing changed; wait.",
-        continuationIdempotencyKey: `loop-${randomUUID()}`,
-      });
-      expect(wake).toBeNull();
-      expect(await latestWakeRequest(agentId)).toMatchObject({
-        status: "skipped",
-        reason: "issue_rewake_throttled",
-        payload: expect.objectContaining({
-          continuationKind,
-          heartbeatSkip: expect.objectContaining({ requestedReason: "issue_status_changed", noProgressStreak: 2 }),
-        }),
-      });
-    },
-  );
-
-  it("keeps a declared continuation prompt after a run with issue-visible progress", async () => {
-    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
-    const progressRunId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
-    await recordNativeStatusDecision(companyId, issueId, progressRunId);
-    await db.insert(activityLog).values({
-      companyId,
-      actorType: "agent",
-      actorId: agentId,
-      agentId,
-      runId: progressRunId,
-      action: "issue.document_upserted",
-      entityType: "issue",
-      entityId: issueId,
-      createdAt: new Date(Date.now() - 12_000),
-    });
-
-    const wake = await nativeStatusWake(agentId, issueId, {
-      continuationKind: "same_agent",
-      continuationSummary: "Continue the remaining steps.",
-      continuationIdempotencyKey: "next-step",
-    });
-    expect(wake).not.toBeNull();
-  });
-
-  it("does not throttle status wakes that carry no declared continuation", async () => {
-    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
-
-    const wake = await nativeStatusWake(agentId, issueId, { unblockAction: "Resolve the dependency." });
-    expect(wake).not.toBeNull();
   });
 
   it("does not throttle the wake that follows a failed run", async () => {

@@ -7,17 +7,14 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, ChevronRight, Cloud, Download, FileCode2, FolderOpen, Loader2, RefreshCcw, Search } from "lucide-react";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { AlertTriangle, ChevronDown, ChevronRight, Cloud, Download, FileCode2, FolderOpen, Loader2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { cn, formatDateTime } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
+import { projectsApi } from "@/api/projects";
 import { ApiError } from "@/api/client";
-import { describeError } from "@/api/errors";
-import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
-import { usePageVisibility } from "@/lib/page-visibility";
 import { parseWorkspaceFileRef } from "@/lib/workspace-file-parser";
 import type {
   Project,
@@ -26,7 +23,6 @@ import type {
   WorkspaceFileListMode,
   WorkspaceFileSelector,
 } from "@paperclipai/shared";
-import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 type BrowserSource = "current" | "other";
 
@@ -107,24 +103,13 @@ export function describeUnavailable(reason: string): { title: string; body: stri
   };
 }
 
-function StateMessage({
-  icon,
-  title,
-  body,
-  actions,
-}: {
-  icon: ReactNode;
-  title: string;
-  body?: string;
-  actions?: ReactNode;
-}) {
+function StateMessage({ icon, title, body }: { icon: ReactNode; title: string; body?: string }) {
   return (
     <div className="flex items-start gap-3 px-1 py-8 text-sm">
       {icon}
       <div className="space-y-1">
         <p className="font-medium text-foreground">{title}</p>
         {body ? <p className="text-muted-foreground">{body}</p> : null}
-        {actions ? <div className="pt-1">{actions}</div> : null}
       </div>
     </div>
   );
@@ -490,8 +475,6 @@ export interface WorkspaceFileBrowserProps {
   selectedPath?: string | null;
   selectedProjectId?: string | null;
   selectedWorkspaceId?: string | null;
-  /** True only while the containing Files panel is actually open. */
-  active?: boolean;
   className?: string;
 }
 
@@ -508,11 +491,8 @@ export function WorkspaceFileBrowser({
   selectedPath,
   selectedProjectId: activeProjectId,
   selectedWorkspaceId: activeWorkspaceId,
-  active = true,
   className,
 }: WorkspaceFileBrowserProps) {
-  const queryClient = useQueryClient();
-  const { visible: pageVisible } = usePageVisibility();
   const source: BrowserSource =
     initialProjectId && initialWorkspaceId ? "other" : "current";
   const workspace: WorkspaceFileSelector = "auto";
@@ -539,8 +519,10 @@ export function WorkspaceFileBrowser({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const projectsQuery = useQuery({
-    ...companyProjectsQuery(companyId ?? ""),
+    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__none__"],
+    queryFn: () => projectsApi.list(companyId!),
     enabled: source === "other" && !!companyId,
+    retry: false,
     staleTime: 30_000,
   });
 
@@ -612,41 +594,21 @@ export function WorkspaceFileBrowser({
   const targetWorkspaceId = source === "other" ? selectedWorkspaceId : null;
   const effectiveWorkspace: WorkspaceFileSelector = source === "other" ? "project" : workspace;
   const canListFiles = source === "current" || Boolean(targetProjectId && targetWorkspaceId);
-  const queriesEnabled = active && pageVisible && canListFiles;
   const targetRef = targetProjectId && targetWorkspaceId
     ? { projectId: targetProjectId, workspaceId: targetWorkspaceId }
     : {};
 
-  const browseStateChangeRef = useRef(onBrowseStateChange);
   useEffect(() => {
-    browseStateChangeRef.current = onBrowseStateChange;
-  }, [onBrowseStateChange]);
-
-  // Persisting browse state can give the parent a new inline callback. Notify
-  // for changed browse values, using the latest committed callback each time.
-  const liveBrowseQuery = searchInput.trim() || null;
-  useEffect(() => {
-    browseStateChangeRef.current?.({
-      q: liveBrowseQuery,
+    onBrowseStateChange?.({
+      q: searchInput.trim() || null,
       folderPath,
       projectId: targetProjectId,
       workspaceId: targetWorkspaceId,
     });
-  }, [folderPath, liveBrowseQuery, targetProjectId, targetWorkspaceId]);
+  }, [folderPath, onBrowseStateChange, searchInput, targetProjectId, targetWorkspaceId]);
 
-  const listQueryKey = useMemo(() => queryKeys.issues.fileResources(issueId, {
-      workspace: effectiveWorkspace,
-      projectId: targetProjectId,
-      workspaceId: targetWorkspaceId,
-      mode,
-      q,
-      limit: LIST_LIMIT,
-      offset: 0,
-      path: folderPath,
-    }), [effectiveWorkspace, folderPath, issueId, mode, q, targetProjectId, targetWorkspaceId]);
   const listQuery = useQuery({
-    queryKey: listQueryKey,
-    queryFn: ({ signal }) => fileResourcesApi.list(issueId, {
+    queryKey: queryKeys.issues.fileResources(issueId, {
       workspace: effectiveWorkspace,
       projectId: targetProjectId,
       workspaceId: targetWorkspaceId,
@@ -655,19 +617,21 @@ export function WorkspaceFileBrowser({
       limit: LIST_LIMIT,
       offset: 0,
       path: folderPath,
-    }, { signal }),
-    enabled: queriesEnabled,
+    }),
+    queryFn: () => fileResourcesApi.list(issueId, {
+      workspace: effectiveWorkspace,
+      projectId: targetProjectId,
+      workspaceId: targetWorkspaceId,
+      mode,
+      q,
+      limit: LIST_LIMIT,
+      offset: 0,
+      path: folderPath,
+    }),
+    enabled: canListFiles,
+    retry: false,
     staleTime: 15_000,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
   });
-
-  useEffect(() => {
-    if (active && pageVisible) return;
-    void queryClient.cancelQueries({
-      queryKey: ["issues", "file-resources", issueId, "list"],
-    });
-  }, [active, issueId, pageVisible, queryClient]);
 
   const data = listQuery.data;
   const items = useMemo(() => data?.items ?? [], [data]);
@@ -712,7 +676,7 @@ export function WorkspaceFileBrowser({
         offset: spec.offset,
         path: spec.path || null,
       }),
-      queryFn: ({ signal }: { signal: AbortSignal }) => fileResourcesApi.list(issueId, {
+      queryFn: () => fileResourcesApi.list(issueId, {
         workspace: effectiveWorkspace,
         projectId: targetProjectId,
         workspaceId: targetWorkspaceId,
@@ -721,11 +685,10 @@ export function WorkspaceFileBrowser({
         limit: LIST_LIMIT,
         offset: spec.offset,
         path: spec.path || null,
-      }, { signal }),
-      enabled: queriesEnabled && isLazyBrowse,
+      }),
+      enabled: canListFiles && isLazyBrowse,
+      retry: false,
       staleTime: 15_000,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
     })),
   });
   const lazyItemsByFolder = useMemo(() => {
@@ -988,28 +951,13 @@ export function WorkspaceFileBrowser({
     return children.map((node) => ({ ...node, depth }));
   }
 
-  // Loaded files stay on screen while a refetch fails; an outage before the
-  // first load is the skeleton. A saturated git scan is a per-route condition
-  // with its own copy and Retry, not an outage, even though its status is transient.
-  const listKind = queryViewKind(listQuery);
-  const listErrorStatus = listQuery.error instanceof ApiError ? listQuery.error.status : 0;
-  const listErrorCode = listQuery.error instanceof ApiError && listQuery.error.body && typeof listQuery.error.body === "object"
-    ? (listQuery.error.body as { code?: unknown }).code
-    : null;
-  const changedFilesTemporarilyUnavailable = listQuery.error != null && mode === "changed" && (
-    listErrorStatus === 503 ||
-    listErrorStatus === 504 ||
-    listErrorCode === "workspace_git_scan_saturated" ||
-    listErrorCode === "workspace_git_scan_timeout"
-  );
-
   let body: ReactNode;
   if (source === "other" && !companyId) {
     body = (
       <StateMessage
         icon={<FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />}
-        title="No organization selected"
-        body="Choose an organization before browsing another project workspace."
+        title="No company selected"
+        body="Choose a company before browsing another project workspace."
       />
     );
   } else if (source === "other" && projectsQuery.isFetching && projectsWithWorkspaces.length === 0) {
@@ -1025,10 +973,10 @@ export function WorkspaceFileBrowser({
       <StateMessage
         icon={<FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />}
         title="No project workspaces"
-        body="No same-organization project has a registered workspace to browse."
+        body="No same-company project has a registered workspace to browse."
       />
     );
-  } else if (!data && (listQuery.isFetching || (listKind === "reconnecting" && !changedFilesTemporarilyUnavailable))) {
+  } else if (listQuery.isFetching && !data) {
     body = (
       <div className="space-y-1.5 py-2" aria-busy="true">
         {Array.from({ length: 6 }).map((_, index) => (
@@ -1039,29 +987,17 @@ export function WorkspaceFileBrowser({
         ))}
       </div>
     );
-  } else if (listKind === "error" || (changedFilesTemporarilyUnavailable && !data)) {
+  } else if (listQuery.isError) {
+    const status = listQuery.error instanceof ApiError ? listQuery.error.status : 0;
     body = (
       <StateMessage
         icon={<AlertTriangle aria-hidden="true" className="h-5 w-5 text-amber-500" />}
-        title={changedFilesTemporarilyUnavailable ? "Changed files temporarily unavailable" : "Couldn't load files"}
+        title="Couldn't load files"
         body={
-          changedFilesTemporarilyUnavailable
-            ? "Paperclip is limiting workspace scans to keep the server responsive. Try again in a moment."
-            : listErrorStatus === 404
+          status === 404
             ? "Workspace browsing isn't available for this issue."
-            : describeError(listQuery.error, { action: "load workspace files" }).body
+            : "Something went wrong loading workspace files."
         }
-        actions={changedFilesTemporarilyUnavailable ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!queriesEnabled}
-            onClick={() => void listQuery.refetch()}
-          >
-            <RefreshCcw aria-hidden="true" className="mr-1 h-3 w-3" /> Retry
-          </Button>
-        ) : null}
       />
     );
   } else if (data?.state === "unavailable") {
@@ -1099,42 +1035,28 @@ export function WorkspaceFileBrowser({
 
   return (
     <div className={cn("flex min-h-0 min-w-0 flex-col gap-2", className)}>
-      <div className="flex min-w-0 max-w-full items-center gap-1 overflow-hidden">
-        <div className="relative min-w-0 flex-1">
-          <Search
-            aria-hidden="true"
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            ref={inputRef}
-            type="search"
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-            onKeyDown={handleSearchKeyDown}
-            placeholder="Search files by name or path…"
-            aria-label="Search workspace files"
-            role="combobox"
-            aria-expanded={items.length > 0}
-            aria-controls={items.length > 0 ? listboxId : undefined}
-            aria-activedescendant={activeOptionId}
-            autoFocus={autoFocusSearch}
-            autoComplete="off"
-            spellCheck={false}
-            className="h-8 w-full max-w-full min-w-0 pl-8 font-mono text-xs"
-          />
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => void listQuery.refetch()}
-          disabled={!queriesEnabled || listQuery.isFetching}
-          aria-label="Refresh workspace files"
-          title="Refresh workspace files"
-          className="h-8 w-8 shrink-0"
-        >
-          <RefreshCcw aria-hidden="true" className={cn("h-3.5 w-3.5", listQuery.isFetching && "animate-spin")} />
-        </Button>
+      <div className="relative min-w-0 max-w-full overflow-hidden">
+        <Search
+          aria-hidden="true"
+          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          ref={inputRef}
+          type="search"
+          value={searchInput}
+          onChange={(event) => setSearchInput(event.target.value)}
+          onKeyDown={handleSearchKeyDown}
+          placeholder="Search files by name or path…"
+          aria-label="Search workspace files"
+          role="combobox"
+          aria-expanded={items.length > 0}
+          aria-controls={items.length > 0 ? listboxId : undefined}
+          aria-activedescendant={activeOptionId}
+          autoFocus={autoFocusSearch}
+          autoComplete="off"
+          spellCheck={false}
+          className="h-8 w-full max-w-full min-w-0 pl-8 font-mono text-xs"
+        />
       </div>
 
       <WorkspaceFileBreadcrumbs
@@ -1142,14 +1064,6 @@ export function WorkspaceFileBrowser({
         folderPath={folderPath}
         onOpenFolder={openFolder}
       />
-
-      {data?.state === "available" && data.workspace?.source ? (
-        <p aria-label="Workspace file source" className="text-(length:--text-micro) text-muted-foreground">
-          {data.workspace.source.kind === "live" ? "Live workspace" : (
-            <>Saved copy{data.workspace.source.savedAt ? <> from <time dateTime={data.workspace.source.savedAt}>{formatDateTime(data.workspace.source.savedAt)}</time></> : null}</>
-          )}
-        </p>
-      ) : null}
 
       <div aria-live="polite" className="sr-only">
         {announcement}

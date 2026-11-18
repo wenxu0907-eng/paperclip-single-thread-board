@@ -24,10 +24,10 @@ export async function hydrateSuccessfulRunHandoffLiveness(
   companyId: string,
   states: Map<string, SuccessfulRunHandoffState>,
 ) {
-  const unresolvedIssueIds = [...states.entries()]
-    .filter(([, state]) => state.state === "required" || state.state === "escalated")
+  const requiredIssueIds = [...states.entries()]
+    .filter(([, state]) => state.state === "required")
     .map(([issueId]) => issueId);
-  if (unresolvedIssueIds.length === 0) return states;
+  if (requiredIssueIds.length === 0) return states;
 
   const [activeRuns, activeWakes] = await Promise.all([
     dbOrTx
@@ -36,7 +36,7 @@ export async function hydrateSuccessfulRunHandoffLiveness(
       .where(and(
         eq(heartbeatRuns.companyId, companyId),
         inArray(heartbeatRuns.status, [...SUCCESSFUL_RUN_HANDOFF_LIVE_RUN_STATUSES]),
-        inArray(heartbeatRunIssueId, unresolvedIssueIds),
+        inArray(heartbeatRunIssueId, requiredIssueIds),
       )),
     dbOrTx
       .select({ issueId: wakeRequestIssueId })
@@ -44,7 +44,7 @@ export async function hydrateSuccessfulRunHandoffLiveness(
       .where(and(
         eq(agentWakeupRequests.companyId, companyId),
         inArray(agentWakeupRequests.status, [...SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES]),
-        inArray(wakeRequestIssueId, unresolvedIssueIds),
+        inArray(wakeRequestIssueId, requiredIssueIds),
       )),
   ]);
 
@@ -58,7 +58,7 @@ export async function hydrateSuccessfulRunHandoffLiveness(
       .filter((issueId): issueId is string => Boolean(issueId)),
   );
 
-  for (const issueId of unresolvedIssueIds) {
+  for (const issueId of requiredIssueIds) {
     const state = states.get(issueId);
     if (!state) continue;
     const liveRunId = liveRunByIssueId.get(issueId);

@@ -1,11 +1,11 @@
 import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
+import { projectsApi } from "@/api/projects";
 import { routinesApi } from "@/api/routines";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { groupCatalogByApp } from "./profile-model";
-import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 /**
  * Shared data layer for the access-profiles index and wizard. Assembles the
@@ -30,7 +30,8 @@ export function useProfilesData(companyId: string) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projects = useQuery({
-    ...companyProjectsQuery(companyId),
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
   });
   const routines = useQuery({
     queryKey: queryKeys.routines.list(companyId),

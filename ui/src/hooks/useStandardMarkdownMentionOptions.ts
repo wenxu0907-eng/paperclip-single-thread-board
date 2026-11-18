@@ -2,10 +2,10 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
+import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
-import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 type MarkdownMentionInputs = Parameters<typeof buildMarkdownMentionOptions>[0];
 
@@ -25,7 +25,8 @@ export function useStandardMarkdownMentionOptions(args: StandardMarkdownMentionO
     enabled: enabled && args.agents === undefined,
   });
   const projectsQuery = useQuery({
-    ...companyProjectsQuery(companyId ?? ""),
+    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "standard-mentions", "none"],
+    queryFn: () => projectsApi.list(companyId!),
     enabled: enabled && args.projects === undefined,
   });
   const usersQuery = useQuery({

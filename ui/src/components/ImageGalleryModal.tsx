@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, X } from "lucide-react";
-import { attachmentDownloadPath, attachmentFilename, attachmentOpenPath } from "@/lib/issue-attachments";
+import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
+import { attachmentDownloadPath, attachmentFilename } from "@/lib/issue-attachments";
 import { isVideoLikeOutput } from "@/lib/issue-output";
 
 export interface GalleryMediaItem {
@@ -18,8 +18,6 @@ interface ImageGalleryModalProps {
   initialIndex: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onIndexChange?: (index: number) => void;
-  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 export function ImageGalleryModal({
@@ -27,8 +25,6 @@ export function ImageGalleryModal({
   initialIndex,
   open,
   onOpenChange,
-  onIndexChange,
-  returnFocusRef,
 }: ImageGalleryModalProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const mediaRef = useRef<HTMLImageElement | HTMLVideoElement | null>(null);
@@ -41,16 +37,12 @@ export function ImageGalleryModal({
   }, [open, initialIndex]);
 
   const goNext = useCallback(() => {
-    const next = (currentIndex + 1) % items.length;
-    setCurrentIndex(next);
-    onIndexChange?.(next);
-  }, [currentIndex, items.length, onIndexChange]);
+    setCurrentIndex((i) => (i + 1) % items.length);
+  }, [items.length]);
 
   const goPrev = useCallback(() => {
-    const next = (currentIndex - 1 + items.length) % items.length;
-    setCurrentIndex(next);
-    onIndexChange?.(next);
-  }, [currentIndex, items.length, onIndexChange]);
+    setCurrentIndex((i) => (i - 1 + items.length) % items.length);
+  }, [items.length]);
 
   useEffect(() => {
     if (currentIndex < items.length) return;
@@ -58,16 +50,15 @@ export function ImageGalleryModal({
   }, [currentIndex, items.length]);
 
   useEffect(() => {
-    if (!open || items.length < 2) return;
+    if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-      e.preventDefault();
       if (e.key === "ArrowRight") goNext();
-      else goPrev();
+      else if (e.key === "ArrowLeft") goPrev();
+      else if (e.key === "Escape") onOpenChange(false);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [open, goNext, goPrev, items.length]);
+  }, [open, goNext, goPrev, onOpenChange]);
 
   /** Close when clicking empty curtain space (not interactive elements or the image) */
   const handleBackdropClick = useCallback(
@@ -99,33 +90,16 @@ export function ImageGalleryModal({
         <DialogPrimitive.Content
           className="fixed inset-0 z-50 flex flex-col outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 duration-200"
           onClick={handleBackdropClick}
-          aria-describedby={undefined}
-          onCloseAutoFocus={returnFocusRef ? (event) => {
-            event.preventDefault();
-            returnFocusRef.current?.focus({ preventScroll: true });
-          } : undefined}
         >
-          <DialogPrimitive.Title className="sr-only">Image gallery</DialogPrimitive.Title>
           {/* Top bar */}
           <div className="flex items-center justify-between px-5 py-3 text-white/80 text-sm shrink-0">
             <span className="truncate max-w-(--pct-50) font-medium" title={filename}>
               {filename}
             </span>
             <div className="flex items-center gap-4">
-              <span className="tabular-nums text-xs">
+              <span className="text-white/40 tabular-nums text-xs">
                 {currentIndex + 1} / {items.length}
               </span>
-              <a
-                href={attachmentOpenPath(current)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-white/50 hover:text-white transition-colors"
-                title="Open original"
-                aria-label={`Open original ${filename}`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <ExternalLink className="h-4.5 w-4.5" />
-              </a>
               <a
                 href={attachmentDownloadPath(current)}
                 download={filename}

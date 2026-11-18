@@ -1,1 +1,1 @@
-export { IssueProperties, type IssuePropertiesDocumentDeepLink } from "./issue-properties";
+export { IssueProperties } from "./issue-properties";

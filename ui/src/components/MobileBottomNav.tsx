@@ -1,13 +1,10 @@
-import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { useMemo } from "react";
-import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { NavLink, useLocation } from "@/lib/router";
 import {
   House,
-  CircleCheck,
+  CircleDot,
   SquarePen,
   Users,
-  MessageCircle,
   Inbox,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -15,8 +12,6 @@ import { useDialogActions } from "../context/DialogContext";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
-import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
-import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
 import { Badge } from "@/components/ui/badge";
 
 interface MobileBottomNavProps {
@@ -44,27 +39,13 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
-  const { enabled: agentChatEnabled } = useAgentChatEnabled();
-  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
-  const inboxBadge = useInboxBadge(coordinatorWorkspaceEnabled ? null : selectedCompanyId);
-  const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
-  const attentionCount = useCoordinatorAttentionCount(selectedCompanyId, coordinatorWorkspaceEnabled);
+  const inboxBadge = useInboxBadge(selectedCompanyId);
 
-  // PAP-670: with both flags off the bar is the original Home · Tasks · + ·
-  // Agents · Inbox. Agent Chat adds Chat in the second slot (Home · Chat · + ·
-  // Tasks · Agents). Combined Inbox + Task List drops Inbox as a destination —
-  // it is a view inside Tasks, so its unread badge rides on Tasks. The grid
-  // tracks the live count, so the bar stays evenly divided in every mix.
   const items = useMemo<MobileNavItem[]>(
-    () => coordinatorWorkspaceEnabled ? [
-      { type: "link", to: "/chats", label: "Chat", icon: MessageCircle },
-      { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
-      { type: "link", to: "/decisions", label: "Inbox", icon: Inbox, badge: attentionCount },
-      { type: "action", label: "New task", icon: SquarePen, onClick: () => openNewIssue() },
-    ] : !agentChatEnabled && !combinedInboxTasksEnabled ? [
+    () => [
       { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
-      { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/issues", label: "Tasks", icon: CircleDot },
+      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
       { type: "link", to: "/agents/all", label: "Agents", icon: Users },
       {
         type: "link",
@@ -73,40 +54,19 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         icon: Inbox,
         badge: inboxBadge.inbox,
       },
-    ] : [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
-      ...(agentChatEnabled
-        ? [{ type: "link", to: "/chats", label: "Chat", icon: MessageCircle } as MobileNavItem]
-        : []),
-      { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
-      {
-        type: "link",
-        to: "/issues",
-        label: "Tasks",
-        icon: CircleCheck,
-        badge: combinedInboxTasksEnabled ? inboxBadge.inbox : undefined,
-      },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
-      ...(!combinedInboxTasksEnabled
-        ? [{ type: "link", to: "/inbox", label: "Inbox", icon: Inbox, badge: inboxBadge.inbox } as MobileNavItem]
-        : []),
     ],
-    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled, coordinatorWorkspaceEnabled, attentionCount],
+    [openNewIssue, inboxBadge.inbox],
   );
 
   return (
     <nav
       className={cn(
-        "mobile-bottom-nav fixed bottom-0 left-0 right-0 z-30 bg-muted md:hidden pb-(--sz-safe-bottom)",
+        "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-(--sz-safe-bottom)",
+        visible ? "translate-y-0" : "translate-y-full",
       )}
-      data-visible={visible}
-      inert={!visible}
       aria-label="Mobile navigation"
     >
-      <div
-        className="grid h-16 px-1"
-        style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
-      >
+      <div className="grid h-16 grid-cols-5 px-1">
         {items.map((item) => {
           if (item.type === "action") {
             const Icon = item.icon;

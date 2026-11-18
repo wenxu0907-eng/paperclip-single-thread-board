@@ -117,7 +117,7 @@ function ExternalObjectsSection({
         </p>
       </div>
 
-      {isError ? ( // query-error-ok: set only for a real failure (useIssueExternalObjects keeps data through outages)
+      {isError ? (
         <p className="text-xs text-muted-foreground">
           Couldn't load external objects.{" "}
           {onRetry ? (

@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
 import { IssuesQuicklook } from "./IssuesQuicklook";
 import type { ProjectWorkspaceLinkedIssue, ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
-import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
@@ -21,7 +20,7 @@ function truncatePath(path: string) {
 }
 
 interface ProjectWorkspaceSummaryCardProps {
-  projectRef: string | null;
+  projectRef: string;
   summary: ProjectWorkspaceSummary;
   runtimeActionKey: string | null;
   runtimeActionPending: boolean;
@@ -46,11 +45,10 @@ export function ProjectWorkspaceSummaryCard({
   onRuntimeAction,
   onCloseWorkspace,
 }: ProjectWorkspaceSummaryCardProps) {
-  const { hideHostPaths } = useManagedSandboxOnly();
   const visibleIssues = summary.issues.slice(0, 4);
   const hiddenIssueCount = Math.max(summary.linkedIssueCount - visibleIssues.length, 0);
   const workspaceHref =
-    summary.kind === "project_workspace" && projectRef
+    summary.kind === "project_workspace"
       ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
       : `/execution-workspaces/${summary.workspaceId}`;
   const hasRunningServices = summary.runningServiceCount > 0;
@@ -175,12 +173,7 @@ export function ProjectWorkspaceSummaryCard({
               </div>
             ) : null}
 
-            {/*
-              The path is a host filesystem path, so it disappears under the
-              managed-sandbox-only policy, and stays hidden until that policy is
-              known. Branch, service, and issue rows stay.
-            */}
-            {summary.cwd && !hideHostPaths ? (
+            {summary.cwd ? (
               <div className="flex items-start gap-2">
                 <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">

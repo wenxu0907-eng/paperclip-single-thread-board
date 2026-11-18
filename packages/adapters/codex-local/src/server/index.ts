@@ -13,7 +13,6 @@ export { getConfigSchema } from "./config-schema.js";
 export {
   reconcileManagedCodexHome,
   isManagedCodexHomePath,
-  resolveManagedCodexHomeDir,
   evaluateCodexCredentialReadiness,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,
@@ -23,35 +22,9 @@ export {
   type CodexCredentialAuthMode,
 } from "./codex-home.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
+export { ensureSymlink, pathExists, resolveSharedCodexHomeDir } from "./codex-home.js";
 export { testEnvironment } from "./test.js";
-export {
-  runDeviceLogin,
-  CODEX_DEVICE_LOGIN_COMMAND,
-  type SandboxLoginDriver,
-  type DeviceLoginPromptSink,
-  type DeviceLoginOutcome,
-  type DeviceLoginResult,
-  type RunDeviceLoginOptions,
-} from "./device-login-runner.js";
-export { DEVICE_LOGIN_URL, parseDeviceLoginPrompt, type DeviceLoginPrompt } from "./device-login-parse.js";
-export {
-  promoteDeviceLoginCredential,
-  checkStagedCredentialReadiness,
-  DeviceLoginReadinessError,
-  type CredentialReadinessResult,
-  type PromoteDeviceLoginCredentialInput,
-  type PromoteDeviceLoginCredentialOutcome,
-  type PromoteDeviceLoginCredentialResult,
-} from "./adapter-auth-promotion.js";
-export {
-  withCodexAccountHomePromotionLock,
-  withAccountHomeSecretMutationLock,
-  assertAccountHomeCacheDirStillValid,
-  resolveCodexAuthCacheDir,
-  isCodexAuthCachePath,
-  readSubscriptionAccountId,
-} from "./codex-auth-cache.js";
-export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
+export { parseCodexJsonl, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
   readCodexAuthInfo,
@@ -65,21 +38,9 @@ export {
 } from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
-import { normalizeAdapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function remoteSessionMetadata(record: Record<string, unknown>): Record<string, unknown> {
-  const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(record.remoteExecution);
-  const conversationId = readNonEmptyString(record.sshCodexConversationId);
-  const scope = readNonEmptyString(record.sshCodexAccountScope);
-  return {
-    ...(remoteExecution ? { remoteExecution } : {}),
-    ...(conversationId && scope && /^[a-f0-9]{64}$/.test(conversationId) && /^[a-f0-9]{64}$/.test(scope)
-      ? { sshCodexConversationId: conversationId, sshCodexAccountScope: scope } : {}),
-  };
 }
 
 export const sessionCodec: AdapterSessionCodec = {
@@ -97,7 +58,6 @@ export const sessionCodec: AdapterSessionCodec = {
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
     return {
       sessionId,
-      ...remoteSessionMetadata(record),
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -117,7 +77,6 @@ export const sessionCodec: AdapterSessionCodec = {
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
     return {
       sessionId,
-      ...remoteSessionMetadata(params),
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -134,7 +93,3 @@ export const sessionCodec: AdapterSessionCodec = {
     );
   },
 };
-
-export { decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
-
-export { copyBackCodexAuth } from "./codex-auth-copyback.js";

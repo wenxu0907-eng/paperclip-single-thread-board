@@ -1,4 +1,4 @@
-import type { Issue, IssueDisplayStatus, IssueStatus } from "@paperclipai/shared";
+import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { workflowSort } from "./workflow-sort";
 
 export type SubIssueProgressTargetKind = "next" | "blocked";
@@ -13,7 +13,7 @@ export type SubIssueProgressSummary = {
   doneCount: number;
   inProgressCount: number;
   blockedCount: number;
-  countsByStatus: Partial<Record<IssueDisplayStatus, number>>;
+  countsByStatus: Partial<Record<IssueStatus, number>>;
   target: SubIssueProgressTarget | null;
 };
 
@@ -35,11 +35,10 @@ export function shouldRenderSubIssueProgressSummary(enabled: boolean | undefined
 }
 
 export function buildSubIssueProgressSummary(issues: Issue[]): SubIssueProgressSummary {
-  const countsByStatus: Partial<Record<IssueDisplayStatus, number>> = {};
+  const countsByStatus: Partial<Record<IssueStatus, number>> = {};
   const progressIssues = issues.filter((issue) => issue.status !== "cancelled");
   for (const issue of progressIssues) {
-    const status = issue.displayStatus ?? issue.status;
-    countsByStatus[status] = (countsByStatus[status] ?? 0) + 1;
+    countsByStatus[issue.status] = (countsByStatus[issue.status] ?? 0) + 1;
   }
 
   const orderedIssues = workflowSort(progressIssues);

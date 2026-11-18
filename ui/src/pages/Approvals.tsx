@@ -1,4 +1,3 @@
-import { describeError } from "../api/errors";
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -13,7 +12,6 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Badge } from "@/components/ui/badge";
 
 type StatusFilter = "pending" | "all";
@@ -32,13 +30,11 @@ export function Approvals() {
     setBreadcrumbs([{ label: "Approvals" }]);
   }, [setBreadcrumbs]);
 
-  const approvalsQuery = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
     queryFn: () => approvalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data, isLoading } = approvalsQuery;
-  const approvalsView = useQueryView(approvalsQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -54,7 +50,7 @@ export function Approvals() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "approve this request" }).body);
+      setActionError(err instanceof Error ? err.message : "Failed to approve");
     },
   });
 
@@ -65,7 +61,7 @@ export function Approvals() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "reject this request" }).body);
+      setActionError(err instanceof Error ? err.message : "Failed to reject");
     },
   });
 
@@ -80,24 +76,11 @@ export function Approvals() {
   ).length;
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
+    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
   }
 
-  // Keep loaded approvals on screen through a failed refetch; only a real
-  // failure, or an outage before the first load, replaces the page.
-  if (isLoading || approvalsView.kind === "reconnecting") {
+  if (isLoading) {
     return <PageSkeleton variant="approvals" />;
-  }
-  if (approvalsView.kind === "error") {
-    return (
-      <QueryErrorState
-        size="page"
-        error={approvalsView.error}
-        action="load approvals"
-        onRetry={approvalsView.retry}
-        retrying={approvalsView.isFetching}
-      />
-    );
   }
 
   return (
@@ -118,7 +101,8 @@ export function Approvals() {
         </Tabs>
       </div>
 
-      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
 
       {filtered.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-center">

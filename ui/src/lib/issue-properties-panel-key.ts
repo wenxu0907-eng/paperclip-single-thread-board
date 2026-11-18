@@ -4,7 +4,6 @@ type IssuePropertiesPanelKeyIssue = Pick<
   Issue,
   | "id"
   | "status"
-  | "displayStatus"
   | "priority"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -37,7 +36,6 @@ export function buildIssuePropertiesPanelKey(
   return JSON.stringify({
     id: issue.id,
     status: issue.status,
-    displayStatus: issue.displayStatus,
     priority: issue.priority,
     assigneeAgentId: issue.assigneeAgentId,
     assigneeUserId: issue.assigneeUserId,
@@ -79,14 +77,12 @@ export function buildIssuePropertiesPanelKey(
       identifier: relation.identifier ?? null,
       title: relation.title,
       status: relation.status,
-      displayStatus: relation.displayStatus,
     })),
     blockedBy: (issue.blockedBy ?? []).map((relation) => ({
       id: relation.id,
       identifier: relation.identifier ?? null,
       title: relation.title,
       status: relation.status,
-      displayStatus: relation.displayStatus,
     })),
     watchdog: issue.watchdog
       ? {

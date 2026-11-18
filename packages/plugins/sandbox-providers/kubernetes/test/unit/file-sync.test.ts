@@ -1,16 +1,12 @@
-import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { PassThrough } from "node:stream";
 import {
   assertConfinedSandboxPath,
-  parseTarVerboseListingLine,
   performSyncIn,
   performSyncOut,
-  splitLinkEntryOnce,
   type PodStreamExec,
 } from "../../src/file-sync.js";
 
@@ -40,7 +36,6 @@ function makeRealExec(): { exec: PodStreamExec; calls: RecordedCall[] } {
     return await new Promise((resolve, reject) => {
       const child = spawn(command[0], command.slice(1));
       let err = "";
-      let stdinError: NodeJS.ErrnoException | undefined;
       child.stderr.on("data", (chunk: Buffer) => {
         err += chunk.toString("utf-8");
       });
@@ -51,15 +46,6 @@ function makeRealExec(): { exec: PodStreamExec; calls: RecordedCall[] } {
       } else {
         child.stdout.resume();
       }
-      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
-        if (error.code !== "EPIPE") {
-          reject(error);
-          return;
-        }
-        stdinError = error;
-        io.stdin?.unpipe(child.stdin);
-        io.stdin?.destroy();
-      });
       if (io.stdin) {
         io.stdin.on("error", reject);
         io.stdin.pipe(child.stdin);
@@ -67,10 +53,6 @@ function makeRealExec(): { exec: PodStreamExec; calls: RecordedCall[] } {
         child.stdin.end();
       }
       child.on("close", (code) => {
-        if (code === 0 && stdinError) {
-          reject(stdinError);
-          return;
-        }
         resolve({ exitCode: code ?? 0, stderr: err });
       });
     });
@@ -109,38 +91,6 @@ async function makeTmp(prefix: string): Promise<string> {
 
 afterEach(async () => {
   await Promise.all(tmpDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
-});
-
-describe("shell exec stream lifecycle", () => {
-  it.each([0, 42])("handles an early stdin close while preserving exit status %i", async (exitCode) => {
-    const stdin = new PassThrough();
-    const stdout = new PassThrough();
-    stdout.once("data", () => stdin.end(Buffer.alloc(512 * 1024)));
-    const { exec } = makeRealExec();
-    try {
-      const result = exec([
-        process.execPath,
-        "-e",
-        `
-          require("node:fs").closeSync(0);
-          process.stdout.write("stdin closed\\n");
-          setTimeout(() => {
-            process.stderr.write("early rejection");
-            process.exit(${exitCode});
-          }, 100);
-        `,
-      ], { stdin, stdout });
-      if (exitCode === 0) {
-        await expect(result).rejects.toMatchObject({ code: "EPIPE" });
-      } else {
-        await expect(result).resolves.toEqual({ exitCode, stderr: "early rejection" });
-      }
-      expect(stdin.destroyed).toBe(true);
-    } finally {
-      stdin.destroy();
-      stdout.destroy();
-    }
-  });
 });
 
 describe("kubernetes file-sync path confinement", () => {
@@ -427,77 +377,6 @@ describe("kubernetes onEnvironmentSyncIn (native single-exec transfer)", () => {
 });
 
 describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => {
-  // The pod's pinned descriptor protocol depends on Linux /proc/self/fd.
-  it.skipIf(process.platform !== "linux")("preserves source entry names when requested while retaining explicit exclusions", async () => {
-    const remoteDir = await makeTmp("k8s-source-entry-"), hostOut = await makeTmp("k8s-source-output-");
-    await fs.mkdir(path.join(remoteDir, "nested"));
-    const names = ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"];
-    await fs.chmod(path.join(remoteDir, "nested"), 0o775);
-    for (const name of names) {
-      await fs.writeFile(path.join(remoteDir, name), `user work: ${name}`);
-      await fs.chmod(path.join(remoteDir, name), 0o664);
-    }
-    await fs.writeFile(path.join(remoteDir, "excluded.txt"), "excluded by caller");
-    const { exec } = makeRealExec();
-    await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "preserve", files: [{
-      kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["excluded.txt"],
-    }] }] });
-    for (const name of names) {
-      expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`user work: ${name}`);
-      expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`user work: ${name}`);
-      expect((await fs.stat(path.join(hostOut, name))).mode & 0o777).toBe(0o664);
-    }
-    expect((await fs.stat(path.join(hostOut, "nested"))).mode & 0o777).toBe(0o775);
-    await expect(fs.stat(path.join(hostOut, "excluded.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it.skipIf(process.platform !== "linux")("preserves literal excluded paths without excluding same basenames or glob matches", async () => {
-    const remoteDir = await makeTmp("k8s-literal-"), hostOut = await makeTmp("k8s-literal-out-");
-    await fs.mkdir(path.join(remoteDir, "nested"));
-    const socket = createServer();
-    await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(path.join(remoteDir, "ipc"), resolve); });
-    try {
-      const names = ["nested/ipc", "nested/omit[ab]*?", "omitaZZx", "nested/skip[ab]*?/saved.txt"];
-      for (const name of names) {
-        await fs.mkdir(path.dirname(path.join(remoteDir, name)), { recursive: true });
-        await fs.writeFile(path.join(remoteDir, name), `literal work: ${name}`);
-      }
-      await fs.writeFile(path.join(remoteDir, "omit[ab]*?"), "excluded literal file");
-      await fs.mkdir(path.join(remoteDir, "skip[ab]*?"));
-      await fs.writeFile(path.join(remoteDir, "skip[ab]*?/excluded.txt"), "excluded subtree");
-      const { exec } = makeRealExec();
-      const result = await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "literal", files: [{
-        kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["ipc", "omit[ab]*?", "skip[ab]*?"],
-      }] }] });
-      expect(result.operations[0].filesTransferred).toBe(4);
-      for (const name of names) {
-        expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`literal work: ${name}`);
-        expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`literal work: ${name}`);
-      }
-      for (const name of ["ipc", "omit[ab]*?", "skip[ab]*?"]) await expect(fs.lstat(path.join(hostOut, name))).rejects.toMatchObject({ code: "ENOENT" });
-      expect((await fs.lstat(path.join(remoteDir, "ipc"))).isSocket()).toBe(true);
-    } finally { await new Promise<void>(resolve => socket.close(() => resolve())); }
-  });
-
-  it.skipIf(process.platform !== "linux").each(["file", "directory"])("refuses preserved %s special modes before host writes", async kind => {
-    const remoteDir = await makeTmp("k8s-special-source-"), hostOut = await makeTmp("k8s-special-output-");
-    await fs.mkdir(path.join(remoteDir, "nested"));
-    await fs.writeFile(path.join(remoteDir, "result.txt"), "source work");
-    await fs.writeFile(path.join(hostOut, "retained.txt"), "existing host work");
-    const source = path.join(remoteDir, kind === "directory" ? "nested" : "result.txt");
-    const mode = kind === "directory" ? 0o1775 : 0o1664;
-    await fs.chmod(source, mode);
-    expect((await fs.stat(source)).mode & 0o7777).toBe(mode);
-    const { exec } = makeRealExec();
-    await expect(performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "preserve", files: [{
-      kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true,
-    }] }] })).rejects.toThrow("special mode bits");
-    expect(await fs.readdir(hostOut)).toEqual(["retained.txt"]);
-    expect(await fs.readFile(path.join(hostOut, "retained.txt"), "utf8")).toBe("existing host work");
-    expect((await fs.stat(source)).mode & 0o7777).toBe(mode);
-    expect(await fs.readFile(path.join(remoteDir, "result.txt"), "utf8")).toBe("source work");
-  });
-
   it("streams all file mappings back over a SINGLE exec and reassembles them at host targets, preserving mode and per-operation counts", async () => {
     const remoteDir = await makeTmp("k8s-sandbox-");
     const hostOut = await makeTmp("k8s-hostout-");
@@ -678,286 +557,5 @@ describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => 
     // nothing lands at the host target.
     expect(calls).toHaveLength(1);
     await expect(fs.stat(target)).rejects.toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Post-upload commands (Phase 3 / Security Conditions C1–C4 + C7). Kubernetes is
-// a native provider, so it EXECUTES an operation's ordered `postUploadCommands`
-// symmetrically with Daytona after `uploadFiles` — never silently dropping them
-// (C7). Each command runs in the pod over its own exec, fail-fast, with the `cwd`
-// re-confined under the workspace remote dir. The injected exec runs the real
-// host shell, so these assertions observe true command side-effects.
-// ---------------------------------------------------------------------------
-describe("kubernetes onEnvironmentSyncIn (post-upload commands)", () => {
-  it("runs post-upload commands in array order AFTER the upload, each verbatim as a positional arg", async () => {
-    const remoteDir = await makeTmp("k8s-sandbox-");
-    const host = await makeTmp("k8s-host-");
-    const src = path.join(host, "config.txt");
-    await fs.writeFile(src, "hello");
-
-    const { exec, calls } = makeRealExec();
-    await performSyncIn({
-      exec,
-      remoteDir,
-      timeoutMs: 30_000,
-      operations: [
-        {
-          operationId: "op-cmd",
-          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
-          // First command reads the just-uploaded file (proves upload-before-command);
-          // second appends (proves array order). cwd absent → the remote dir.
-          postUploadCommands: [
-            { command: "cat config.txt > out.txt" },
-            { command: "printf DONE >> out.txt" },
-          ],
-        },
-      ],
-    });
-
-    // Upload-before-commands AND order: out.txt is the first command's read of the
-    // uploaded bytes, then the second command's append.
-    expect(await fs.readFile(path.join(remoteDir, "out.txt"), "utf-8")).toBe("helloDONE");
-
-    // One exec for the transfer, then one exec per command (single-exec-per-command).
-    expect(calls).toHaveLength(3);
-    // C1/C3: each command rides as the FINAL positional argument, byte-for-byte
-    // unmutated — the provider concatenated no shell fragment onto it.
-    const cmdCalls = calls.filter((c) => c.command.includes("cat config.txt > out.txt") || c.command.includes("printf DONE >> out.txt"));
-    expect(cmdCalls).toHaveLength(2);
-    expect(cmdCalls[0].command[cmdCalls[0].command.length - 1]).toBe("cat config.txt > out.txt");
-    expect(cmdCalls[1].command[cmdCalls[1].command.length - 1]).toBe("printf DONE >> out.txt");
-    // Absent cwd defaults to the remote dir (the penultimate positional arg), never
-    // a process default cwd (C2).
-    expect(cmdCalls[0].command[cmdCalls[0].command.length - 2]).toBe(remoteDir);
-  });
-
-  it("runs a command in an explicit confined cwd", async () => {
-    const remoteDir = await makeTmp("k8s-sandbox-");
-    const host = await makeTmp("k8s-host-");
-    const src = path.join(host, "seed.txt");
-    await fs.writeFile(src, "x");
-    const subDir = path.join(remoteDir, "sub");
-
-    const { exec } = makeRealExec();
-    await performSyncIn({
-      exec,
-      remoteDir,
-      timeoutMs: 30_000,
-      operations: [
-        {
-          operationId: "op-cwd",
-          files: [{ sourcePath: src, targetPath: path.join(subDir, "seed.txt"), kind: "file" }],
-          postUploadCommands: [{ command: "pwd -P > where.txt", cwd: subDir }],
-        },
-      ],
-    });
-    // The command ran with its cwd = subDir: `where.txt` lands there (relative
-    // write), and its physical cwd (`pwd -P`) is the realpath of subDir.
-    expect((await fs.readFile(path.join(subDir, "where.txt"), "utf-8")).trim()).toBe(
-      await fs.realpath(subDir),
-    );
-  });
-
-  it("aborts the operation fail-loud on a non-zero post-upload command exit, skipping the remainder (C4)", async () => {
-    const remoteDir = await makeTmp("k8s-sandbox-");
-    const host = await makeTmp("k8s-host-");
-    const src = path.join(host, "config.txt");
-    await fs.writeFile(src, "hello");
-
-    const { exec } = makeRealExec();
-    await expect(
-      performSyncIn({
-        exec,
-        remoteDir,
-        timeoutMs: 30_000,
-        operations: [
-          {
-            operationId: "op-fail",
-            files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
-            postUploadCommands: [
-              { command: "exit 3" },
-              { command: "touch should_not_exist.txt" },
-            ],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/post-upload command failed \(exit 3\)/);
-    // Fail-fast: the command after the failing one never ran.
-    await expect(fs.stat(path.join(remoteDir, "should_not_exist.txt"))).rejects.toThrow();
-  });
-
-  it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
-    const remoteDir = await makeTmp("k8s-sandbox-");
-    const host = await makeTmp("k8s-host-");
-    const src = path.join(host, "config.txt");
-    await fs.writeFile(src, "hello");
-
-    for (const badCwd of [`${remoteDir}/../escape`, "/etc"]) {
-      const { exec, calls } = makeRealExec();
-      await expect(
-        performSyncIn({
-          exec,
-          remoteDir,
-          timeoutMs: 30_000,
-          operations: [
-            {
-              operationId: "op-escape",
-              files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
-              postUploadCommands: [{ command: "touch pwned.txt", cwd: badCwd }],
-            },
-          ],
-        }),
-      ).rejects.toThrow(/escapes|not a confined/);
-      // Rejected before the command exec: only the transfer exec ran, no command.
-      expect(calls.some((c) => c.command.includes("touch pwned.txt"))).toBe(false);
-    }
-  });
-
-  it("rejects a post-upload command whose cwd resolves outside the root via a symlink (realpath guard, C2)", async () => {
-    const remoteDir = await makeTmp("k8s-sandbox-");
-    const host = await makeTmp("k8s-host-");
-    const outside = await makeTmp("k8s-outside-");
-    const src = path.join(host, "config.txt");
-    await fs.writeFile(src, "hello");
-    // A symlink LEXICALLY inside the root that resolves to an out-of-root dir.
-    await fs.symlink(outside, path.join(remoteDir, "evil"));
-    const cwd = path.join(remoteDir, "evil");
-
-    const { exec } = makeRealExec();
-    await expect(
-      performSyncIn({
-        exec,
-        remoteDir,
-        timeoutMs: 30_000,
-        operations: [
-          {
-            operationId: "op-symlink",
-            files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
-            postUploadCommands: [{ command: "touch pwned.txt", cwd }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/ESCAPE|exit 42/);
-    // The command never ran through the symlink: nothing landed in the outside dir.
-    await expect(fs.stat(path.join(outside, "pwned.txt"))).rejects.toThrow();
-  });
-
-  it("issues no extra exec when an operation has no post-upload commands (backward-compat)", async () => {
-    const remoteDir = await makeTmp("k8s-sandbox-");
-    const host = await makeTmp("k8s-host-");
-    const src = path.join(host, "config.txt");
-    await fs.writeFile(src, "hello");
-
-    const { exec: baseExec, calls: baseCalls } = makeRealExec();
-    await performSyncIn({
-      exec: baseExec,
-      remoteDir,
-      timeoutMs: 30_000,
-      operations: [
-        { operationId: "op-plain", files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }] },
-      ],
-    });
-
-    const { exec: emptyExec, calls: emptyCalls } = makeRealExec();
-    await performSyncIn({
-      exec: emptyExec,
-      remoteDir,
-      timeoutMs: 30_000,
-      operations: [
-        {
-          operationId: "op-plain",
-          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
-          postUploadCommands: [],
-        },
-      ],
-    });
-    // An absent/empty command list adds zero execs — byte-identical to today.
-    expect(emptyCalls).toHaveLength(baseCalls.length);
-    expect(emptyCalls).toHaveLength(1);
-  });
-});
-
-
-describe("parseTarVerboseListingLine", () => {
-  it("parses GNU tar listing lines (file, dir, symlink, hardlink, numeric owner)", () => {
-    expect(parseTarVerboseListingLine("-rw-r--r-- daytona/daytona 7560 2026-08-11 21:43 AGENTS.md")).toEqual({
-      typeFlag: "-",
-      rest: "AGENTS.md",
-    });
-    expect(parseTarVerboseListingLine("drwxr-xr-x daytona/daytona 0 2026-08-11 21:43 nested/")).toEqual({
-      typeFlag: "d",
-      rest: "nested/",
-    });
-    expect(
-      parseTarVerboseListingLine("lrwxrwxrwx daytona/daytona 0 2026-08-11 21:43 shortcut -> nested/data.txt"),
-    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
-    expect(
-      parseTarVerboseListingLine("hrw-r--r-- daytona/daytona 0 2026-08-11 21:43 copy.txt link to data.txt"),
-    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
-    expect(parseTarVerboseListingLine("-rw-r--r-- 0/0 12 2026-08-11 21:43 root-owned.txt")).toEqual({
-      typeFlag: "-",
-      rest: "root-owned.txt",
-    });
-  });
-
-  it("parses bsdtar (macOS) listing lines, including year-form dates", () => {
-    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11 21:43 AGENTS.md")).toEqual({
-      typeFlag: "-",
-      rest: "AGENTS.md",
-    });
-    expect(parseTarVerboseListingLine("drwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 nested/")).toEqual({
-      typeFlag: "d",
-      rest: "nested/",
-    });
-    expect(
-      parseTarVerboseListingLine("lrwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 shortcut -> nested/data.txt"),
-    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
-    expect(
-      parseTarVerboseListingLine("hrw-r--r--  0 daytona daytona     0 Aug 11 21:43 copy.txt link to data.txt"),
-    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
-    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11  2025 old.txt")).toEqual({
-      typeFlag: "-",
-      rest: "old.txt",
-    });
-  });
-
-  it("keeps the true member name for bsdtar lines with numeric uid/gid, so traversal stays visible", () => {
-    // With unresolvable ids bsdtar prints bare numbers; a looser GNU-first parse
-    // would read this shape shifted by one field and report the member name as
-    // "21:43 ../escape.txt", hiding the leading "../" from the traversal check.
-    expect(parseTarVerboseListingLine("-rw-r--r--  0 1001 1001  7560 Aug 11 21:43 ../escape.txt")).toEqual({
-      typeFlag: "-",
-      rest: "../escape.txt",
-    });
-  });
-
-  it("returns null (fail closed) for lines matching neither dialect", () => {
-    expect(parseTarVerboseListingLine("not a tar listing line")).toBeNull();
-    expect(parseTarVerboseListingLine("tar: Error is not recoverable: exiting now")).toBeNull();
-    // Device nodes carry "major,minor" instead of a byte count in both dialects.
-    expect(parseTarVerboseListingLine("crw-rw-rw- root/root 1,3 2026-08-11 21:43 dev/null")).toBeNull();
-    expect(parseTarVerboseListingLine("crw-rw-rw-  0 root wheel  1,3 Aug 11 21:43 dev/null")).toBeNull();
-  });
-});
-
-describe("splitLinkEntryOnce", () => {
-  it("splits a clean single-delimiter link field", () => {
-    expect(splitLinkEntryOnce("shortcut -> nested/data.txt", " -> ")).toEqual({
-      name: "shortcut",
-      target: "nested/data.txt",
-    });
-    expect(splitLinkEntryOnce("copy.txt link to data.txt", " link to ")).toEqual({
-      name: "copy.txt",
-      target: "data.txt",
-    });
-  });
-
-  it("returns null (fail closed) when the delimiter is absent or appears more than once", () => {
-    expect(splitLinkEntryOnce("no delimiter here", " -> ")).toBeNull();
-    // A link name or target embedding the delimiter makes the split point
-    // unresolvable; either split choice can hide an escaping target.
-    expect(splitLinkEntryOnce("evil -> decoy -> ../../outside.txt", " -> ")).toBeNull();
-    expect(splitLinkEntryOnce("a link to b link to ../../outside.txt", " link to ")).toBeNull();
   });
 });

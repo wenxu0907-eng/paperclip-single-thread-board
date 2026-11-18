@@ -44,14 +44,7 @@ vi.mock("./MarkdownEditor", () => ({
 }));
 
 vi.mock("./InlineEntitySelector", () => ({
-  InlineEntitySelector: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
-    <select aria-label="Test recipient" value={value} onChange={(event) => onChange(event.target.value)}>
-      <option value="agent:first">First agent</option>
-      <option value="agent:latest">Latest agent</option>
-      <option value="user:me">Me</option>
-      <option value="">No responsible</option>
-    </select>
-  ),
+  InlineEntitySelector: () => null,
 }));
 
 vi.mock("./ApprovalCard", () => ({
@@ -84,34 +77,6 @@ describe("CommentThread", () => {
   let container: HTMLDivElement;
   let writeTextMock: ReturnType<typeof vi.fn<(text: string) => Promise<void>>>;
   let execCommandMock: ReturnType<typeof vi.fn<typeof document.execCommand>>;
-
-  it("updates automatic suggestions but preserves manual choices until the task changes", () => {
-    const root = createRoot(container);
-    const render = (suggestion: string, draftKey = "task-one") => act(() => root.render(
-      <MemoryRouter>
-        <CommentThread comments={[]} onAdd={async () => {}} enableReassign
-          reassignOptions={[{ id: "agent:first", label: "First agent" }]}
-          currentAssigneeValue="user:me" suggestedAssigneeValue={suggestion} draftKey={draftKey} />
-      </MemoryRouter>,
-    ));
-    const selector = () => container.querySelector('select[aria-label="Test recipient"]') as HTMLSelectElement;
-    render("agent:first");
-    expect(selector().value).toBe("agent:first");
-    render("agent:latest");
-    expect(selector().value).toBe("agent:latest");
-    for (const manual of ["user:me", ""]) {
-      act(() => {
-        selector().value = manual;
-        selector().dispatchEvent(new Event("change", { bubbles: true }));
-      });
-      render("agent:first");
-      render("agent:latest");
-      expect(selector().value).toBe(manual);
-    }
-    render("agent:first", "task-two");
-    expect(selector().value).toBe("agent:first");
-    act(() => root.unmount());
-  });
 
   beforeEach(() => {
     container = document.createElement("div");

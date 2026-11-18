@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import {
-  externalObjectDisplayStatusLabel,
+  externalObjectCategoryLabel,
   externalObjectDisplayLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
@@ -66,7 +66,7 @@ function githubObjectPropertyValue(url: string | null | undefined): string | nul
 }
 
 function externalObjectPropertyStatusLabel(group: IssueExternalObjectGroup): string {
-  return externalObjectDisplayStatusLabel(group.pill);
+  return group.pill.statusLabel ?? externalObjectCategoryLabel(group.pill.statusCategory);
 }
 
 function externalObjectPropertyValue(group: IssueExternalObjectGroup): string {

@@ -40,12 +40,6 @@ import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
-  appendNetworkEgressDenyHint,
-  createScopedNetworkEgressPolicyOrReleaseWorkload,
-  NETWORK_EGRESS_GRANT_PATH,
-  parseScopedNetworkEgressGrant,
-} from "./scoped-network-egress.js";
-import {
   deriveCompanySlug,
   deriveNamespaceName,
   newRunUlidDns,
@@ -294,10 +288,7 @@ const plugin = definePlugin({
     // SDK lease params grow that field (companion server-integration PR). The
     // plugin works without it: absent means "use the environment's configured
     // default adapter", so it stays compatible with the current SDK.
-    params: PluginEnvironmentAcquireLeaseParams & {
-      adapterType?: string;
-      executionWorkspaceSettings?: Record<string, unknown> | null;
-    },
+    params: PluginEnvironmentAcquireLeaseParams & { adapterType?: string },
   ): Promise<PluginEnvironmentLease> {
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace = deriveTenantNamespace(config, params.companyId);
@@ -398,34 +389,10 @@ const plugin = definePlugin({
         });
 
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
-    const scopedNetworkEgress = parseScopedNetworkEgressGrant(params.executionWorkspaceSettings);
-    const scopedNetworkPolicyName = await createScopedNetworkEgressPolicyOrReleaseWorkload(
-      {
-        clients,
-        namespace,
-        mode: config.egressMode,
-        runId: params.runId,
-        workloadName: jobName,
-        ownerReference: {
-          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
-          kind: isSandboxCrBackend ? "Sandbox" : "Job",
-          name: jobName,
-          uid: ownerUid,
-          controller: false,
-          blockOwnerDeletion: false,
-        },
-        grant: scopedNetworkEgress,
-      },
-      () => orchestrator.release(clients, namespace, jobName),
-    );
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
     const adapterEnv = buildAdapterEnv(adapterDefaults);
-    adapterEnv.PAPERCLIP_NETWORK_EGRESS_POLICY = "kubernetes-default-deny";
-    adapterEnv.PAPERCLIP_NETWORK_EGRESS_GRANT_PATH = NETWORK_EGRESS_GRANT_PATH;
-    adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_FQDNS = scopedNetworkEgress.allowFqdns.join(",");
-    adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_CIDRS = scopedNetworkEgress.allowCidrs.join(",");
     const bootstrapToken = generateBootstrapToken();
 
     // Secret ownerRef: for job backend, the Job owns the Secret (cascade delete).
@@ -454,8 +421,6 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
-      scopedNetworkPolicyName,
-      scopedNetworkEgress,
       // Native file sync streams over a pod exec; only the sandbox-cr backend
       // exposes one. Flag the job backend so the server keeps the base64 fallback
       // rather than routing its sync to a hook that would reject immediately.
@@ -529,13 +494,6 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
-      scopedNetworkPolicyName:
-        typeof params.leaseMetadata?.scopedNetworkPolicyName === "string"
-          ? params.leaseMetadata.scopedNetworkPolicyName
-          : null,
-      scopedNetworkEgress: parseScopedNetworkEgressGrant({
-        networkEgress: params.leaseMetadata?.scopedNetworkEgress,
-      }),
       // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
       // native sync, so a resumed job lease must keep the base64 fallback.
       nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
@@ -668,9 +626,6 @@ const plugin = definePlugin({
     }
 
     const config = kubernetesProviderConfigSchema.parse(params.config);
-    const scopedNetworkEgress = parseScopedNetworkEgressGrant({
-      networkEgress: lease.metadata?.scopedNetworkEgress,
-    });
     const namespace =
       typeof lease.metadata?.namespace === "string"
         ? lease.metadata.namespace
@@ -906,7 +861,7 @@ const plugin = definePlugin({
           exitCode: null,
           timedOut: true,
           stdout: "",
-          stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
+          stderr: err instanceof Error ? err.message : String(err),
           metadata: {
             provider: "kubernetes",
             backend: "sandbox-cr",
@@ -921,7 +876,7 @@ const plugin = definePlugin({
         exitCode: execResult.exitCode,
         timedOut: false,
         stdout: execResult.stdout,
-        stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+        stderr: execResult.stderr,
         metadata: {
           provider: "kubernetes",
           backend: "sandbox-cr",
@@ -985,7 +940,7 @@ const plugin = definePlugin({
         exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
         timedOut,
         stdout: stdoutChunks.join(""),
-        stderr: appendNetworkEgressDenyHint(stderrChunks.join(""), scopedNetworkEgress),
+        stderr: stderrChunks.join(""),
         metadata: {
           provider: "kubernetes",
           backend: "job",

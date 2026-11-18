@@ -12,7 +12,6 @@
     "directory": "packages/shared"
   },
   "type": "module",
-  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./telemetry": "./src/telemetry/index.ts",
@@ -41,20 +40,15 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && mkdir -p dist/cliplab && cp src/cliplab/LICENSE src/cliplab/PROVENANCE.md dist/cliplab/",
+    "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "zod": "^4.6.6",
-    "three": "0.185.1"
+    "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "typescript": "^7.0.2",
-    "@types/three": "0.185.4"
-  },
-  "engines": {
-    "node": ">=24.11.0"
+    "@types/node": "^22.19.21",
+    "typescript": "^5.7.3"
   }
 }

@@ -1,12 +1,16 @@
 import { useEffect } from "react";
-import { Wrench } from "lucide-react";
+import { Settings2, Wrench } from "lucide-react";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { ProfilesIndex } from "./profiles/ProfilesIndex";
+import { PoliciesTab } from "./PoliciesTab";
+import { RuntimeTab } from "./RuntimeTab";
+import { AuditTab } from "./AuditTab";
 import { GatewaysTab } from "./GatewaysTab";
 import { PasteConfigTab } from "./PasteConfigTab";
+import { RunYourOwnTab } from "./RunYourOwnTab";
 import { SmokeLabTab } from "./SmokeLabTab";
 import {
   ADVANCED_TABS,
@@ -20,13 +24,21 @@ function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
     case "profiles":
       return <ProfilesIndex companyId={companyId} />;
+    case "policies":
+      return <PoliciesTab companyId={companyId} />;
+    case "runtime":
+      return <RuntimeTab companyId={companyId} />;
+    case "audit":
+      return <AuditTab companyId={companyId} />;
     case "gateways":
       return <GatewaysTab companyId={companyId} />;
     case "smoke-lab":
       return <SmokeLabTab companyId={companyId} />;
     case "paste-config":
-    default:
       return <PasteConfigTab companyId={companyId} />;
+    case "run-your-own":
+    default:
+      return <RunYourOwnTab companyId={companyId} />;
   }
 }
 
@@ -34,7 +46,7 @@ export function ToolsAccess() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ tab?: string }>();
-  const activeTab = (TOOL_TABS.find((t) => t.key === params.tab)?.key ?? "paste-config") as ToolTabKey;
+  const activeTab = (TOOL_TABS.find((t) => t.key === params.tab)?.key ?? "run-your-own") as ToolTabKey;
   const advanced = isAdvancedSetupTab(activeTab);
   const tabLabel = TOOL_TABS.find((t) => t.key === activeTab)?.label;
 
@@ -45,7 +57,7 @@ export function ToolsAccess() {
       ...(advanced
         ? [{ label: "Advanced setup" }]
         : [
-            { label: "Advanced setup", href: advancedTabHref("paste-config") },
+            { label: "Advanced setup", href: advancedTabHref("run-your-own") },
             { label: tabLabel ?? "Developer tools" },
           ]),
     ]);
@@ -53,11 +65,7 @@ export function ToolsAccess() {
   }, [setBreadcrumbs, selectedCompany?.name, advanced, tabLabel]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to open advanced setup.</div>;
-  }
-
-  if (params.tab === "run-your-own") {
-    return <Navigate to="/apps" replace />;
+    return <div className="p-6 text-sm text-muted-foreground">Select a company to open advanced setup.</div>;
   }
 
   // Retired developer tabs (PAP-10915/PAP-10928) — keep old links working.
@@ -65,23 +73,14 @@ export function ToolsAccess() {
     params.tab === "applications" ||
     params.tab === "connections" ||
     params.tab === "overview" ||
-    params.tab === "examples" ||
-    params.tab === "audit"
+    params.tab === "examples"
   ) {
     return <Navigate to="/apps" replace />;
   }
 
-  if (params.tab === "runtime") {
-    return <Navigate to="/apps" replace />;
-  }
-
-  if (params.tab === "policies") {
-    return <Navigate to="/apps/advanced/profiles" replace />;
-  }
-
   if (advanced) {
     // M8a/M8b chrome (PAP-10839 wires): Advanced badge, plain-words subtitle,
-    // and a focused setup tab. The developer surface stays behind a quiet link.
+    // and a two-tab switcher. The developer surface stays behind a quiet link.
     return (
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
         <header>
@@ -131,5 +130,20 @@ export function ToolsAccess() {
     );
   }
 
-  return <div className="max-w-5xl">{renderTab(activeTab, selectedCompanyId)}</div>;
+  return (
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-4 sm:p-6">
+      <div>
+        <div className="flex items-center gap-2">
+          <Settings2 className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-xl font-bold text-foreground">Developer tools</h1>
+        </div>
+        <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">
+          Apps is the simple way to connect tools. This Developer area is for wiring your own
+          servers, tokens, and rules by hand — most teams never need it.
+        </p>
+      </div>
+
+      <div className="min-h-(--sz-300px)">{renderTab(activeTab, selectedCompanyId)}</div>
+    </div>
+  );
 }

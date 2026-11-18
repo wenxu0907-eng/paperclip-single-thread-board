@@ -38,7 +38,6 @@ function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
     id: "run-1",
     companyId: "company-1",
     agentId: "agent-1",
-    issueId: null,
     responsibleUserId: null,
     invocationSource: "on_demand",
     triggerDetail: "manual",
@@ -83,7 +82,6 @@ function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
     createdAt: new Date("2026-04-20T11:58:00.000Z"),
     updatedAt: new Date("2026-04-20T11:59:00.000Z"),
     ...overrides,
-    scopeKind: overrides.scopeKind ?? "company",
   };
 }
 

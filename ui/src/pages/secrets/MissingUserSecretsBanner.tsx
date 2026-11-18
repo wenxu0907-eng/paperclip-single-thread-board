@@ -36,6 +36,7 @@ export function MissingUserSecretsBanner({
   const mySecretsQuery = useQuery({
     queryKey: queryKeys.secrets.myUserSecrets(companyId),
     queryFn: () => secretsApi.listMyUserSecrets(companyId),
+    retry: false,
   });
 
   const keyFilter = definitionKeys ? new Set(definitionKeys) : null;

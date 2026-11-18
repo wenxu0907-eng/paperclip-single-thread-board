@@ -2,17 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Shield, ShieldCheck } from "lucide-react";
 import { accessApi } from "@/api/access";
-import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Card } from "@/components/ui/card";
-import { companyDirectoryQueryOptions, useAccountIdentity } from "@/api/companies-query";
+import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function InstanceAccess() {
-  const { userId: accountUserId, settled: accountSettled } = useAccountIdentity();
+  const { companies } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -32,14 +32,6 @@ export function InstanceAccess() {
     queryKey: queryKeys.access.adminUsers(search),
     queryFn: () => accessApi.searchAdminUsers(search),
   });
-  const usersView = useQueryView(usersQuery);
-
-  const companiesQuery = useQuery({
-    ...companyDirectoryQueryOptions(accountUserId),
-    enabled: accountSettled && usersQuery.isSuccess,
-  });
-  const companiesView = useQueryView(companiesQuery);
-  const companies = companiesQuery.data ?? [];
 
   const selectedUser = useMemo(
     () => usersQuery.data?.find((user) => user.id === selectedUserId) ?? null,
@@ -51,7 +43,6 @@ export function InstanceAccess() {
     queryFn: () => accessApi.getUserCompanyAccess(selectedUserId!),
     enabled: !!selectedUserId,
   });
-  const userAccessView = useQueryView(userAccessQuery);
 
   useEffect(() => {
     if (!selectedUserId && usersQuery.data?.[0]) {
@@ -75,8 +66,7 @@ export function InstanceAccess() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      pushToast({ title: "Organization access updated", tone: "success" });
+      pushToast({ title: "Company access updated", tone: "success" });
     },
   });
 
@@ -95,40 +85,18 @@ export function InstanceAccess() {
     },
   });
 
-  if (
-    usersQuery.isLoading ||
-    usersView.kind === "reconnecting" ||
-    !accountSettled ||
-    (usersQuery.isSuccess && (companiesQuery.isPending || companiesView.kind === "reconnecting"))
-  ) {
-    return <div className="text-sm text-muted-foreground">Loading instance access…</div>;
+  if (usersQuery.isLoading) {
+    return <div className="text-sm text-muted-foreground">Loading instance users…</div>;
   }
 
-  if (usersView.kind === "error") {
-    if (usersView.errorKind === "forbidden") {
-      return <div className="text-sm text-destructive">Instance admin access is required to manage users.</div>;
-    }
-    return (
-      <QueryErrorState
-        size="page"
-        error={usersQuery.error}
-        action="load users"
-        onRetry={usersView.retry}
-        retrying={usersView.isFetching}
-      />
-    );
-  }
-
-  if (companiesView.kind === "error") {
-    return (
-      <QueryErrorState
-        size="page"
-        error={companiesQuery.error}
-        action="load organizations"
-        onRetry={companiesView.retry}
-        retrying={companiesView.isFetching}
-      />
-    );
+  if (usersQuery.error) {
+    const message =
+      usersQuery.error instanceof ApiError && usersQuery.error.status === 403
+        ? "Instance admin access is required to manage users."
+        : usersQuery.error instanceof Error
+          ? usersQuery.error.message
+          : "Failed to load users.";
+    return <div className="text-sm text-destructive">{message}</div>;
   }
 
   return (
@@ -139,7 +107,7 @@ export function InstanceAccess() {
           <h1 className="text-lg font-semibold">Instance Access</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Search users, manage instance-admin status, and control which organizations they can access.
+          Search users, manage instance-admin status, and control which companies they can access.
         </p>
       </div>
 
@@ -176,7 +144,7 @@ export function InstanceAccess() {
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {user.activeCompanyMembershipCount} active organization memberships
+                  {user.activeCompanyMembershipCount} active company memberships
                 </div>
               </button>
             ))}
@@ -186,15 +154,12 @@ export function InstanceAccess() {
         <Card className="block space-y-4 p-5">
           {!selectedUserId ? (
             <div className="text-sm text-muted-foreground">Select a user to inspect instance access.</div>
-          ) : userAccessQuery.isLoading || userAccessView.kind === "reconnecting" ? (
+          ) : userAccessQuery.isLoading ? (
             <div className="text-sm text-muted-foreground">Loading user access…</div>
-          ) : userAccessView.kind === "error" ? (
-            <QueryErrorState
-              error={userAccessQuery.error}
-              action="load user access"
-              onRetry={userAccessView.retry}
-              retrying={userAccessView.isFetching}
-            />
+          ) : userAccessQuery.error ? (
+            <div className="text-sm text-destructive">
+              {userAccessQuery.error instanceof Error ? userAccessQuery.error.message : "Failed to load user access."}
+            </div>
           ) : (
             <>
               <div className="flex flex-wrap items-start justify-between gap-4">
@@ -217,9 +182,9 @@ export function InstanceAccess() {
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold">Organization access</h2>
+                  <h2 className="text-sm font-semibold">Company access</h2>
                   <p className="text-sm text-muted-foreground">
-                    Toggle organization membership for this user. New access defaults to an active operator membership.
+                    Toggle company membership for this user. New access defaults to an active operator membership.
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -251,7 +216,7 @@ export function InstanceAccess() {
                     onClick={() => updateCompanyAccessMutation.mutate()}
                     disabled={updateCompanyAccessMutation.isPending}
                   >
-                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save organization access"}
+                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save company access"}
                   </Button>
                 </div>
               </div>

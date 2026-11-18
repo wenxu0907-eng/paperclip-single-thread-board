@@ -8,53 +8,24 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/anthropic.svg",
-    "darkLogoUrl": "/brands/apps/anthropic-dark.svg"
+    "logoUrl": "https://www.google.com/s2/favicons?domain=anthropic.com&sz=128"
   },
   "urlPatterns": [
     "https://api.anthropic.com/*"
   ],
   "methods": [
     {
-      "key": "ai-subscription",
-      "label": "Claude subscription",
-      "purpose": "ai",
-      "transport": "runtime_auth",
-      "auth": "oauth",
-      "ai": {
-        "provider": "anthropic",
-        "method": "subscription"
-      },
-      "grantKinds": [
-        "user",
-        "organization"
-      ],
-      "ownershipModes": [
-        "customer"
-      ],
-      "whenToUse": "Authenticate an agent with this account.",
-      "guidanceMd": "Use your personal account or an explicitly shared company account.",
-      "riskTier": "S3"
-    },
-    {
-      "key": "ai-api_key",
-      "label": "Claude API key",
-      "purpose": "ai",
-      "transport": "runtime_auth",
+      "key": "api-key",
+      "transport": "rest_api",
       "auth": "api_key",
-      "ai": {
-        "provider": "anthropic",
-        "method": "api_key"
-      },
-      "grantKinds": [
-        "user",
-        "organization"
-      ],
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Authenticate an agent with this account.",
-      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "whenToUse": "Use credentials from your provider account.",
+      "defaults": {
+        "serviceHost": "api.anthropic.com"
+      },
+      "guidanceMd": "Create a key in the Anthropic Console and rotate it if it has been exposed.",
       "riskTier": "S3",
       "credentialFields": [
         {
@@ -62,17 +33,14 @@
           "label": "API key",
           "type": "password",
           "required": true,
-          "placeholder": "Enter API key",
+          "placeholder": "sk-ant-api03-...",
           "secret": true
         }
       ],
       "keyPlacement": {
-        "location": "env",
-        "name": "ANTHROPIC_API_KEY"
+        "location": "header",
+        "name": "x-api-key"
       }
     }
-  ],
-  "tags": [
-    "model-provider"
   ]
 }

@@ -897,8 +897,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
       }
       const issue = await ctx.issues.create({
         companyId: runCtx.companyId,
-        // The run context has an empty project ID when the run has no project.
-        projectId: runCtx.projectId || undefined,
+        projectId: runCtx.projectId,
         title: payload.title,
         description: payload.description,
       });

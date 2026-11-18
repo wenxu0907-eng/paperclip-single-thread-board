@@ -2,7 +2,6 @@ import type { AdapterModel } from "../../api/agents";
 import type { Issue, Project } from "@paperclipai/shared";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import type { IssueModelLane } from "../../lib/issue-assignee-overrides";
-import { codexReasoningEffortOptions } from "../../lib/codex-reasoning-effort";
 
 export function defaultProjectWorkspaceIdForProject(project: {
   workspaces?: Array<{ id: string; isPrimary: boolean }>;
@@ -60,6 +59,14 @@ export const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
   ],
+  codex_local: [
+    { value: "", label: "Default" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "X-High" },
+  ],
   opencode_local: [
     { value: "", label: "Default" },
     { value: "minimal", label: "Minimal" },
@@ -83,11 +90,8 @@ export function compactRecord(record: Record<string, unknown>) {
   );
 }
 
-export function thinkingEffortOptionsFor(
-  adapterType: string | null | undefined,
-  model?: string | null,
-) {
-  if (adapterType === "codex_local") return codexReasoningEffortOptions(model);
+export function thinkingEffortOptionsFor(adapterType: string | null | undefined) {
+  if (adapterType === "codex_local") return ISSUE_THINKING_EFFORT_OPTIONS.codex_local;
   if (adapterType === "opencode_local") return ISSUE_THINKING_EFFORT_OPTIONS.opencode_local;
   return ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
 }
@@ -109,6 +113,7 @@ export function thinkingEffortValueFor(adapterType: string | null | undefined, a
 }
 
 export function overrideLane(overrides: Issue["assigneeAdapterOverrides"]): IssueModelLane {
+  if (overrides?.modelProfile === "cheap") return "cheap";
   if (overrides?.adapterConfig) return "custom";
   return "primary";
 }

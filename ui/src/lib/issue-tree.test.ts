@@ -16,7 +16,6 @@ function makeIssue(id: string, parentId: string | null = null): Issue {
     status: "todo",
     workMode: "standard",
     priority: "medium",
-    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,

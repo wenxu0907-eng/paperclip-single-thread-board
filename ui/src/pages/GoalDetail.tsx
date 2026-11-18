@@ -1,8 +1,8 @@
-import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { useEffect } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
+import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
@@ -15,7 +15,6 @@ import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -55,13 +54,15 @@ export function GoalDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const goalQuery = useQuery({
+  const {
+    data: goal,
+    isLoading,
+    error
+  } = useQuery({
     queryKey: queryKeys.goals.detail(goalId!),
     queryFn: () => goalsApi.get(goalId!),
     enabled: !!goalId
   });
-  const { data: goal, isLoading, error } = goalQuery;
-  const goalView = useQueryView(goalQuery);
   const resolvedCompanyId = goal?.companyId ?? selectedCompanyId;
 
   const { data: allGoals } = useQuery({
@@ -71,7 +72,8 @@ export function GoalDetail() {
   });
 
   const { data: allProjects } = useQuery({
-    ...companyProjectsQuery(resolvedCompanyId!, { includeArchived: true }),
+    queryKey: queryKeys.projects.list(resolvedCompanyId!),
+    queryFn: () => projectsApi.list(resolvedCompanyId!),
     enabled: !!resolvedCompanyId
   });
 
@@ -97,7 +99,7 @@ export function GoalDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No organization selected");
+      if (!resolvedCompanyId) throw new Error("No company selected");
       return assetsApi.uploadImage(
         resolvedCompanyId,
         file,
@@ -133,10 +135,8 @@ export function GoalDetail() {
     return () => closePanel();
   }, [goal]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (isLoading || goalView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
-  if (goalView.kind === "error") {
-    return <QueryErrorState size="page" error={error} action="load this goal" onRetry={goalView.retry} retrying={goalView.isFetching} />;
-  }
+  if (isLoading) return <PageSkeleton variant="detail" />;
+  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!goal) return null;
 
   return (

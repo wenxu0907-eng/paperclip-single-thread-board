@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const sidebarOrderedIdSchema = z.string().guid();
+const sidebarOrderedIdSchema = z.string().uuid();
 
 export const sidebarOrderPreferenceSchema = z.object({
   orderedIds: z.array(sidebarOrderedIdSchema),

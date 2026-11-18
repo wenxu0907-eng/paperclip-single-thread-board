@@ -48,15 +48,12 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
   }
 
   if (provider === "local_disk") {
-    const baseDirDefault = base.localDisk.baseDir || defaultStorageBaseDir();
     const baseDir = await p.text({
       message: "Local storage base directory",
-      defaultValue: baseDirDefault,
+      defaultValue: base.localDisk.baseDir || defaultStorageBaseDir(),
       placeholder: defaultStorageBaseDir(),
       validate: (value) => {
-        // Clack validates the raw input before applying defaultValue —
-        // validate the value that will actually be submitted.
-        if ((value || baseDirDefault).trim().length === 0) return "Storage base directory is required";
+        if (!value || value.trim().length === 0) return "Storage base directory is required";
       },
     });
 
@@ -74,14 +71,12 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
     };
   }
 
-  const bucketDefault = base.s3.bucket || "paperclip";
-  const regionDefault = base.s3.region || "us-east-1";
   const bucket = await p.text({
     message: "S3 bucket",
-    defaultValue: bucketDefault,
+    defaultValue: base.s3.bucket || "paperclip",
     placeholder: "paperclip",
     validate: (value) => {
-      if ((value || bucketDefault).trim().length === 0) return "Bucket is required";
+      if (!value || value.trim().length === 0) return "Bucket is required";
     },
   });
 
@@ -92,10 +87,10 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
 
   const region = await p.text({
     message: "S3 region",
-    defaultValue: regionDefault,
+    defaultValue: base.s3.region || "us-east-1",
     placeholder: "us-east-1",
     validate: (value) => {
-      if ((value || regionDefault).trim().length === 0) return "Region is required";
+      if (!value || value.trim().length === 0) return "Region is required";
     },
   });
 

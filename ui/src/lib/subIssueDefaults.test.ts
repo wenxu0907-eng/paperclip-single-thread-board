@@ -10,7 +10,6 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
     projectWorkspaceId: "project-workspace-1",
     sourceIssueId: null,
     status: "active",
-    deliveryState: "unknown",
     mode: "isolated_workspace",
     strategyType: "git_worktree",
     name: "Parent workspace",
@@ -47,7 +46,6 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
-    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -77,12 +75,11 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
 }
 
 describe("buildSubIssueDefaults", () => {
-  it("inherits the parent agent assignee and workspace mode but never the parent's workspace", () => {
+  it("inherits the parent agent assignee and workspace context", () => {
     const defaults = buildSubIssueDefaults(
       makeIssue({
         assigneeAgentId: "agent-1",
         executionWorkspaceId: "workspace-1",
-        executionWorkspacePreference: "reuse_existing",
         currentExecutionWorkspace: makeExecutionWorkspace(),
       }),
     );
@@ -94,8 +91,9 @@ describe("buildSubIssueDefaults", () => {
       projectId: "project-1",
       projectWorkspaceId: "project-workspace-1",
       goalId: "goal-1",
-      // The parent's realized mode carries over; its workspace does not.
-      executionWorkspaceMode: "isolated_workspace",
+      executionWorkspaceId: "workspace-1",
+      executionWorkspaceMode: "reuse_existing",
+      parentExecutionWorkspaceLabel: "Parent workspace",
       assigneeAgentId: "agent-1",
     });
   });

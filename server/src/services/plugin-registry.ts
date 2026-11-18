@@ -1,6 +1,3 @@
-import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
-import { isDeepStrictEqual } from "node:util";
-import { writePluginJobChange } from "./plugin-job-work-notifications.js";
 import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -31,13 +28,6 @@ import type {
   PluginWebhookDeliveryStatus,
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
-import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { TERMINAL_WORKSPACE_PLUGIN_HINT } from "./terminal-workspace-work.js";
-import { announcePluginManifestChange } from "./plugin-manifest-revision.js";
-
-function sameBundledPluginRegistration(existing: typeof plugins.$inferSelect, packageName: string, manifest: PaperclipPluginManifestV1): boolean {
-  return existing.pluginKey === manifest.id && existing.packageName === packageName && existing.version === manifest.version && isDeepStrictEqual(existing.manifestJson, manifest);
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,8 +65,8 @@ export function pluginRegistryService(db: Db) {
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  async function getById(id: string, database: Db = db) {
-    return database
+  async function getById(id: string) {
+    return db
       .select()
       .from(plugins)
       .where(eq(plugins.id, id))
@@ -89,14 +79,6 @@ export function pluginRegistryService(db: Db) {
       .from(plugins)
       .where(eq(plugins.pluginKey, pluginKey))
       .then((rows) => rows[0] ?? null);
-  }
-
-  async function writeWorkspaceProviderChange<T>(reconsiderWorkspaces: boolean, write: (database: Db) => Promise<T>): Promise<T> {
-    return db.transaction(async tx => {
-      await notifyExternalObjectRefresh(tx);
-      if (reconsiderWorkspaces) await notifyDeliveryWork(tx, DELIVERY_QUEUES.terminalWorkspaces, TERMINAL_WORKSPACE_PLUGIN_HINT);
-      return write(tx as unknown as Db);
-    });
   }
 
   async function nextInstallOrder(): Promise<number> {
@@ -114,13 +96,11 @@ export function pluginRegistryService(db: Db) {
     // ----- Read -----------------------------------------------------------
 
     /** List all registered plugins ordered by install order. */
-    list: (filter?: { sandboxProviderDriverKey: string }) => {
-      const query = db.select().from(plugins);
-      const driverKey = filter?.sandboxProviderDriverKey;
-      return (driverKey === undefined ? query : query.where(sql`${plugins.manifestJson} @> ${JSON.stringify({
-        environmentDrivers: [{ driverKey, kind: "sandbox_provider" }],
-      })}::jsonb`)).orderBy(asc(plugins.installOrder));
-    },
+    list: () =>
+      db
+        .select()
+        .from(plugins)
+        .orderBy(asc(plugins.installOrder)),
 
     /**
      * List installed plugins (excludes soft-deleted/uninstalled).
@@ -156,11 +136,10 @@ export function pluginRegistryService(db: Db) {
      * manifest from the package.  This method persists the plugin row and
      * assigns the next install order.
      */
-    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1, options: { idempotent?: boolean } = {}) => {
+    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1) => {
       const existing = await getByKey(manifest.id);
       if (existing) {
         if (existing.status !== "uninstalled") {
-          if (options.idempotent && sameBundledPluginRegistration(existing, input.packageName, manifest)) return existing;
           throw conflict(`Plugin already installed: ${manifest.id}`);
         }
 
@@ -170,7 +149,7 @@ export function pluginRegistryService(db: Db) {
           .update(plugins)
           .set({
             packageName: input.packageName,
-            packagePath: options.idempotent ? existing.packagePath : input.packagePath ?? null,
+            packagePath: input.packagePath ?? null,
             version: manifest.version,
             apiVersion: manifest.apiVersion,
             categories: manifest.categories,
@@ -181,14 +160,13 @@ export function pluginRegistryService(db: Db) {
           })
           .where(eq(plugins.id, existing.id))
           .returning()
-          .then((rows) => rows[0] ?? null)
-          .finally(announcePluginManifestChange);
+          .then((rows) => rows[0] ?? null);
       }
 
       const installOrder = await nextInstallOrder();
 
       try {
-        const insertion = db
+        const rows = await db
           .insert(plugins)
           .values({
             pluginKey: manifest.id,
@@ -200,15 +178,9 @@ export function pluginRegistryService(db: Db) {
             status: "installed" as PluginStatus,
             installOrder,
             packagePath: input.packagePath ?? null,
-          });
-        const rows = await (options.idempotent
-          ? insertion.onConflictDoNothing({ target: plugins.pluginKey })
-          : insertion).returning();
-        announcePluginManifestChange();
-        if (rows[0]) return rows[0];
-        const concurrent = await getByKey(manifest.id);
-        if (concurrent && concurrent.status !== "uninstalled" && sameBundledPluginRegistration(concurrent, input.packageName, manifest)) return concurrent;
-        throw conflict(`Plugin registration differs from the current image: ${manifest.id}`);
+          })
+          .returning();
+        return rows[0];
       } catch (error) {
         if (isPluginKeyConflict(error)) {
           throw conflict(`Plugin already installed: ${manifest.id}`);
@@ -227,8 +199,6 @@ export function pluginRegistryService(db: Db) {
       id: string,
       data: {
         packageName?: string;
-        packagePath?: string;
-        status?: "upgrade_pending";
         version?: string;
         manifest?: PaperclipPluginManifestV1;
       },
@@ -240,11 +210,6 @@ export function pluginRegistryService(db: Db) {
         updatedAt: new Date(),
       };
       if (data.packageName !== undefined) setClause.packageName = data.packageName;
-      if (data.packagePath !== undefined) setClause.packagePath = data.packagePath;
-      if (data.status !== undefined) {
-        setClause.status = data.status;
-        setClause.lastError = null;
-      }
       if (data.version !== undefined) setClause.version = data.version;
       if (data.manifest !== undefined) {
         setClause.manifestJson = data.manifest;
@@ -252,14 +217,12 @@ export function pluginRegistryService(db: Db) {
         setClause.categories = data.manifest.categories;
       }
 
-      const workspaceProviderChanged = data.manifest !== undefined
-        && !isDeepStrictEqual(plugin.manifestJson.workspaceProvider, data.manifest.workspaceProvider);
-      return writeWorkspaceProviderChange(workspaceProviderChanged, database => database
+      return db
         .update(plugins)
         .set(setClause)
         .where(eq(plugins.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null)).finally(announcePluginManifestChange);
+        .then((rows) => rows[0] ?? null);
     },
 
     // ----- Status ---------------------------------------------------------
@@ -269,9 +232,7 @@ export function pluginRegistryService(db: Db) {
       const plugin = await getById(id);
       if (!plugin) throw notFound("Plugin not found");
 
-      const workspaceProviderActivated = Boolean(plugin.manifestJson.workspaceProvider)
-        && plugin.status !== "ready" && input.status === "ready";
-      return writeWorkspaceProviderChange(workspaceProviderActivated, database => database
+      return db
         .update(plugins)
         .set({
           status: input.status,
@@ -280,27 +241,7 @@ export function pluginRegistryService(db: Db) {
         })
         .where(eq(plugins.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null));
-    },
-
-    /**
-     * Update status and error only while the row still has the expected status
-     * (and, when given, an error with the expected prefix). Returns null when a
-     * concurrent change such as a disable or an uninstall won.
-     */
-    updateStatusIf: async (id: string, expected: { status: string; lastErrorPrefix?: string }, input: UpdatePluginStatus) => {
-      const plugin = await getById(id);
-      if (!plugin || plugin.status !== expected.status) return null;
-      const workspaceProviderActivated = Boolean(plugin.manifestJson.workspaceProvider)
-        && plugin.status !== "ready" && input.status === "ready";
-      return writeWorkspaceProviderChange(workspaceProviderActivated, database => database
-        .update(plugins)
-        .set({ status: input.status, lastError: input.lastError ?? null, updatedAt: new Date() })
-        .where(and(eq(plugins.id, id), eq(plugins.status, expected.status as typeof plugin.status),
-          expected.lastErrorPrefix === undefined ? undefined
-            : sql`starts_with(${plugins.lastError}, ${expected.lastErrorPrefix})`))
-        .returning()
-        .then((rows) => rows[0] ?? null));
+        .then((rows) => rows[0] ?? null);
     },
 
     // ----- Uninstall / Remove --------------------------------------------
@@ -316,28 +257,25 @@ export function pluginRegistryService(db: Db) {
       const plugin = await getById(id);
       if (!plugin) throw notFound("Plugin not found");
 
-      return writePluginJobChange(db, async db => {
-        await notifyExternalObjectRefresh(db);
-        if (removeData) {
-          // Hard delete – plugin_config cascades via FK onDelete
-          return db
-            .delete(plugins)
-            .where(eq(plugins.id, id))
-            .returning()
-            .then((rows) => rows[0] ?? null);
-        }
-
-        // Soft delete – mark as uninstalled
+      if (removeData) {
+        // Hard delete – plugin_config cascades via FK onDelete
         return db
-          .update(plugins)
-          .set({
-            status: "uninstalled" as PluginStatus,
-            updatedAt: new Date(),
-          })
+          .delete(plugins)
           .where(eq(plugins.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-      }).finally(announcePluginManifestChange);
+      }
+
+      // Soft delete – mark as uninstalled
+      return db
+        .update(plugins)
+        .set({
+          status: "uninstalled" as PluginStatus,
+          updatedAt: new Date(),
+        })
+        .where(eq(plugins.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
     },
 
     // ----- Config ---------------------------------------------------------
@@ -351,69 +289,42 @@ export function pluginRegistryService(db: Db) {
         .then((rows) => rows[0] ?? null),
 
     /**
-     * List every company-scoped configuration row for a plugin.
-     *
-     * Plugin config is company-scoped, but a worker is spawned once per plugin
-     * (not per company). Callers such as the plugin loader use this to replay
-     * each configured company's config to a freshly-started worker, so a
-     * proactive plugin that never runs inside a company-scoped invocation (and
-     * therefore cannot resolve `ctx.config.get(companyId)`) still receives its
-     * configuration at startup.
-     *
-     * Ordered deterministically by companyId: the startup replay delivers these
-     * rows to a single worker via `configChanged`, and a single-tenant worker
-     * binds to the first company it sees. Without a stable order the worker
-     * would bind to a nondeterministic (DB-dependent) company across restarts.
-     */
-    listConfigs: (pluginId: string) =>
-      db
-        .select()
-        .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
-        .orderBy(asc(pluginConfig.companyId)),
-
-    /**
      * Create or fully replace a plugin's company-scoped configuration.
      * If a config row already exists for the plugin/company pair it is replaced;
      * otherwise a new row is inserted.
      */
     upsertConfig: async (pluginId: string, companyId: string, input: UpsertPluginConfig) => {
-      return db.transaction(async tx => {
-        const db = tx as unknown as Db;
-        await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
-        await notifyExternalObjectRefresh(db, companyId);
-        const plugin = await getById(pluginId, db);
-        if (!plugin) throw notFound("Plugin not found");
+      const plugin = await getById(pluginId);
+      if (!plugin) throw notFound("Plugin not found");
 
-        const existing = await db
-          .select()
-          .from(pluginConfig)
-          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
-          .then((rows) => rows[0] ?? null);
+      const existing = await db
+        .select()
+        .from(pluginConfig)
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
 
-        if (existing) {
-          return db
-            .update(pluginConfig)
-            .set({
-              configJson: input.configJson,
-              lastError: null,
-              updatedAt: new Date(),
-            })
-            .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
-            .returning()
-            .then((rows) => rows[0]);
-        }
-
+      if (existing) {
         return db
-          .insert(pluginConfig)
-          .values({
-            pluginId,
-            companyId,
+          .update(pluginConfig)
+          .set({
             configJson: input.configJson,
+            lastError: null,
+            updatedAt: new Date(),
           })
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
-      });
+      }
+
+      return db
+        .insert(pluginConfig)
+        .values({
+          pluginId,
+          companyId,
+          configJson: input.configJson,
+        })
+        .returning()
+        .then((rows) => rows[0]);
     },
 
     /**
@@ -421,43 +332,38 @@ export function pluginRegistryService(db: Db) {
      * If no config row exists yet one is created with the supplied values.
      */
     patchConfig: async (pluginId: string, companyId: string, input: PatchPluginConfig) => {
-      return db.transaction(async tx => {
-        const db = tx as unknown as Db;
-        await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
-        await notifyExternalObjectRefresh(db, companyId);
-        const plugin = await getById(pluginId, db);
-        if (!plugin) throw notFound("Plugin not found");
+      const plugin = await getById(pluginId);
+      if (!plugin) throw notFound("Plugin not found");
 
-        const existing = await db
-          .select()
-          .from(pluginConfig)
-          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
-          .then((rows) => rows[0] ?? null);
+      const existing = await db
+        .select()
+        .from(pluginConfig)
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
 
-        if (existing) {
-          const merged = { ...existing.configJson, ...input.configJson };
-          return db
-            .update(pluginConfig)
-            .set({
-              configJson: merged,
-              lastError: null,
-              updatedAt: new Date(),
-            })
-            .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
-            .returning()
-            .then((rows) => rows[0]);
-        }
-
+      if (existing) {
+        const merged = { ...existing.configJson, ...input.configJson };
         return db
-          .insert(pluginConfig)
-          .values({
-            pluginId,
-            companyId,
-            configJson: input.configJson,
+          .update(pluginConfig)
+          .set({
+            configJson: merged,
+            lastError: null,
+            updatedAt: new Date(),
           })
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
-      });
+      }
+
+      return db
+        .insert(pluginConfig)
+        .values({
+          pluginId,
+          companyId,
+          configJson: input.configJson,
+        })
+        .returning()
+        .then((rows) => rows[0]);
     },
 
     /**
@@ -504,52 +410,43 @@ export function pluginRegistryService(db: Db) {
       companyId: string,
       input: { enabled?: boolean; settingsJson: Record<string, unknown>; lastError?: string | null },
     ): Promise<PluginCompanySettings> => {
-      return db.transaction(async tx => {
-        const db = tx as unknown as Db;
-        await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
-        await notifyExternalObjectRefresh(db, companyId);
-        const plugin = await getById(pluginId, db);
-        if (!plugin) throw notFound("Plugin not found");
+      const plugin = await getById(pluginId);
+      if (!plugin) throw notFound("Plugin not found");
 
-        const existing = await db
-          .select()
-          .from(pluginCompanySettings)
-          .where(and(
-            eq(pluginCompanySettings.pluginId, pluginId),
-            eq(pluginCompanySettings.companyId, companyId),
-          ))
-          .then((rows) => rows[0] ?? null);
+      const existing = await db
+        .select()
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
 
-        if (plugin.manifestJson.workspaceProvider && existing?.enabled === false && input.enabled === true) {
-          await notifyDeliveryWork(db, DELIVERY_QUEUES.terminalWorkspaces, TERMINAL_WORKSPACE_PLUGIN_HINT);
-        }
-
-        if (existing) {
-          return db
-            .update(pluginCompanySettings)
-            .set({
-              enabled: input.enabled ?? existing.enabled,
-              settingsJson: input.settingsJson,
-              lastError: input.lastError ?? null,
-              updatedAt: new Date(),
-            })
-            .where(eq(pluginCompanySettings.id, existing.id))
-            .returning()
-            .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
-        }
-
+      if (existing) {
         return db
-          .insert(pluginCompanySettings)
-          .values({
-            pluginId,
-            companyId,
-            enabled: input.enabled ?? true,
+          .update(pluginCompanySettings)
+          .set({
+            enabled: input.enabled ?? existing.enabled,
             settingsJson: input.settingsJson,
             lastError: input.lastError ?? null,
+            updatedAt: new Date(),
           })
+          .where(eq(pluginCompanySettings.id, existing.id))
           .returning()
           .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
-      });
+      }
+
+      return db
+        .insert(pluginCompanySettings)
+        .values({
+          pluginId,
+          companyId,
+          enabled: input.enabled ?? true,
+          settingsJson: input.settingsJson,
+          lastError: input.lastError ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
     },
 
     // ----- Entities -------------------------------------------------------
@@ -565,8 +462,6 @@ export function pluginRegistryService(db: Db) {
       const conditions = [eq(pluginEntities.pluginId, pluginId)];
       if (query?.entityType) conditions.push(eq(pluginEntities.entityType, query.entityType));
       if (query?.externalId) conditions.push(eq(pluginEntities.externalId, query.externalId));
-      if (query?.scopeKind) conditions.push(eq(pluginEntities.scopeKind, query.scopeKind));
-      if (query?.scopeId) conditions.push(eq(pluginEntities.scopeId, query.scopeId));
 
       return db
         .select()
@@ -731,39 +626,35 @@ export function pluginRegistryService(db: Db) {
       jobKey: string,
       input: { schedule: string; status?: PluginJobStatus },
     ) => {
-      return writePluginJobChange(db, async db => {
-        const existing = await db
-          .select()
-          .from(pluginJobs)
-          .where(and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, jobKey)))
-          .for("update")
-          .then((rows) => rows[0] ?? null);
+      const existing = await db
+        .select()
+        .from(pluginJobs)
+        .where(and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, jobKey)))
+        .then((rows) => rows[0] ?? null);
 
-        if (existing) {
-          return db
-            .update(pluginJobs)
-            .set({
-              schedule: input.schedule,
-              nextRunAt: existing.schedule === input.schedule ? existing.nextRunAt : null,
-              status: input.status ?? existing.status,
-              updatedAt: new Date(),
-            })
-            .where(eq(pluginJobs.id, existing.id))
-            .returning()
-            .then((rows) => rows[0]);
-        }
-
+      if (existing) {
         return db
-          .insert(pluginJobs)
-          .values({
-            pluginId,
-            jobKey,
+          .update(pluginJobs)
+          .set({
             schedule: input.schedule,
-            status: input.status ?? "active",
+            status: input.status ?? existing.status,
+            updatedAt: new Date(),
           })
+          .where(eq(pluginJobs.id, existing.id))
           .returning()
           .then((rows) => rows[0]);
-      });
+      }
+
+      return db
+        .insert(pluginJobs)
+        .values({
+          pluginId,
+          jobKey,
+          schedule: input.schedule,
+          status: input.status ?? "active",
+        })
+        .returning()
+        .then((rows) => rows[0]);
     },
 
     /**
@@ -786,19 +677,17 @@ export function pluginRegistryService(db: Db) {
       trigger: PluginJobRunTrigger,
       companyId: string | null,
     ) => {
-      return writePluginJobChange(db, async db => {
-        return db
-          .insert(pluginJobRuns)
-          .values({
-            pluginId,
-            jobId,
-            companyId,
-            trigger,
-            status: "pending",
-          })
-          .returning()
-          .then((rows) => rows[0]);
-      });
+      return db
+        .insert(pluginJobRuns)
+        .values({
+          pluginId,
+          jobId,
+          companyId,
+          trigger,
+          status: "pending",
+        })
+        .returning()
+        .then((rows) => rows[0]);
     },
 
     /**
@@ -819,14 +708,12 @@ export function pluginRegistryService(db: Db) {
         finishedAt?: Date;
       },
     ) => {
-      return writePluginJobChange(db, async db => {
-        return db
-          .update(pluginJobRuns)
-          .set(input)
-          .where(eq(pluginJobRuns.id, runId))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-      });
+      return db
+        .update(pluginJobRuns)
+        .set(input)
+        .where(eq(pluginJobRuns.id, runId))
+        .returning()
+        .then((rows) => rows[0] ?? null);
     },
 
     // ----- Webhooks -------------------------------------------------------

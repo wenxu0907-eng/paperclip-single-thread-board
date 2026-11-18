@@ -39,13 +39,13 @@ From the repo root, build the plugin and install it by local path:
 
 ```bash
 pnpm --filter @paperclipai/plugin-file-browser-example build
-npx paperclipai plugin install ./packages/plugins/examples/plugin-file-browser-example
+pnpm paperclipai plugin install ./packages/plugins/examples/plugin-file-browser-example
 ```
 
 To uninstall:
 
 ```bash
-npx paperclipai plugin uninstall paperclip-file-browser-example --force
+pnpm paperclipai plugin uninstall paperclip-file-browser-example --force
 ```
 
 **Local development notes:**

@@ -1,12 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { companies, type Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
 import type {
   CatalogManifest,
   CatalogTeam,
-  CatalogTeamInstallResult as SharedCatalogTeamInstallResult,
   CatalogTeamFileKind,
   CatalogTeamKind,
   CatalogTeamSkillRequirement,
@@ -107,7 +105,6 @@ export interface CatalogTeamImportPreviewResult {
 }
 
 export interface CatalogTeamInstallResult {
-  resourceLinks: SharedCatalogTeamInstallResult["resourceLinks"];
   team: CatalogTeam;
   portabilityImport: CompanyPortabilityImportResult;
   skillPreparations: CatalogTeamSkillPreparation[];
@@ -907,8 +904,6 @@ export function teamsCatalogService(db: Db) {
     catalogRef: string,
     options: CatalogTeamImportOptions = {},
   ): Promise<CatalogTeamInstallResult> {
-    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
-    if (!company) throw notFound("Company not found");
     const prepared = await prepareCatalogTeamSource(companyId, catalogRef, options);
     if (prepared.errors.length > 0) {
       throw unprocessable(`Catalog team source preparation failed: ${prepared.errors.join("; ")}`);
@@ -962,14 +957,6 @@ export function teamsCatalogService(db: Db) {
     return {
       team: prepared.team,
       portabilityImport: result,
-      resourceLinks: [
-        ...result.agents.flatMap(agent => agent.id ? [{ kind: "agent" as const, id: agent.id, name: agent.name,
-          href: `/${encodeURIComponent(company.issuePrefix)}/agents/${encodeURIComponent(agent.id)}` }] : []),
-        ...result.projects.flatMap(project => project.id ? [{ kind: "project" as const, id: project.id, name: project.name,
-          href: `/${encodeURIComponent(company.issuePrefix)}/projects/${encodeURIComponent(project.id)}` }] : []),
-        ...(result.routines ?? []).flatMap(routine => routine.id ? [{ kind: "routine" as const, id: routine.id, name: routine.title,
-          href: `/${encodeURIComponent(company.issuePrefix)}/routines/${encodeURIComponent(routine.id)}` }] : []),
-      ],
       skillPreparations: prepared.skillPreparations,
       warnings: result.warnings,
     };

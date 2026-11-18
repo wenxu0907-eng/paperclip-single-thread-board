@@ -1,5 +1,3 @@
-import type { WorkspaceFileSelector } from "@paperclipai/shared";
-
 export interface ParsedWorkspaceFileRef {
   path: string;
   resourceKind?: "file" | "directory";
@@ -8,11 +6,6 @@ export interface ParsedWorkspaceFileRef {
   projectId?: string | null;
   projectName?: string | null;
   workspaceId?: string | null;
-  /**
-   * Workspace selector the reference is bound to. Set once availability has
-   * confirmed which workspace serves the path; defaults to `auto` otherwise.
-   */
-  workspace?: WorkspaceFileSelector;
   /** The original matched text (useful for rendering) */
   raw: string;
 }

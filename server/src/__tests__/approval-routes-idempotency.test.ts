@@ -1,7 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const mockApprovalService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -34,10 +33,6 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/authorization.js", async (importActual) => ({
-    ...await importActual<typeof import("../services/authorization.js")>(),
-    canActorReadApproval: async () => true,
-  }));
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
@@ -48,14 +43,11 @@ function registerModuleMocks() {
   }));
 }
 
-const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-  const { errorHandler } = await import("../middleware/index.js");
-  const { approvalRoutes } = await import("../routes/approvals.js");
-  return { errorHandler, approvalRoutes };
-});
-
 async function createApp(actorOverrides: Record<string, unknown> = {}) {
-  const { errorHandler, approvalRoutes } = routeModules.value;
+  const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
+    import("../middleware/index.js"),
+    import("../routes/approvals.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -95,7 +87,10 @@ function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "r
 }
 
 async function createAgentApp(options: { runId?: string; contextSnapshot?: Record<string, unknown> } = {}) {
-  const { errorHandler, approvalRoutes } = routeModules.value;
+  const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
+    import("../middleware/index.js"),
+    import("../routes/approvals.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -116,6 +111,12 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
 
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/approvals.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.clearAllMocks();
     mockApprovalService.list.mockReset();
     mockApprovalService.getById.mockReset();
@@ -373,6 +374,7 @@ describe("approval routes idempotent retries", () => {
   it("blocks status-only recovery runs from creating approvals", async () => {
     const res = await request(await createAgentApp({
       contextSnapshot: {
+        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -386,7 +388,7 @@ describe("approval routes idempotent retries", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.create).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
   });
@@ -403,6 +405,7 @@ describe("approval routes idempotent retries", () => {
 
     const res = await request(await createAgentApp({
       contextSnapshot: {
+        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -413,7 +416,7 @@ describe("approval routes idempotent retries", () => {
       .send({ payload: { title: "Retry" } });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
   });
 
@@ -429,6 +432,7 @@ describe("approval routes idempotent retries", () => {
 
     const res = await request(await createAgentApp({
       contextSnapshot: {
+        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -439,7 +443,7 @@ describe("approval routes idempotent retries", () => {
       .send({ body: "please approve" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
   });
 });

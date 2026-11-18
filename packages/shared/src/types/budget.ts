@@ -16,10 +16,8 @@ export interface BudgetPolicy {
   metric: BudgetMetric;
   windowKind: BudgetWindowKind;
   amount: number;
-  reservationCents?: string;
   warnPercent: number;
   hardStopEnabled: boolean;
-  unpricedUsagePolicy: "block" | "allow";
   notifyEnabled: boolean;
   isActive: boolean;
   createdByUserId: string | null;
@@ -37,16 +35,11 @@ export interface BudgetPolicySummary {
   metric: BudgetMetric;
   windowKind: BudgetWindowKind;
   amount: number;
-  reservationCents?: string;
   observedAmount: number;
-  observedAmountExact?: string;
-  unpricedEventCount: number;
-  pendingRunCount: number;
   remainingAmount: number;
   utilizationPercent: number;
   warnPercent: number;
   hardStopEnabled: boolean;
-  unpricedUsagePolicy: "block" | "allow";
   notifyEnabled: boolean;
   isActive: boolean;
   status: "ok" | "warning" | "hard_stop";
@@ -92,11 +85,9 @@ export interface BudgetPolicyUpsertInput {
   scopeId: string;
   metric?: BudgetMetric;
   windowKind?: BudgetWindowKind;
-  amount?: number;
-  reservationCents?: string | number;
+  amount: number;
   warnPercent?: number;
   hardStopEnabled?: boolean;
-  unpricedUsagePolicy?: "block" | "allow";
   notifyEnabled?: boolean;
   isActive?: boolean;
 }

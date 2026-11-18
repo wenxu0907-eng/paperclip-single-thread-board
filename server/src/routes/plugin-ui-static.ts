@@ -32,7 +32,6 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import type { PluginRecord } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
@@ -53,7 +52,6 @@ import { badRequest } from "../errors.js";
  * The hash portion must be at least 8 hex characters to avoid false positives.
  */
 const CONTENT_HASH_PATTERN = /[.-][a-fA-F0-9]{8,}\.\w+$/;
-const UUID_INPUT_PATTERN = /^[0-9a-f]{4}(?:-?[0-9a-f]{4}){7}$/i;
 
 /**
  * Cache-Control header for content-hashed files.
@@ -194,7 +192,6 @@ export interface PluginUiStaticRouteOptions {
    * Defaults to the standard `~/.paperclip/plugins/` location.
    */
   localPluginDir: string;
-  resolvePackageRoot?: (plugin: PluginRecord) => string;
 }
 
 /**
@@ -248,11 +245,16 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
     // Step 1: Look up the plugin
     let plugin = null;
-    const uuidInput = pluginId.startsWith("{") && pluginId.endsWith("}")
-      ? pluginId.slice(1, -1)
-      : pluginId;
-    if (UUID_INPUT_PATTERN.test(uuidInput)) {
+    try {
       plugin = await registry.getById(pluginId);
+    } catch (error) {
+      const maybeCode =
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: unknown }).code
+          : undefined;
+      if (maybeCode !== "22P02") {
+        throw error;
+      }
     }
     if (!plugin) {
       plugin = await registry.getByKey(pluginId);
@@ -302,7 +304,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
       if (typeof devUiUrl === "string" && devUiUrl.length > 0) {
         // Dev proxy is only available in development mode
-        if (options.resolvePackageRoot || process.env.NODE_ENV === "production") {
+        if (process.env.NODE_ENV === "production") {
           log.warn(
             { pluginId: plugin.id },
             "plugin-ui-static: devUiUrl ignored in production",
@@ -403,15 +405,12 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     }
 
     // Step 3: Resolve the plugin's UI directory
-    let uiDir: string | null;
-    try {
-      uiDir = options.resolvePackageRoot
-        ? path.resolve(options.resolvePackageRoot(plugin), manifest.entrypoints.ui)
-        : resolvePluginUiDir(options.localPluginDir, plugin.packageName, manifest.entrypoints.ui, plugin.packagePath);
-    } catch {
-      res.status(503).json({ error: "Plugin package is unavailable in the current image" });
-      return;
-    }
+    const uiDir = resolvePluginUiDir(
+      options.localPluginDir,
+      plugin.packageName,
+      manifest.entrypoints.ui,
+      plugin.packagePath,
+    );
 
     if (!uiDir) {
       log.warn(

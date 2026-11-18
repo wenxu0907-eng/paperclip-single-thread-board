@@ -1,4 +1,3 @@
-import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps } from "../types";
@@ -102,7 +101,6 @@ function parseScopes(value: unknown): string {
 }
 
 export function OpenClawGatewayConfigFields({
-  section,
   isCreate,
   values,
   set,
@@ -142,7 +140,7 @@ export function OpenClawGatewayConfigFields({
     String(config.sessionKeyStrategy ?? "fixed"),
   );
 
-  return configFieldsForSection(section, (
+  return (
     <>
       <Field label="Gateway URL" hint={help.webhookUrl}>
         <DraftInput
@@ -327,7 +325,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field configSection="runPolicy" label="Timeout (seconds)">
+      <Field label="Timeout (seconds)">
         <DraftInput
           value={
             isCreate
@@ -386,7 +384,7 @@ export function OpenClawGatewayConfigFields({
         </Field>
       )}
 
-      <Field configSection="runPolicy" label="Wait timeout (ms)">
+      <Field label="Wait timeout (ms)">
         <DraftInput
           value={
             isCreate
@@ -455,5 +453,5 @@ export function OpenClawGatewayConfigFields({
         </div>
       </Field>
     </>
-  ));
+  );
 }

@@ -46,7 +46,7 @@ function measureChar(container: HTMLElement): { w: number; h: number } {
   const span = document.createElement("span");
   span.textContent = "M";
   span.style.cssText =
-    "position:absolute;visibility:hidden;white-space:pre;font-size:inherit;font-family:inherit;line-height:1;";
+    "position:absolute;visibility:hidden;white-space:pre;font-size:11px;font-family:monospace;line-height:1;";
   container.appendChild(span);
   const rect = span.getBoundingClientRect();
   container.removeChild(span);
@@ -302,16 +302,14 @@ export function AsciiArtAnimation() {
       }
     }
 
-    const measureGrid = () => {
+    const observer = new ResizeObserver(() => {
       const size = measureChar(preEl);
       charW = size.w;
       charH = size.h;
       rebuildGrid();
       syncLoop();
-    };
-    const observer = new ResizeObserver(measureGrid);
+    });
     observer.observe(preEl);
-    document.fonts?.addEventListener("loadingdone", measureGrid);
 
     const onVisibilityChange = () => {
       isVisible = document.visibilityState !== "hidden";
@@ -334,7 +332,6 @@ export function AsciiArtAnimation() {
       loopActive = false;
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       observer.disconnect();
-      document.fonts?.removeEventListener("loadingdone", measureGrid);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       motionMedia.removeEventListener("change", onMotionChange);
     };
@@ -343,8 +340,8 @@ export function AsciiArtAnimation() {
   return (
     <pre
       ref={preRef}
-      className="font-mono w-full h-full m-0 p-0 overflow-hidden text-muted-foreground/60 select-none leading-none"
-      style={{ fontSize: "var(--text-micro)" }}
+      className="w-full h-full m-0 p-0 overflow-hidden text-muted-foreground/60 select-none leading-none"
+      style={{ fontSize: "var(--text-micro)", fontFamily: "monospace" }}
       aria-hidden="true"
     />
   );

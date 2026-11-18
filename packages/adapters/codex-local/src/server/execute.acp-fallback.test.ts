@@ -42,10 +42,10 @@ const {
 
 vi.mock("./acp.js", () => ({
   createCodexAcpExecutor: () => executeCodexAcp,
+  formatCodexAcpFallbackMessage: (reason: string) =>
+    `[paperclip] Codex ACP default unavailable; falling back to Codex CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`,
   resolveCodexExecutionEngineForRun: async (ctx: { config: Record<string, unknown> }) =>
-    ctx.config.engine === "cli"
-      ? { engine: "cli", explicit: true }
-      : ctx.config.engine === "acp"
+    ctx.config.engine === "acp"
       ? { engine: "acp", explicit: true }
       : { engine: "acp", explicit: false },
 }));
@@ -132,11 +132,23 @@ describe("codex_local ACP startup fallback", () => {
     vi.clearAllMocks();
   });
 
-  it("does not start CLI after default ACP fails", async () => {
+  it("falls back to Codex CLI when auto-selected ACP fails before execution starts", async () => {
     const ctx = buildContext();
-    await expect(execute(ctx as never)).rejects.toThrow('Unexpected "<<"');
+
+    const result = await execute(ctx as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("hello");
     expect(executeCodexAcp).toHaveBeenCalledTimes(1);
-    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining("Codex ACP startup failed"),
+    );
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining('Unexpected "<<"'),
+    );
   });
 
   it("keeps explicit ACP strict when startup fails", async () => {

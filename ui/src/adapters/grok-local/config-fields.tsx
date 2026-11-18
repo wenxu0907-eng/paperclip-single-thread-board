@@ -1,4 +1,3 @@
-import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   DraftInput,
@@ -12,7 +11,6 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Paperclip stages it into the Grok workspace as Agents.md when possible.";
 
 export function GrokLocalConfigFields({
-  section,
   isCreate,
   values,
   set,
@@ -22,7 +20,7 @@ export function GrokLocalConfigFields({
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
   if (hideInstructionsFile) return null;
-  return configFieldsForSection(section, (
+  return (
     <>
       <Field label="Agent instructions file" hint={instructionsFileHint}>
         <div className="flex items-center gap-2">
@@ -49,5 +47,5 @@ export function GrokLocalConfigFields({
         </div>
       </Field>
     </>
-  ));
+  );
 }

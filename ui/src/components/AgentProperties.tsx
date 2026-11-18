@@ -1,10 +1,9 @@
-import { AgentIdentity } from "@/components/AgentIdentity";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
-import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentStatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
@@ -61,7 +60,7 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           </PropertyRow>
         )}
         <PropertyRow label="Adapter">
-          <span className="text-sm font-mono">{getAdapterLabel(agentDisplayAdapterType(agent))}</span>
+          <span className="text-sm font-mono">{getAdapterLabel(agent.adapterType)}</span>
         </PropertyRow>
       </div>
 
@@ -97,7 +96,7 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           <PropertyRow label="Reports To">
             {reportsToAgent ? (
               <Link to={agentUrl(reportsToAgent)} className="hover:underline">
-                <AgentIdentity agent={reportsToAgent} size="sm" />
+                <Identity name={reportsToAgent.name} size="sm" />
               </Link>
             ) : (
               <span className="text-sm font-mono">{agent.reportsTo.slice(0, 8)}</span>

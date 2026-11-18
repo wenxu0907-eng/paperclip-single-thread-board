@@ -47,11 +47,6 @@ const baseAgent: AgentDetail = {
 };
 
 describe("duplicate agent payload", () => {
-  it("omits the source persona so central creation makes a fresh assignment", () => {
-    const source = { ...baseAgent, appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "arctic-blue" } } as AgentDetail;
-    expect(buildDuplicateAgentPayload(source)).not.toHaveProperty("appearance");
-  });
-
   it("suffixes duplicate names", () => {
     expect(duplicateAgentName("Senior Product Engineer")).toBe("Senior Product Engineer Copy");
     expect(duplicateAgentName("   ")).toBe("Agent Copy");

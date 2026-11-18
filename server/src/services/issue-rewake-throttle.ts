@@ -12,11 +12,9 @@
  * This module decides when such a wake should be skipped: once an issue has
  * accumulated a streak of consecutive succeeded-but-no-issue-progress runs by
  * the same agent, further event-free wakes are held back for an escalating
- * cooldown anchored to the last run's finish time. Fresh issue activity, an
- * explicit resume, forceFreshSession, and event-carrying wake reasons bypass
- * the throttle. Human comment wakes also bypass it. Agent-authored comment
- * wakes deliberately stay in the normal throttle class so a cross-issue write
- * cannot smuggle human wake privileges.
+ * cooldown anchored to the last run's finish time. Any genuinely new input —
+ * a comment wake, fresh issue activity, an explicit resume, forceFreshSession,
+ * or an event-carrying wake reason — bypasses the throttle entirely.
  *
  * Server-side recovery retries (process-loss retries, missing-comment
  * follow-ups) insert their runs directly and never pass through this gate, so
@@ -100,13 +98,9 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
 export interface IssueRewakeCandidateInput {
   reason: string | null;
   wakeCommentId: string | null;
-  requestedByActorType?: "user" | "agent" | "system" | null;
   forceFreshSession: boolean;
   hasExplicitResume: boolean;
-  declaredContinuationKind?: string | null;
 }
-
-export const NATIVE_STATUS_COMMITTER_ACTOR_ID = "native-status-committer";
 
 /**
  * Whether a wake is even a candidate for throttling. Wakes that carry new
@@ -114,12 +108,9 @@ export const NATIVE_STATUS_COMMITTER_ACTOR_ID = "native-status-committer";
  */
 export function isThrottleCandidateIssueRewake(input: IssueRewakeCandidateInput): boolean {
   if (input.forceFreshSession) return false;
-  // Explicit resume is an operator privilege, not an actor-class escape hatch.
-  // Agent-authored resume comments remain subject to the normal rewake throttle.
-  if (input.hasExplicitResume && input.requestedByActorType !== "agent") return false;
-  if (input.wakeCommentId) return input.requestedByActorType === "agent";
+  if (input.wakeCommentId) return false;
+  if (input.hasExplicitResume) return false;
   if (input.reason === null) return true;
-  if (input.reason === "issue_status_changed" && input.declaredContinuationKind) return true;
   return THROTTLED_ISSUE_REWAKE_REASONS.has(input.reason);
 }
 

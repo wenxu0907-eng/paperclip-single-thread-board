@@ -1,7 +1,4 @@
-import { FILE_DROP_TARGET_ATTRIBUTE } from "@/lib/file-drop-target";
-import { TextAttachmentContext } from "@/context/TextAttachmentContext";
-import { isTextAttachment } from "@/lib/issue-attachments";
-import { useContext, useMemo, useState, type DragEvent, type ReactNode } from "react";
+import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { Download, ExternalLink, FileText, Maximize2, Paperclip, Trash2 } from "lucide-react";
@@ -58,10 +55,6 @@ function AttachmentActions({
   deletePending?: boolean;
   onPreview?: (attachment: IssueAttachment) => void;
 }) {
-  const openText = useContext(TextAttachmentContext);
-  const openInPanel = (event: React.MouseEvent) => {
-    if (openText && isTextAttachment(attachment) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); openText(attachment.id, attachmentFilename(attachment)); }
-  };
   const filename = attachmentFilename(attachment);
   return (
     <div className="flex shrink-0 items-center gap-1">
@@ -77,7 +70,7 @@ function AttachmentActions({
         </Button>
       ) : null}
       <Button asChild variant="ghost" size="icon-sm" title="Open in new tab">
-        <a href={attachmentOpenPath(attachment)} onClick={openInPanel} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
+        <a href={attachmentOpenPath(attachment)} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
           <ExternalLink className="h-4 w-4" />
         </a>
       </Button>
@@ -119,10 +112,6 @@ function MarkdownAttachmentCard({
   onDelete?: (attachmentId: string) => void;
   deletePending?: boolean;
 }) {
-  const openText = useContext(TextAttachmentContext);
-  const openInPanel = (event: React.MouseEvent) => {
-    if (openText && isTextAttachment(attachment) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); openText(attachment.id, attachmentFilename(attachment)); }
-  };
   const filename = attachmentFilename(attachment);
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.attachmentPreview(attachment.id),
@@ -135,7 +124,7 @@ function MarkdownAttachmentCard({
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <a href={attachmentOpenPath(attachment)} onClick={openInPanel} className="truncate text-sm font-medium hover:underline" title={filename}>{filename}</a>
+            <span className="truncate text-sm font-medium" title={filename}>{filename}</span>
           </div>
           <AttachmentMeta attachment={attachment} />
         </div>
@@ -198,17 +187,13 @@ function GenericAttachmentRow({
   onDelete?: (attachmentId: string) => void;
   deletePending?: boolean;
 }) {
-  const openText = useContext(TextAttachmentContext);
-  const openInPanel = (event: React.MouseEvent) => {
-    if (openText && isTextAttachment(attachment) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); openText(attachment.id, attachmentFilename(attachment)); }
-  };
   const filename = attachmentFilename(attachment);
   return (
     <Card id={`attachment-${attachment.id}`} className="flex-row scroll-mt-20 items-center gap-2.5 p-2">
       <OutputFileTile contentType={attachment.contentType} />
       <div className="min-w-0 flex-1">
         <a
-          href={attachmentOpenPath(attachment)} onClick={openInPanel}
+          href={attachmentOpenPath(attachment)}
           target="_blank"
           rel="noreferrer"
           className="block truncate text-sm font-medium text-foreground hover:underline"
@@ -273,7 +258,6 @@ export function IssueAttachmentsSection({
         "space-y-3 rounded-lg transition-colors",
         dragActive && "bg-primary/5",
       )}
-      {...(onDrop ? { [FILE_DROP_TARGET_ATTRIBUTE]: "" } : {})}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}

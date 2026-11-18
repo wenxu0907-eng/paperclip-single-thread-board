@@ -45,18 +45,14 @@ function createDbStub(...selectResponses: unknown[][]) {
   };
 }
 
-function loadAppModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
-}
-
 async function createApp(
   db: Record<string, unknown>,
   actor: Record<string, unknown> = { type: "anon" },
 ) {
-  const [{ accessRoutes }, { errorHandler }] = await loadAppModules();
+  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = actor;
@@ -76,7 +72,7 @@ async function createApp(
 }
 
 describe("GET /invites/:token", () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../storage/index.js");
     vi.doUnmock("../routes/access.js");
@@ -84,9 +80,6 @@ describe("GET /invites/:token", () => {
     registerModuleMocks();
     mockStorage.headObject.mockReset();
     mockStorage.headObject.mockResolvedValue({ exists: true, contentLength: 3, contentType: "image/png" });
-    // Transform the route's large dependency graph under the setup budget,
-    // rather than spending the first request test's timeout on module loading.
-    await loadAppModules();
   });
 
   it("returns company branding in the invite summary response", async () => {
@@ -110,6 +103,7 @@ describe("GET /invites/:token", () => {
         [
           {
             name: "Acme Robotics",
+            brandColor: "#114488",
             logoAssetId: "logo-1",
           },
         ],
@@ -130,7 +124,7 @@ describe("GET /invites/:token", () => {
     expect(res.status).toBe(200);
     expect(res.body.companyId).toBe("company-1");
     expect(res.body.companyName).toBe("Acme Robotics");
-    expect(res.body).not.toHaveProperty("companyBrandColor");
+    expect(res.body.companyBrandColor).toBe("#114488");
     expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
     expect(res.body.inviteType).toBe("company_join");
   }, 10_000);
@@ -158,6 +152,7 @@ describe("GET /invites/:token", () => {
         [
           {
             name: "Acme Robotics",
+            brandColor: "#114488",
             logoAssetId: "logo-1",
           },
         ],
@@ -201,6 +196,7 @@ describe("GET /invites/:token", () => {
         [
           {
             name: "Acme Robotics",
+            brandColor: "#114488",
             logoAssetId: "logo-1",
           },
         ],
@@ -248,6 +244,7 @@ describe("GET /invites/:token", () => {
     };
     const companyBranding = {
       name: "Acme Robotics",
+      brandColor: "#114488",
       logoAssetId: "logo-1",
     };
     const logoAsset = {

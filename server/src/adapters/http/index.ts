@@ -4,7 +4,6 @@ import { testEnvironment } from "./test.js";
 
 export const httpAdapter: ServerAdapterModule = {
   type: "http",
-  runtimeToolDelivery: "invocation_context",
   execute,
   testEnvironment,
   models: [],

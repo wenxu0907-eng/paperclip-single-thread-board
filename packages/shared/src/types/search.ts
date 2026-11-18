@@ -1,5 +1,4 @@
-import type { IssueDisplayStatus, IssuePriority, IssueStatus } from "../constants.js";
-import type { IssueBlockerAttention } from "./issue.js";
+import type { IssuePriority, IssueStatus } from "../constants.js";
 
 export const COMPANY_SEARCH_SCOPES = ["all", "issues", "comments", "documents", "artifacts", "agents", "projects"] as const;
 export type CompanySearchScope = (typeof COMPANY_SEARCH_SCOPES)[number];
@@ -39,10 +38,6 @@ export interface CompanySearchIssueSummary {
   identifier: string | null;
   title: string;
   status: IssueStatus;
-  displayStatus?: IssueDisplayStatus;
-  externalConversationState?: "active" | "waiting" | null;
-  /** Glyph-only blocker state for blocked results (no blocker titles or IDs). */
-  blockerAttention?: IssueBlockerAttention;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -80,7 +75,6 @@ export interface CompanySearchResult {
 
 export interface CompanySearchFilterOptionCounts {
   status: Partial<Record<IssueStatus, number>>;
-  displayStatus?: Partial<Record<IssueDisplayStatus, number>>;
   priority: Partial<Record<IssuePriority, number>>;
   assigneeAgentId: Record<string, number>;
   assigneeUserId: Record<string, number>;

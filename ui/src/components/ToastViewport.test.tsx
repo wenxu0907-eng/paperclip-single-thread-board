@@ -1,27 +1,103 @@
 // @vitest-environment jsdom
-import { act, useEffect } from "react";
+
+import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
-import { ToastProvider, useToastActions, type ToastInput } from "../context/ToastContext";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ToastProvider, useToastActions } from "../context/ToastContext";
 import { ToastViewport } from "./ToastViewport";
 
-vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-vi.stubGlobal("requestAnimationFrame", (callback: () => void) => setTimeout(callback, 0));
-vi.stubGlobal("cancelAnimationFrame", clearTimeout);
-function Notify({ toast }: { toast: ToastInput }) {
-  const { pushToast } = useToastActions();
-  useEffect(() => { pushToast(toast); }, [pushToast, toast]);
-  return <ToastViewport />;
-}
-describe("notification avatars", () => {
-  it.each(["user", "agent"] as const)("carries the %s identity through the provider to the viewport", (type) => {
-    const container = document.createElement("div");
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to, ...props }: React.ComponentProps<"a"> & { to?: string }) => (
+    <a href={to} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+describe("ToastViewport", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("renders an onClick action as a button and invokes the callback (Undo)", () => {
     const root = createRoot(container);
-    try {
-      act(() => root.render(<ToastProvider><Notify toast={{ title: "Alex Example created a task", actor: { type, id: "actor-1", name: "Alex Example" } }} /></ToastProvider>));
-      expect(container.textContent).toContain("Alex Example created a task");
-      if (type === "user") expect(container.querySelector('[data-slot="avatar-fallback"]')?.textContent).toBe("AE");
-      else expect(container.querySelector('[data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/");
-    } finally { act(() => root.unmount()); }
+    const onUndo = vi.fn();
+    let push: ReturnType<typeof useToastActions>["pushToast"] | null = null;
+
+    function Harness() {
+      push = useToastActions().pushToast;
+      return <ToastViewport />;
+    }
+
+    act(() => {
+      root.render(
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>,
+      );
+    });
+
+    act(() => {
+      push?.({ title: "Marked reviewed", action: { label: "Undo", onClick: onUndo } });
+    });
+
+    const buttons = Array.from(document.querySelectorAll("button")).filter(
+      (b) => b.textContent === "Undo",
+    );
+    expect(buttons.length).toBe(1);
+
+    act(() => {
+      buttons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUndo).toHaveBeenCalledTimes(1);
+    // Toast is dismissed after the action fires.
+    expect(
+      Array.from(document.querySelectorAll("button")).some((b) => b.textContent === "Undo"),
+    ).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders an href action as a link", () => {
+    const root = createRoot(container);
+    let push: ReturnType<typeof useToastActions>["pushToast"] | null = null;
+
+    function Harness() {
+      push = useToastActions().pushToast;
+      return <ToastViewport />;
+    }
+
+    act(() => {
+      root.render(
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>,
+      );
+    });
+
+    act(() => {
+      push?.({ title: "Saved", action: { label: "View", href: "/somewhere" } });
+    });
+
+    const link = Array.from(document.querySelectorAll("a")).find((a) => a.textContent === "View");
+    expect(link).not.toBeUndefined();
+    expect(link?.getAttribute("href")).toBe("/somewhere");
+
+    act(() => {
+      root.unmount();
+    });
   });
 });

@@ -4,7 +4,6 @@ import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, L
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { useManagedSandboxOnly } from "@/hooks/useManagedSandboxOnly";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
@@ -28,8 +27,6 @@ import {
   getDefaultValues,
   type JsonSchemaNode,
 } from "@/components/JsonSchemaForm";
-import { describeError } from "@/api/errors";
-import { QueryErrorState, QueryPlaceholder, useQueryView } from "@/components/QueryView";
 
 /**
  * PluginSettings page component.
@@ -66,16 +63,13 @@ export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
-  const { hideHostPaths } = useManagedSandboxOnly();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
-  const pluginQuery = useQuery({
+  const { data: plugin, isLoading: pluginLoading } = useQuery({
     queryKey: queryKeys.plugins.detail(pluginId!),
     queryFn: () => pluginsApi.get(pluginId!),
     enabled: !!pluginId,
   });
-  const plugin = pluginQuery.data;
-  const pluginView = useQueryView(pluginQuery);
 
   const { data: healthData, isLoading: healthLoading } = useQuery({
     queryKey: queryKeys.plugins.health(pluginId!),
@@ -106,7 +100,7 @@ export function PluginSettings() {
     ? queryKeys.plugins.config(pluginId, selectedCompanyId)
     : ["plugins", pluginId ?? "__missing_plugin__", "companies", "__missing_company__", "config"] as const;
 
-  const { data: configData, isLoading: configLoading, isSuccess: configLoaded } = useQuery({
+  const { data: configData, isLoading: configLoading } = useQuery({
     queryKey: configQueryKey,
     queryFn: () => pluginsApi.getConfig(pluginId!, selectedCompanyId!),
     enabled: !!pluginId && !!hasConfigSchema && !!selectedCompanyId,
@@ -118,17 +112,17 @@ export function PluginSettings() {
     enabled: !!selectedCompanyId,
   });
 
-  // Filter slots to only show settings pages for this specific plugin. The route
-  // segment can be the plugin's id or its key, so match either.
-  const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId || slot.pluginKey === pluginId);
+  // Filter slots to only show settings pages for this specific plugin
+  const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
 
   // If the plugin has a custom settingsPage slot, prefer that over auto-generated form
   const hasCustomSettingsPage = pluginSlots.length > 0;
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins", href: "/company/settings/instance/plugins" },
       { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
     ]);
@@ -138,24 +132,8 @@ export function PluginSettings() {
     setActiveTab("configuration");
   }, [pluginId]);
 
-  if (pluginView.kind === "loading" || pluginView.kind === "reconnecting") {
-    return <QueryPlaceholder size="page" label="Loading plugin details" className="p-4" />;
-  }
-
-  // A failed load must not bounce the operator back to the plugin list: a
-  // cached plugin keeps the page up through an outage, and a real failure
-  // shows readable copy with Retry.
-  if (pluginView.kind === "error") {
-    return (
-      <QueryErrorState
-        size="page"
-        className="p-4"
-        error={pluginQuery.error}
-        action="load this plugin"
-        onRetry={pluginView.retry}
-        retrying={pluginView.isFetching}
-      />
-    );
+  if (pluginLoading) {
+    return <div className="p-4 text-sm text-muted-foreground">Loading plugin details...</div>;
   }
 
   if (!plugin) {
@@ -173,19 +151,14 @@ export function PluginSettings() {
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
   const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
   const localFolderDeclarations = plugin.manifestJson.localFolders ?? [];
-  // A plugin local folder is an absolute path on the execution host. Under the
-  // managed-sandbox-only policy the platform-managed environment owns the
-  // filesystem, so the whole section disappears and the Settings tab falls back
-  // to whatever else the plugin declares. The section also stays hidden until
-  // the policy is known.
-  const hasLocalFolders = localFolderDeclarations.length > 0 && !hideHostPaths;
+  const hasLocalFolders = localFolderDeclarations.length > 0;
   const environmentDriverNames = environmentDrivers
     .map((driver) => driver.displayName?.trim() || driver.driverKey)
     .filter((name, index, values) => values.indexOf(name) === index);
   const driverLabel = environmentDriverNames.join(", ");
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="space-y-6 max-w-5xl">
       <div className="flex items-center gap-4">
         <Link to="/company/settings/instance/plugins">
           <Button variant="outline" size="icon" className="h-8 w-8">
@@ -280,17 +253,16 @@ export function PluginSettings() {
                   companyId={selectedCompanyId}
                   schema={configSchema!}
                   initialValues={configData?.configJson}
-                  needsInitialSave={configLoaded && configData === null}
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
                   supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
                 />
               ) : environmentDrivers.length > 0 ? (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">Configure this plugin from Settings → Environments.</p>
+                  <p className="font-medium text-foreground">Configure this plugin from Instance Settings → Environments.</p>
                   <p className="mt-1 text-muted-foreground">
                     {driverLabel || "This plugin"} registers environment runtime settings there so the execution target
-                    stays instance-scoped while secret bindings still resolve through the selected organization context.
+                    stays instance-scoped while secret bindings still resolve through the selected company context.
                   </p>
                   <div className="mt-3">
                     <Link to="/company/settings/instance/environments">
@@ -614,22 +586,20 @@ interface PluginLocalFoldersSettingsProps {
 }
 
 function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: PluginLocalFoldersSettingsProps) {
-  const foldersQuery = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: companyId
       ? queryKeys.plugins.localFolders(pluginId, companyId)
       : ["plugins", pluginId, "companies", "none", "local-folders"],
     queryFn: () => pluginsApi.listLocalFolders(pluginId, companyId!),
     enabled: !!companyId,
   });
-  const foldersView = useQueryView(foldersQuery);
 
-  // Loaded folder statuses stay on the rows through an outage.
-  const statusByKey = new Map((foldersQuery.data?.folders ?? []).map((folder) => [folder.folderKey, folder]));
+  const statusByKey = new Map((data?.folders ?? []).map((folder) => [folder.folderKey, folder]));
 
   if (!companyId) {
     return (
       <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-        Select an organization to configure this plugin's local folders.
+        Select a company to configure this plugin's local folders.
       </div>
     );
   }
@@ -640,17 +610,16 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
         <FolderOpen className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-sm font-medium">Local folders</h3>
       </div>
-      {foldersView.kind === "error" ? (
-        <QueryErrorState
-          size="panel"
-          error={foldersQuery.error}
-          action="load local folder settings"
-          onRetry={foldersView.retry}
-          retrying={foldersView.isFetching}
-        />
+      {error ? (
+        <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {(error as Error).message || "Failed to load local folder settings."}
+        </div>
       ) : null}
-      {foldersView.kind === "loading" || foldersView.kind === "reconnecting" ? (
-        <QueryPlaceholder size="panel" label="Loading local folders" className="py-3" />
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading local folders...
+        </div>
       ) : (
         <div className="space-y-3">
           {declarations.map((declaration) => (
@@ -704,7 +673,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders(pluginId, companyId) });
     },
     onError: (err: Error) => {
-      setMessage({ type: "error", text: describeError(err).body });
+      setMessage({ type: "error", text: err.message || "Failed to save local folder." });
     },
   });
 
@@ -959,7 +928,6 @@ interface PluginConfigFormProps {
   companyId: string | null;
   schema: JsonSchemaNode;
   initialValues?: Record<string, unknown>;
-  needsInitialSave: boolean;
   isLoading?: boolean;
   /** Current plugin lifecycle status — "Test Configuration" only available when `ready`. */
   pluginStatus?: string;
@@ -974,7 +942,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, companyId, schema, initialValues, needsInitialSave, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -1014,29 +982,28 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, needsIni
 
   // Save mutation
   const saveMutation = useMutation({
-    mutationFn: ({ pluginId, companyId, configJson }: { pluginId: string; companyId: string | null; configJson: Record<string, unknown> }) => {
-      if (!companyId) throw new Error("Select an organization before saving plugin configuration.");
+    mutationFn: (configJson: Record<string, unknown>) => {
+      if (!companyId) throw new Error("Select a company before saving plugin configuration.");
       return pluginsApi.saveConfig(pluginId, companyId, configJson);
     },
-    onSuccess: (savedConfig, { pluginId, companyId }) => {
+    onSuccess: () => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
       if (companyId) {
-        queryClient.setQueryData(queryKeys.plugins.config(pluginId, companyId), savedConfig);
         queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId, companyId) });
       }
       // Clear success message after 3s
       setTimeout(() => setSaveMessage(null), 3000);
     },
     onError: (err: Error) => {
-      setSaveMessage({ type: "error", text: describeError(err).body });
+      setSaveMessage({ type: "error", text: err.message || "Failed to save configuration." });
     },
   });
 
   // Test configuration mutation
   const testMutation = useMutation({
     mutationFn: (configJson: Record<string, unknown>) => {
-      if (!companyId) throw new Error("Select an organization before testing plugin configuration.");
+      if (!companyId) throw new Error("Select a company before testing plugin configuration.");
       return pluginsApi.testConfig(pluginId, companyId, configJson);
     },
     onSuccess: (result) => {
@@ -1047,7 +1014,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, needsIni
       }
     },
     onError: (err: Error) => {
-      setTestResult({ type: "error", text: describeError(err).body });
+      setTestResult({ type: "error", text: err.message || "Configuration test failed." });
     },
   });
 
@@ -1066,8 +1033,8 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, needsIni
       return;
     }
     setErrors({});
-    saveMutation.mutate({ pluginId, companyId, configJson: values });
-  }, [schema, values, saveMutation, pluginId, companyId]);
+    saveMutation.mutate(values);
+  }, [schema, values, saveMutation]);
 
   const handleTestConnection = useCallback(() => {
     // Validate before testing
@@ -1129,7 +1096,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, needsIni
       <div className="flex items-center gap-2 pt-2">
         <Button
           onClick={handleSave}
-          disabled={saveMutation.isPending || (!isDirty && !needsInitialSave)}
+          disabled={saveMutation.isPending || !isDirty}
           size="sm"
         >
           {saveMutation.isPending ? (

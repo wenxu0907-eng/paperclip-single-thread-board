@@ -40,9 +40,7 @@ function makeArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifact
     issue: { id: "issue-1", identifier: "PAP-10306", title: "Landing visuals" },
     project: { id: "proj-1", name: "Paperclip App" },
     createdByAgent: { id: "agent-1", name: "ClaudeCoder" },
-    // Local, not UTC: the card renders "Last edited" from the local calendar
-    // day, and noon UTC is already the 2nd at UTC+14.
-    updatedAt: new Date(2026, 5, 1, 12, 0, 0, 0).toISOString(),
+    updatedAt: "2026-06-01T12:00:00.000Z",
     href: "/issues/PAP-10306#attachment-art-1",
     ...overrides,
   };
@@ -71,7 +69,7 @@ describe("ArtifactCard", () => {
         artifact={makeArtifact({
           title: "Social launch clip",
           issue: { id: "issue-2", identifier: "PAP-10370", title: "Make artifact page look like this" },
-          updatedAt: new Date(2025, 9, 8, 12, 0, 0, 0).toISOString(),
+          updatedAt: "2025-10-08T12:00:00.000Z",
           createdByAgent: null,
         })}
       />,
@@ -130,34 +128,6 @@ describe("ArtifactCard", () => {
 
     flushSync(() => root.unmount());
     container.remove();
-  });
-
-  it("seeks into clips and resets thumbnail state when the source changes", () => {
-    const container = document.createElement("div");
-    const root = createRoot(container);
-    const render = (contentPath: string) => flushSync(() => root.render(
-      <ArtifactCard artifact={makeArtifact({ mediaKind: "video", contentPath })} />,
-    ));
-    try {
-      render("/first.mp4");
-      const first = container.querySelector("video")!;
-      Object.defineProperty(first, "duration", { value: 8 });
-      flushSync(() => first.dispatchEvent(new Event("loadedmetadata")));
-      expect(first.currentTime).toBe(1);
-      flushSync(() => first.dispatchEvent(new Event("seeked")));
-      expect(first.dataset.frameReady).toBe("true");
-      render("/short.mp4");
-      const next = container.querySelector("video")!;
-      expect(next).not.toBe(first);
-      expect(next.dataset.frameReady).toBe("false");
-      Object.defineProperty(next, "duration", { value: 0.2 });
-      flushSync(() => next.dispatchEvent(new Event("loadedmetadata")));
-      expect(next.currentTime).toBe(0.05);
-      expect(next.autoplay).toBe(false);
-      expect(next.muted).toBe(true);
-    } finally {
-      flushSync(() => root.unmount());
-    }
   });
 
   it("reveals video previews if the browser does not report seek completion", () => {

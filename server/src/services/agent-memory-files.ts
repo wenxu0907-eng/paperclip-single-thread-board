@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseYamlDocument as parseYaml } from "@paperclipai/shared";
+import { load as parseYaml } from "js-yaml";
 import type {
   AgentMemoryDailyNote,
   AgentMemoryFact,

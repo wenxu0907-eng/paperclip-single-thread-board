@@ -141,11 +141,9 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
     };
   }
 
-  // Windows has no POSIX permission bits: stat() reports 0o666 for any writable
-  // file and chmod cannot restrict it, so this check would always warn there.
   const keyMode = fs.statSync(keyFilePath).mode & 0o777;
   const permissionWarning =
-    process.platform !== "win32" && (keyMode & 0o077) !== 0
+    (keyMode & 0o077) !== 0
       ? `; key file permissions are ${keyMode.toString(8)} (run chmod 600 ${keyFilePath})`
       : "";
 

@@ -26,8 +26,6 @@ export function shortSha(ref: string | null | undefined): string | null {
 
 function sourceTypeFallbackLabel(sourceType: CompanySkillSourceType): string {
   switch (sourceType) {
-    case "managed":
-      return "Paperclip";
     case "github":
       return "GitHub";
     case "skills_sh":

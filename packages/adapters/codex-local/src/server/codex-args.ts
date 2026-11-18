@@ -1,12 +1,8 @@
-import { asBoolean, asString } from "@paperclipai/adapter-utils/server-utils";
+import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
-  resolveCodexLocalCliPolicy,
   isCodexLocalFastModeSupported,
-  normalizeCodexModel,
 } from "../index.js";
-
-const SKIP_GIT_REPO_CHECK_FLAG = "--skip-git-repo-check";
 
 export type BuildCodexExecArgsResult = {
   args: string[];
@@ -15,6 +11,12 @@ export type BuildCodexExecArgsResult = {
   fastModeApplied: boolean;
   fastModeIgnoredReason: string | null;
 };
+
+function readExtraArgs(config: unknown): string[] {
+  const fromExtraArgs = asStringArray(asRecord(config).extraArgs);
+  if (fromExtraArgs.length > 0) return fromExtraArgs;
+  return asStringArray(asRecord(config).args);
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -31,11 +33,10 @@ export function buildCodexExecArgs(
   options: {
     resumeSessionId?: string | null;
     skipGitRepoCheck?: boolean;
-    networkAccess?: boolean;
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
-  const model = normalizeCodexModel(asString(record.model, ""));
+  const model = asString(record.model, "").trim();
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),
@@ -43,20 +44,14 @@ export function buildCodexExecArgs(
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
-  const { extraArgs, explicitSandbox, bypass } = resolveCodexLocalCliPolicy(record, options);
+  const bypass = asBoolean(
+    record.dangerouslyBypassApprovalsAndSandbox,
+    asBoolean(record.dangerouslyBypassSandbox, false),
+  );
+  const extraArgs = readExtraArgs(record);
+
   const args = ["exec", "--json"];
-  if (!bypass && !explicitSandbox) {
-    args.push("-c", 'sandbox_mode="workspace-write"');
-    args.push("-c", `sandbox_workspace_write.network_access=${options.networkAccess !== false}`);
-  }
-  // Codex rejects a repeated `--skip-git-repo-check` ("cannot be used multiple
-  // times"). The adapter injects this flag for sandbox execution, so when an
-  // operator's extraArgs already carry it the injection would abort the run
-  // with exit code 2. Skip the injection in that case and let the operator's
-  // copy stand.
-  if (options.skipGitRepoCheck && !extraArgs.includes(SKIP_GIT_REPO_CHECK_FLAG)) {
-    args.push(SKIP_GIT_REPO_CHECK_FLAG);
-  }
+  if (options.skipGitRepoCheck) args.push("--skip-git-repo-check");
   if (search) args.unshift("--search");
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (model) args.push("--model", model);
@@ -67,9 +62,6 @@ export function buildCodexExecArgs(
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
   if (extraArgs.length > 0) args.push(...extraArgs);
-  if (!bypass && options.networkAccess === false) {
-    args.push("-c", "sandbox_workspace_write.network_access=false");
-  }
   if (options.resumeSessionId) args.push("resume", options.resumeSessionId, "-");
   else args.push("-");
 

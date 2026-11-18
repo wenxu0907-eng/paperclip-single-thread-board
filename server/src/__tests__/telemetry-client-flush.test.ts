@@ -79,7 +79,7 @@ describe("TelemetryClient periodic flush", () => {
   it("falls back to the api gateway ingest url when the default hostname fails", async () => {
     vi.mocked(fetch)
       .mockRejectedValueOnce(new TypeError("getaddrinfo ENOTFOUND telemetry.paperclip.ing"))
-      .mockResolvedValueOnce({ ok: true } as Response);
+      .mockResolvedValueOnce({ ok: true });
 
     const client = makeClient({ endpoint: undefined });
     client.track("install.started");

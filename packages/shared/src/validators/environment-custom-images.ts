@@ -31,8 +31,8 @@ export type EnvironmentCustomImageSetupConnectionSummary =
   z.infer<typeof environmentCustomImageSetupConnectionSummarySchema>;
 
 export const environmentCustomImageTemplateSchema = z.object({
-  id: z.string().guid(),
-  environmentId: z.string().guid(),
+  id: z.string().uuid(),
+  environmentId: z.string().uuid(),
   provider: providerKeySchema,
   templateKind: environmentCustomImageTemplateKindSchema,
   templateRef: z.string().min(1).nullable(),
@@ -40,10 +40,10 @@ export const environmentCustomImageTemplateSchema = z.object({
   sourceEnvironmentConfigFingerprint: z.string().min(1).nullable(),
   status: environmentCustomImageTemplateStatusSchema,
   createdByUserId: z.string().min(1).nullable(),
-  createdByAgentId: z.string().guid().nullable(),
+  createdByAgentId: z.string().uuid().nullable(),
   capturedAt: isoDateTime.nullable(),
   lastUsedAt: isoDateTime.nullable(),
-  supersededByTemplateId: z.string().guid().nullable(),
+  supersededByTemplateId: z.string().uuid().nullable(),
   metadata: optionalRecordSchema,
   createdAt: isoDateTime,
   updatedAt: isoDateTime,
@@ -52,16 +52,16 @@ export type EnvironmentCustomImageTemplate =
   z.infer<typeof environmentCustomImageTemplateSchema>;
 
 export const environmentCustomImageSetupSessionSchema = z.object({
-  id: z.string().guid(),
-  environmentId: z.string().guid(),
-  templateId: z.string().guid().nullable(),
-  promotedTemplateId: z.string().guid().nullable(),
+  id: z.string().uuid(),
+  environmentId: z.string().uuid(),
+  templateId: z.string().uuid().nullable(),
+  promotedTemplateId: z.string().uuid().nullable(),
   provider: providerKeySchema,
   providerLeaseId: z.string().min(1).nullable(),
-  environmentLeaseId: z.string().guid().nullable(),
+  environmentLeaseId: z.string().uuid().nullable(),
   status: environmentCustomImageSetupSessionStatusSchema,
   startedByUserId: z.string().min(1).nullable(),
-  startedByAgentId: z.string().guid().nullable(),
+  startedByAgentId: z.string().uuid().nullable(),
   baseTemplateRef: z.string().min(1).nullable(),
   expiresAt: isoDateTime.nullable(),
   finishedAt: isoDateTime.nullable(),
@@ -76,7 +76,7 @@ export type EnvironmentCustomImageSetupSession =
   z.infer<typeof environmentCustomImageSetupSessionSchema>;
 
 export const startEnvironmentCustomImageSetupSessionSchema = z.object({
-  templateId: z.string().guid().optional().nullable(),
+  templateId: z.string().uuid().optional().nullable(),
   ttlSeconds: z.number().int().min(60).max(24 * 60 * 60).optional(),
 }).strict();
 export type StartEnvironmentCustomImageSetupSession =
@@ -93,12 +93,6 @@ export const cancelEnvironmentCustomImageSetupSessionSchema = z.object({
 }).strict();
 export type CancelEnvironmentCustomImageSetupSession =
   z.infer<typeof cancelEnvironmentCustomImageSetupSessionSchema>;
-
-export const relinkEnvironmentCustomImageTemplateSchema = z.object({
-  confirmBootSourceDrift: z.boolean().optional().default(false),
-}).strict();
-export type RelinkEnvironmentCustomImageTemplate =
-  z.infer<typeof relinkEnvironmentCustomImageTemplateSchema>;
 
 export const createEnvironmentCustomImageTerminalSessionTokenSchema = z.object({}).strict().default({});
 export type CreateEnvironmentCustomImageTerminalSessionToken =

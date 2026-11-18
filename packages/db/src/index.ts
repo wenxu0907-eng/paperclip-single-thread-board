@@ -1,28 +1,5 @@
 export {
   createDb,
-  withDedicatedDbConnection,
-  closeDedicatedDbConnections,
-  DEDICATED_CONNECTION_IDLE_MAX,
-  DEFAULT_DEDICATED_CONNECTION_MAX,
-  DEFAULT_DEDICATED_CONNECTION_WAIT_MS,
-  dedicatedDbConnectionStats,
-  type DedicatedDbConnectionStats,
-  type DedicatedDbConnectionOptions,
-  preparedStatementStats,
-  databaseConnectionBudget,
-  PRIVATE_POOL_MAX_CONNECTIONS,
-  createOwnedDatabaseListener,
-  type OwnedDatabaseListener,
-  livenessDb,
-  controllerLeaseDb,
-  controllerInstanceLeaseDb,
-  controllerInstanceLeaseDbWithoutStatementTimeout,
-  closeLivenessDb,
-  checkpointDb,
-  closeCheckpointDb,
-  fileStorageDb,
-  closeFileStorageDb,
-  closeRegisteredClients,
   getPostgresDataDirectory,
   ensurePostgresDatabase,
   resetPostgresDatabase,
@@ -38,7 +15,6 @@ export {
 export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   type EmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestSupport,
 } from "./test-embedded-postgres.js";
@@ -52,11 +28,11 @@ export {
   type BackupRetentionPolicy,
   type BackupRetentionPolicyInput,
   type BackupFileEntry,
+  type BackupKeepReason,
+  type BackupDeleteReason,
   type KeptBackupFile,
   type DeletedBackupFile,
   type BackupPrunePlan,
-  type BackupKeepReason,
-  type BackupDeleteReason,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,
@@ -69,11 +45,6 @@ export {
   ensureLinuxSharedLibraryAliases,
   prepareEmbeddedPostgresNativeRuntime,
 } from "./embedded-postgres-native.js";
-export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
-
-export { databaseWorkScopeKey, primeDatabaseWorkTransactionId, signalDatabaseWork, subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "./work-signals.js";
-export { withDatabaseOperation } from "./response-capture.js";
-export { databaseStatementCount } from "./statement-count.js";

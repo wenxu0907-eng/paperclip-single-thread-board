@@ -174,8 +174,8 @@ export function issueReferenceService(db: Db) {
     }
   }
 
-  async function issueById(issueId: string, dbOrTx: any = db, lock = false) {
-    const query = dbOrTx
+  async function issueById(issueId: string, dbOrTx: any = db) {
+    return dbOrTx
       .select({
         id: issues.id,
         companyId: issues.companyId,
@@ -183,14 +183,13 @@ export function issueReferenceService(db: Db) {
         description: issues.description,
       })
       .from(issues)
-      .where(eq(issues.id, issueId));
-    return (lock ? query.for("update") : query)
+      .where(eq(issues.id, issueId))
       .then((rows: Array<{ id: string; companyId: string; title: string; description: string | null }>) => rows[0] ?? null);
   }
 
   async function syncIssue(issueId: string, dbOrTx: any = db) {
     const runSync = async (tx: any) => {
-      const issue = await issueById(issueId, tx, true);
+      const issue = await issueById(issueId, tx);
       if (!issue) throw notFound("Issue not found");
 
       await replaceSourceMentions({
@@ -343,12 +342,8 @@ export function issueReferenceService(db: Db) {
     }
   }
 
-  async function listIssueReferenceSummary(
-    issueId: string,
-    dbOrTx: any = db,
-    known?: { companyId: string },
-  ): Promise<IssueRelatedWorkSummary> {
-      const issue = known ? { id: issueId, companyId: known.companyId } : await issueById(issueId, dbOrTx);
+  async function listIssueReferenceSummary(issueId: string, dbOrTx: any = db): Promise<IssueRelatedWorkSummary> {
+      const issue = await issueById(issueId, dbOrTx);
       if (!issue) throw notFound("Issue not found");
 
       const [outboundRows, inboundRows] = await Promise.all([

@@ -7,15 +7,10 @@ import {
   asNumber,
   asString,
   buildPaperclipEnv,
-  buildRuntimeToolsEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  hydrateFreshSessionHandoff,
-  selectPaperclipPromptSections,
-  selectInitialCommunicationGuidance,
-  joinPromptSections,
+  renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
-  paperclipWakeCommentsArePromptOwned,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
@@ -342,7 +337,7 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
 
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
-export function resolveClaimedApiKeyPath(value: unknown): string {
+function resolveClaimedApiKeyPath(value: unknown): string {
   return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
 }
 
@@ -350,7 +345,6 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
-    ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: ctx.runId,
   };
 
@@ -375,9 +369,8 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
-  claimedApiKeyPath: string,
-  conversationTaskMarkdown?: string,
 ): string {
+  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -400,19 +393,6 @@ function buildWakeText(
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
-
-  if (conversationTaskMarkdown !== undefined) {
-    return [
-      "Paperclip conversation turn for a cloud adapter.",
-      "Set these values in your run context:",
-      ...envLines,
-      `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token saved after claim-api-key).`,
-      "Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call and X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutation.",
-      "Follow the supplied chat mode directive. Keep this conversation available for the next message.",
-      structuredWakePrompt,
-      conversationTaskMarkdown,
-    ].join("\n\n");
-  }
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -443,15 +423,14 @@ function buildWakeText(
     "Workflow:",
     "1) GET /api/agents/me",
     `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
-    '   Replace {issueId} in every endpoint below with that determined id. Never send the literal text "{issueId}" in a URL.',
     "3) If issueId exists:",
     "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\",\"in_review\"]}",
     "   - GET /api/issues/{issueId}",
     "   - GET /api/issues/{issueId}/comments",
     "   - Execute the issue instructions exactly. If the issue is actionable, take concrete action in this run; do not stop at a plan unless planning was requested.",
-    "   - Leave durable progress with a clear next action. Do not busy-poll agents, sessions, or processes waiting for completion.",
-    "   - Continue work on the current issue; use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation when the board/user must choose, answer, or confirm before you can continue.",
-    "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before implementation.",
+    "   - Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.",
+    "   - Create child issues directly when you know what needs to be done; use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation when the board/user must choose, answer, or confirm before you can continue.",
+    "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before creating implementation subtasks.",
     "   - If blocked, PATCH /api/issues/{issueId} with {\"status\":\"blocked\",\"comment\":\"what is blocked, who owns the unblock, and the next action\"}.",
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
     "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
@@ -1107,25 +1086,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   // No heartbeat prompt template is sent over the gateway, so the wake prompt
   // must carry the execution contract itself.
-  await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(ctx.runtime?.sessionId) });
-  const { taskContextNote, wakePrompt: structuredWakePrompt } = selectPaperclipPromptSections(ctx.context, {
-    resumedSession: Boolean(ctx.runtime?.sessionId),
+  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     includeExecutionContract: true,
-    includeCommunicationGuidance: false,
   });
-  const structuredWakeJson = paperclipWakeCommentsArePromptOwned(ctx.context)
-    ? null
-    : stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
-        omitIssueDescription: Boolean(taskContextNote),
-      });
+  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
-    resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
-    taskContextNote || undefined,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1140,10 +1110,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = joinPromptSections([
-    selectInitialCommunicationGuidance(ctx.context, { resumedSession: Boolean(ctx.runtime?.sessionId) }),
-    templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText,
-  ]);
+  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
 
   const agentParams = buildAgentParams({
     payloadTemplate,
@@ -1190,14 +1157,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
   let retryCount = 0;
-  let dispatchReported = false;
   const MAX_RETRIES = 2;
-
-  const reportDispatch = () => {
-    if (dispatchReported) return;
-    dispatchReported = true;
-    ctx.onDispatch?.();
-  };
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
@@ -1326,11 +1286,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
-      // Keep any server-side continuation lock through retryable websocket
-      // setup and backoff. The first agent request is the remote-work boundary:
-      // once it is sent, retrying would be unsafe because the gateway may have
-      // accepted work even if the response is lost.
-      reportDispatch();
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
       });
@@ -1500,7 +1455,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           lower.includes("socket hang up") ||
           (timedOut && !lower.includes("agent.wait")));
 
-      if (isTransient && !dispatchReported && retryCount < MAX_RETRIES) {
+      if (isTransient && retryCount < MAX_RETRIES) {
         retryCount++;
         const backoffMs = retryCount * 2000;
         await ctx.onLog(
