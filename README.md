@@ -1,3 +1,34 @@
+> ## ⚠️ If your instance broke after a `git pull` on 2026-11-17 or later — read this first
+>
+> On **2026-11-17 22:48 UTC** this fork's default branch `master` was moved onto a new,
+> upstream-based code line (**+4,937 commits, 15,280 files, DB migrations 185 → 497**). A `git pull`
+> fast-forwarded onto it **silently**, and starting the dev server after that pull applied all the new
+> migrations automatically, with no prompt — a one-way change. That line had **never been booted as a
+> live instance**, and the required verification, rollback runbook and advance notice were all
+> scheduled *after* the merge that reached you. That ordering was our mistake. At least one downstream
+> instance went down about two hours later.
+>
+> On **2026-11-18 UTC** `master` was put back on the legacy line (`5fd63cb6`) using a **revert commit,
+> not a force-push** — so every clone that already pulled remains valid and can recover in place.
+>
+> ### → Recovery steps: [`DOWNSTREAM_RESCUE_2026-11.md`](./DOWNSTREAM_RESCUE_2026-11.md)
+>
+> If you pulled **and** started the server, its **Step 1** — a cold `cp -a` copy of your *stopped*
+> Postgres data directory (`~/.paperclip/instances/<instance>/db`) — is time-critical. Do that before
+> any other fix, including one you may already have found yourself. Do **not** use `pnpm db:backup`
+> for this snapshot (known defect, COM-529).
+>
+> **Which ref should I be on?** Use the tag **`legacy/old-master-final-2026-11`** (`5fd63cb6`) — the
+> true pre-flip tip. The `master-legacy` branch now points at the same commit, but before 2026-11-18
+> it was two commits behind and missing the fix in #112; if you pinned to it earlier, re-fetch.
+> Neither the tag nor that branch will ever be force-pushed or deleted.
+>
+> **Where did the new line go?** Preserved off the default branch as the `upstream-rebase-2026-11`
+> branch and the `rebase/phase2-merged-2026-11` tag. Nothing was discarded. It returns to `master`
+> only after it has been booted, verified, and announced with two weeks' notice.
+
+---
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
