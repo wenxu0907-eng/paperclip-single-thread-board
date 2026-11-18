@@ -2,9 +2,11 @@ import { assertAgentInteraction } from "../services/agent-interaction-policy.js"
 import { preserveManagedGoalBlockOnWrite } from "../services/managed-goal-block.js";
 import {
   BOARD_ONLY_ON_PARENTS_MESSAGE,
+  BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE,
   boardOnlyOnParentsActive,
   boardOnlyOnParentsEnabled,
   violatesBoardOnlyOnParents,
+  violatesBoardOnlyOnParentsReviewer,
 } from "../services/board-only-on-parents.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
@@ -2247,6 +2249,28 @@ function summarizeExecutionParticipants(
       userId: participant.userId ?? null,
     })) ?? []
   );
+}
+
+/**
+ * COM-335b refusal text. Exported (as on the legacy line) so route-level tests
+ * assert against the shipped string instead of a copy that can drift.
+ */
+export const SELF_REVIEW_SEAT_COLLAPSE_MESSAGE =
+  "An issue's assignee cannot be the only reviewer of its own review stage. " +
+  "Assign the work to the agent who will do it and name a different reviewer, or drop the review stage.";
+
+/** Board (human) user ids named as participants of a policy's review stage. */
+function humanReviewerUserIdsFromPolicy(
+  policy: NormalizedExecutionPolicy | null,
+): string[] {
+  return summarizeExecutionParticipants(policy, "review")
+    .filter(
+      (participant): participant is ActivityExecutionParticipant & { userId: string } =>
+        participant.type === "user" &&
+        typeof participant.userId === "string" &&
+        participant.userId.trim().length > 0,
+    )
+    .map((participant) => participant.userId);
 }
 
 function isClosedIssueStatus(
@@ -8167,17 +8191,31 @@ export function issueRoutes(
 
 
   // board_only_on_parents (flag-gated, default off): board members may only be
-  // assigned to top-level issues. Returns true when the request must be refused;
-  // the company lookup is only paid when the shape already violates the rule.
-  // The reviewer-seat half of this guard travels with the COM-335b port, which
-  // owns humanReviewerUserIdsFromPolicy.
+  // assigned to — and may only review — top-level issues. Returns true when the
+  // request must be refused; the company lookup is only paid when the shape
+  // already violates the rule.
+  //
+  // COM-536: every mutation that can place a board user on a child issue has to
+  // call this — create, children-create, and update/PATCH. The Phase-2 port left
+  // the update path and the reviewer half out, which made the service helpers
+  // green-and-dead (unit tests passed, no production caller). Pass
+  // `reviewerUserIds` from `humanReviewerUserIdsFromPolicy(policy)` at every site
+  // that can set an execution policy.
   async function refuseBoardOnlyOnParentsViolation(input: {
     res: Response;
     companyId: string;
     hasParent: boolean;
     assigneeUserId: string | null | undefined;
+    reviewerUserIds?: readonly string[];
   }): Promise<boolean> {
-    if (!violatesBoardOnlyOnParents({ hasParent: input.hasParent, assigneeUserId: input.assigneeUserId })) {
+    const assigneeViolates = violatesBoardOnlyOnParents({
+      hasParent: input.hasParent,
+      assigneeUserId: input.assigneeUserId,
+    });
+    const reviewerViolates = (input.reviewerUserIds ?? []).some((reviewerUserId) =>
+      violatesBoardOnlyOnParentsReviewer({ hasParent: input.hasParent, reviewerUserId }),
+    );
+    if (!assigneeViolates && !reviewerViolates) {
       return false;
     }
     const boardGuardCompany = await companiesSvc.getById(input.companyId).catch(() => null);
@@ -8189,17 +8227,17 @@ export function issueRoutes(
     ) {
       return false;
     }
-    input.res.status(422).json({ error: BOARD_ONLY_ON_PARENTS_MESSAGE });
+    input.res.status(422).json({
+      error: assigneeViolates
+        ? BOARD_ONLY_ON_PARENTS_MESSAGE
+        : BOARD_ONLY_ON_PARENTS_REVIEWER_MESSAGE,
+    });
     return true;
   }
 
   // COM-335b: prevent an agent from holding every seat (executor + sole reviewer).
   // A review stage that only the executor can resolve is not a real review, and it
   // feeds the recovery self-excitation loop (PRs #79–#83).
-  const SELF_REVIEW_SEAT_COLLAPSE_MESSAGE =
-    "An issue's assignee cannot be the only reviewer of its own review stage. " +
-    "Assign the work to the agent who will do it and name a different reviewer, or drop the review stage.";
-
   function violatesSelfReviewSeatCollapse(input: {
     executorAgentId: string | null | undefined;
     policy: NormalizedExecutionPolicy | null;
@@ -13479,6 +13517,9 @@ export function issueRoutes(
           companyId,
           hasParent: Boolean(effectiveParentId),
           assigneeUserId: rawCreateBody.assigneeUserId as string | null | undefined,
+          reviewerUserIds: humanReviewerUserIdsFromPolicy(
+            normalizeIssueExecutionPolicy(rawCreateBody.executionPolicy),
+          ),
         })
       ) return;
       const parentPlacement = await resolveRouteParentPlacement(
@@ -14005,6 +14046,9 @@ export function issueRoutes(
           companyId: parent.companyId,
           hasParent: true,
           assigneeUserId: sanitizedBody.assigneeUserId as string | null | undefined,
+          reviewerUserIds: humanReviewerUserIdsFromPolicy(
+            normalizeIssueExecutionPolicy(sanitizedBody.executionPolicy),
+          ),
         })
       ) return;
       const normalizedAssigneeAgentId =
@@ -14340,6 +14384,20 @@ export function issueRoutes(
           child.assigneeAgentId ?? null,
           Boolean(executionPolicy?.monitor),
         );
+        // COM-335b (restored by COM-536): the legacy line guarded seat collapse on
+        // all four creation/update paths. The Phase-2 port kept create,
+        // children-create and update but dropped this bulk plan-decomposition
+        // loop, so a decomposition could mint children whose only reviewer is
+        // their own executor.
+        if (
+          violatesSelfReviewSeatCollapse({
+            executorAgentId: child.assigneeAgentId ?? null,
+            policy: executionPolicy,
+          })
+        ) {
+          res.status(422).json({ error: SELF_REVIEW_SEAT_COLLAPSE_MESSAGE });
+          return;
+        }
         const childIssueId = randomUUID();
         const sourceTrust = await sourceTrustForActorWrite(
           {
@@ -15848,6 +15906,24 @@ export function issueRoutes(
         updateFields.assigneeUserId === undefined
           ? existing.assigneeUserId
           : (updateFields.assigneeUserId as string | null);
+      // COM-536: the third board_only_on_parents site. Reassigning an *existing*
+      // child issue to a board user, or naming one as its reviewer, is the same
+      // violation as creating it that way. Each half is gated on the request
+      // actually touching that field, so an unrelated PATCH on a pre-existing
+      // violation is not retroactively rejected.
+      if (
+        await refuseBoardOnlyOnParentsViolation({
+          res,
+          companyId: existing.companyId,
+          hasParent: Boolean(existing.parentId),
+          assigneeUserId:
+            updateFields.assigneeUserId === undefined ? null : nextAssigneeUserId,
+          reviewerUserIds:
+            req.body.executionPolicy === undefined
+              ? []
+              : humanReviewerUserIdsFromPolicy(nextExecutionPolicy),
+        })
+      ) return;
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
