@@ -1,4 +1,3 @@
-import type { AgentAppearance } from "@paperclipai/shared";
 import {
   createContext,
   useCallback,
@@ -20,14 +19,6 @@ export interface ToastAction {
   onClick?: () => void;
 }
 
-export type ToastActor = {
-  type: "user" | "agent";
-  id: string;
-  name: string;
-  image?: string | null;
-  appearance?: AgentAppearance | null;
-};
-
 export interface ToastInput {
   id?: string;
   dedupeKey?: string;
@@ -36,7 +27,6 @@ export interface ToastInput {
   tone?: ToastTone;
   ttlMs?: number;
   action?: ToastAction;
-  actor?: ToastActor;
 }
 
 export interface ToastItem {
@@ -46,7 +36,6 @@ export interface ToastItem {
   tone: ToastTone;
   ttlMs: number;
   action?: ToastAction;
-  actor?: ToastActor;
   createdAt: number;
 }
 
@@ -128,18 +117,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // Distinct events (two runs, two status changes) can render the same
-      // visible text. Showing it twice reads as a duplicate, so match on that too.
-      const contentKey = `content|${tone}|${input.title}|${input.body ?? ""}`;
-      const recentlyShown = [dedupeKey, contentKey].some((key) => {
-        const lastSeen = dedupeRef.current.get(key);
-        return lastSeen !== undefined && now - lastSeen < DEDUPE_WINDOW_MS;
-      });
-      if (recentlyShown) {
+      const lastSeen = dedupeRef.current.get(dedupeKey);
+      if (lastSeen && now - lastSeen < DEDUPE_WINDOW_MS) {
         return null;
       }
       dedupeRef.current.set(dedupeKey, now);
-      dedupeRef.current.set(contentKey, now);
 
       const id = input.id ?? generateToastId();
       clearTimer(id);
@@ -152,7 +134,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           tone,
           ttlMs,
           action: input.action,
-          actor: input.actor,
           createdAt: now,
         };
 
@@ -210,10 +191,6 @@ export function useToastActions() {
 
 export function useOptionalToastActions() {
   return useContext(ToastActionsContext);
-}
-
-export function useOptionalToastState() {
-  return useContext(ToastStateContext);
 }
 
 export function useToast() {

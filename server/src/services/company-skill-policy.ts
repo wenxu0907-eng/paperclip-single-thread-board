@@ -89,7 +89,6 @@ function decision(
 
 export function normalizeSkillPolicySourceType(sourceType: string | null | undefined): SkillPolicySourceType {
   switch (sourceType?.trim().toLowerCase()) {
-    case "managed":
     case "local_path":
     case "workspace":
     case "project_scan":

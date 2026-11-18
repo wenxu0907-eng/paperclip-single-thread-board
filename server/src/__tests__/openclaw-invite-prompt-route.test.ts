@@ -126,9 +126,10 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
   return app;
 }
 
-describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
+describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
   const companyBranding = {
     name: "Acme AI",
+    brandColor: "#225577",
     logoAssetId: "logo-1",
   };
   const logoAsset = {
@@ -244,7 +245,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.companyName).toBe("Acme AI");
-    expect(res.body).not.toHaveProperty("companyBrandColor");
+    expect(res.body.companyBrandColor).toBe("#225577");
     expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
     expect(res.body.inviteType).toBe("company_join");
     expect(res.body.allowedJoinTypes).toBe("agent");

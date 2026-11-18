@@ -122,6 +122,7 @@ export function registerAdapterCommands(program: Command): void {
     { includeCompany: false },
   );
 
+  addCompanyAdapterGet(adapter, "model-profiles", "List adapter model profiles", "model-profiles");
   addCompanyAdapterGet(adapter, "detect-model", "Detect adapter model", "detect-model");
   addCompanyAdapterPost(adapter, "test-environment", "Test adapter environment configuration", "test-environment");
 }

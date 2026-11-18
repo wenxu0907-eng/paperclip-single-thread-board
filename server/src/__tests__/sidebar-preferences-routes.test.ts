@@ -18,8 +18,10 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const { errorHandler } = await import("../middleware/index.js");
-  const { sidebarPreferenceRoutes } = await import("../routes/sidebar-preferences.js");
+  const [{ sidebarPreferenceRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/sidebar-preferences.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

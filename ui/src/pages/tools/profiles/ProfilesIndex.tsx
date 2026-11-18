@@ -6,7 +6,6 @@ import { useNavigate } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
-import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -25,7 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/context/ToastContext";
 import { EffectiveAgentPanel } from "../ProfilesTab";
-import { LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
+import { ErrorState, LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
 import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActionDialog";
 import { TEMPLATES, type TemplateKey } from "./profile-model";
 import { useProfilesData } from "./useProfilesData";
@@ -57,7 +56,6 @@ export function ProfilesIndex({
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { profiles, agents } = useProfilesData(companyId);
-  const profilesView = useQueryView(profiles);
   const [resolverOpen, setResolverOpen] = useState(Boolean(initialResolverOpen));
   const [statusFilter, setStatusFilter] = useState<"active" | "archived">(initialStatusFilter ?? "active");
   const [actionDialog, setActionDialog] = useState<{
@@ -74,10 +72,8 @@ export function ProfilesIndex({
     [agents.data],
   );
 
-  const invalidate = () => {
+  const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccesses() });
-  };
 
   const errorBody = (error: unknown) => String((error as Error)?.message ?? error);
 
@@ -156,7 +152,7 @@ export function ProfilesIndex({
     </Sheet>
   );
 
-  if (profiles.isLoading || profilesView.kind === "reconnecting") {
+  if (profiles.isLoading) {
     return (
       <div className="space-y-5">
         {header}
@@ -164,16 +160,11 @@ export function ProfilesIndex({
       </div>
     );
   }
-  if (profilesView.kind === "error") {
+  if (profiles.isError) {
     return (
       <div className="space-y-5">
         {header}
-        <QueryErrorState
-          error={profiles.error}
-          action="load profiles"
-          onRetry={profilesView.retry}
-          retrying={profilesView.isFetching}
-        />
+        <ErrorState error={profiles.error} onRetry={() => profiles.refetch()} />
       </div>
     );
   }

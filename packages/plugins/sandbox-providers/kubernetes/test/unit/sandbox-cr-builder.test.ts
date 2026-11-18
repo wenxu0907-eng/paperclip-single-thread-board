@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildSandboxCrManifest as buildRawSandboxCrManifest, type BuildSandboxCrManifestInput } from "../../src/sandbox-cr-builder.js";
-import type { SandboxCrManifestView } from "./manifest-views.js";
-
-const buildSandboxCrManifest = (input: BuildSandboxCrManifestInput) =>
-  buildRawSandboxCrManifest(input) as unknown as SandboxCrManifestView;
+import { buildSandboxCrManifest } from "../../src/sandbox-cr-builder.js";
 
 const baseInput = {
   namespace: "paperclip-acme",

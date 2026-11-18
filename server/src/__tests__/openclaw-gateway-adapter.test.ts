@@ -495,7 +495,7 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
       expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(payload?.message ?? "")).toContain(
-        "Use this wake to continue the task, applying new user direction and preserving its approval gates.",
+        "Treat this wake payload as the highest-priority change for the current heartbeat.",
       );
       expect(String(payload?.message ?? "")).toContain(
         "Do not switch to another issue until you have handled this wake.",
@@ -611,7 +611,6 @@ describe("openclaw gateway ui build config", () => {
       promptTemplate: "",
       model: "",
       thinkingEffort: "",
-      fastMode: false,
       chrome: false,
       dangerouslySkipPermissions: false,
       search: false,

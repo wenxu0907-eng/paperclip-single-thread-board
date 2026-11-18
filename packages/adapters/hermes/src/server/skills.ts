@@ -7,11 +7,8 @@ import type {
   AdapterSkillSnapshot,
 } from "@paperclipai/adapter-utils";
 import {
-  ensurePaperclipSkillSymlink,
-  isPaperclipSkillSourceMissing,
-  readInstalledSkillTargets,
   readPaperclipRuntimeSkillEntries,
-  resolveLegacyPaperclipDesiredSkillNames,
+  resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 import { fileURLToPath } from "node:url";
 
@@ -31,8 +28,7 @@ function resolveHermesHome(config: Record<string, unknown>): string {
       ? (config.env as Record<string, unknown>)
       : {};
   const configuredHome = asString(env.HOME);
-  const hermesHome = asString(env.HERMES_HOME);
-  return hermesHome ? path.resolve(hermesHome) : path.join(configuredHome ? path.resolve(configuredHome) : os.homedir(), ".hermes");
+  return configuredHome ? path.resolve(configuredHome) : os.homedir();
 }
 
 interface SkillFrontmatter {
@@ -132,11 +128,11 @@ async function buildSkillEntry(
 
 async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const home = resolveHermesHome(config);
-  const hermesSkillsHome = path.join(home, "skills");
+  const hermesSkillsHome = path.join(home, ".hermes", "skills");
 
   // 1. Scan Paperclip-managed skills (bundled with the adapter)
   const paperclipEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkills = resolveLegacyPaperclipDesiredSkillNames(config, paperclipEntries);
+  const desiredSkills = resolvePaperclipDesiredSkillNames(config, paperclipEntries);
   const desiredSet = new Set(desiredSkills);
   const availableByKey = new Map(paperclipEntries.map((e) => [e.key, e]));
 
@@ -213,53 +209,12 @@ export async function listHermesSkills(
   return buildHermesSkillSnapshot(ctx.config);
 }
 
-export async function reconcileHermesPaperclipSkills(
-  config: Record<string, unknown>,
-  requestedDesiredSkills?: string[],
-): Promise<string[]> {
-  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkills = requestedDesiredSkills
-    ? Array.from(new Set([
-        ...resolveLegacyPaperclipDesiredSkillNames({}, availableEntries),
-        ...requestedDesiredSkills,
-      ]))
-    : resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
-  const desiredSet = new Set(desiredSkills);
-  const skillsHome = path.join(resolveHermesHome(config), "skills");
-  await fs.mkdir(skillsHome, { recursive: true });
-  const installed = await readInstalledSkillTargets(skillsHome);
-  const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
-
-  for (const entry of availableEntries) {
-    if (!desiredSet.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
-    const target = path.join(skillsHome, entry.runtimeName);
-    await ensurePaperclipSkillSymlink(entry.source, target);
-    const linkedSource = await fs.readlink(target).catch(() => null);
-    const resolvedSource = linkedSource
-      ? path.resolve(path.dirname(target), linkedSource)
-      : null;
-    if (resolvedSource !== path.resolve(entry.source)) {
-      throw new Error(
-        `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
-      );
-    }
-  }
-
-  for (const [name, installedEntry] of installed.entries()) {
-    const available = availableByRuntimeName.get(name);
-    if (!available || desiredSet.has(available.key)) continue;
-    if (installedEntry.targetPath !== available.source) continue;
-    await fs.unlink(path.join(skillsHome, name)).catch(() => {});
-  }
-
-  return desiredSkills;
-}
-
 export async function syncHermesSkills(
   ctx: AdapterSkillContext,
-  desiredSkills: string[],
+  _desiredSkills: string[],
 ): Promise<AdapterSkillSnapshot> {
-  await reconcileHermesPaperclipSkills(ctx.config, desiredSkills);
+  // Hermes manages its own skill loading — sync is a no-op.
+  // Return the current snapshot so the UI stays in sync.
   return buildHermesSkillSnapshot(ctx.config);
 }
 
@@ -267,5 +222,5 @@ export function resolveHermesDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
 ): string[] {
-  return resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
+  return resolvePaperclipDesiredSkillNames(config, availableEntries);
 }

@@ -1,14 +1,14 @@
-import { AgentAvatar } from "@/components/AgentAvatar";
-import { useState, type ReactElement } from "react";
+import { useState } from "react";
 import type { Agent } from "@paperclipai/shared";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { FlyoutAppearanceProvider, FlyoutHeader, FlyoutOptions } from "./ui/flyout";
-import { Check, User } from "lucide-react";
+import { User } from "lucide-react";
 import { cn } from "../lib/utils";
+import { roleLabels } from "./agent-config-primitives";
+import { AgentIcon } from "./AgentIconPicker";
 
 export function ReportsToPicker({
   agents,
@@ -18,8 +18,6 @@ export function ReportsToPicker({
   excludeAgentIds = [],
   disabledEmptyLabel = "Reports to: N/A (CEO)",
   chooseLabel = "Reports to...",
-  trigger,
-  disabledAgentIds = [],
 }: {
   agents: Agent[];
   value: string | null;
@@ -28,8 +26,6 @@ export function ReportsToPicker({
   excludeAgentIds?: string[];
   disabledEmptyLabel?: string;
   chooseLabel?: string;
-  trigger?: ReactElement;
-  disabledAgentIds?: string[];
 }) {
   const [open, setOpen] = useState(false);
   const exclude = new Set(excludeAgentIds);
@@ -41,9 +37,9 @@ export function ReportsToPicker({
   const unknownManager = Boolean(value && !current);
 
   return (
-    <FlyoutAppearanceProvider><Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        {trigger ?? <button
+        <button
           type="button"
           className={cn(
             "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
@@ -59,7 +55,7 @@ export function ReportsToPicker({
             </>
           ) : current ? (
             <>
-              <AgentAvatar agent={current} size={16} className="h-3 w-3 shrink-0 text-muted-foreground"/>
+              <AgentIcon icon={current.icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
               <span
                 className={cn(
                   "min-w-0 truncate",
@@ -77,14 +73,11 @@ export function ReportsToPicker({
               </span>
             </>
           )}
-        </button>}
+        </button>
       </PopoverTrigger>
-      <PopoverContent className="w-64" align="start" aria-label="Choose manager">
-        <FlyoutHeader>Reports to</FlyoutHeader>
-        <FlyoutOptions className="max-h-80 overflow-y-auto">
+      <PopoverContent className="w-48 p-1" align="start">
         <button
           type="button"
-          aria-pressed={value === null}
           className={cn(
             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
             value === null && "bg-accent",
@@ -94,13 +87,11 @@ export function ReportsToPicker({
             setOpen(false);
           }}
         >
-          <User className="size-5 shrink-0" aria-hidden />
-          <span className="min-w-0 flex-1 text-left">No manager</span>
-          {value === null && <Check className="size-4 shrink-0" aria-hidden />}
+          No manager
         </button>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            <AgentAvatar agent={current} size={16} className="shrink-0 h-3 w-3"/>
+            <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
             <span className="min-w-0 truncate">
               Current: {current.name} (terminated)
             </span>
@@ -108,18 +99,15 @@ export function ReportsToPicker({
         )}
         {unknownManager && (
           <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this organization. Choose a new manager or clear.
+            Saved manager is missing from this company. Choose a new manager or clear.
           </div>
         )}
         {rows.map((a) => (
           <button
             type="button"
             key={a.id}
-            aria-pressed={a.id === value}
-            disabled={disabledAgentIds.includes(a.id)}
-            title={disabledAgentIds.includes(a.id) ? "Would create a reporting loop" : undefined}
             className={cn(
-              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed",
+              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden",
               a.id === value && "bg-accent",
             )}
             onClick={() => {
@@ -127,13 +115,12 @@ export function ReportsToPicker({
               setOpen(false);
             }}
           >
-            <AgentAvatar agent={a} size={24} className="size-6 shrink-0"/>
-            <span className="min-w-0 flex-1 truncate text-left">{a.name}</span>
-            {a.id === value && <Check className="size-4 shrink-0" aria-hidden />}
+            <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+            <span className="min-w-0 truncate">{a.name}</span>
+            <span className="text-muted-foreground ml-auto shrink-0">{roleLabels[a.role] ?? a.role}</span>
           </button>
         ))}
-        </FlyoutOptions>
       </PopoverContent>
-    </Popover></FlyoutAppearanceProvider>
+    </Popover>
   );
 }

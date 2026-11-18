@@ -49,8 +49,6 @@ function buildRoutineDefaults(declaration: PluginManagedRoutineDeclaration) {
     priority: declaration.priority ?? "medium",
     concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
     catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
-    activityGatePolicy: declaration.activityGatePolicy ?? "always",
-    activityGateScope: declaration.activityGateScope ?? "company",
     variables: declaration.variables ?? [],
     triggers: declaration.triggers ?? [],
     issueTemplate: declaration.issueTemplate ?? null,
@@ -372,8 +370,6 @@ export function pluginManagedRoutineService(
       status: declaration.status ?? (refs.assigneeAgentId ? "active" : "paused"),
       concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
       catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
-      activityGatePolicy: declaration.activityGatePolicy ?? "always",
-      activityGateScope: declaration.activityGateScope ?? "company",
       variables: declaration.variables ?? [],
     }, { agentId: null, userId: null });
     await upsertBinding(companyId, declaration, created.id);
@@ -434,8 +430,6 @@ export function pluginManagedRoutineService(
       status: declaration.status ?? (refs.assigneeAgentId ? "active" : "paused"),
       concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
       catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
-      activityGatePolicy: declaration.activityGatePolicy ?? "always",
-      activityGateScope: declaration.activityGateScope ?? "company",
       variables: declaration.variables ?? [],
     }, { agentId: null, userId: null });
     if (!updated) throw notFound("Managed routine not found");

@@ -1,4 +1,3 @@
-import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -12,7 +11,6 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the prompt at runtime.";
 
 export function CursorLocalConfigFields({
-  section,
   isCreate,
   values,
   set,
@@ -22,7 +20,7 @@ export function CursorLocalConfigFields({
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
   if (hideInstructionsFile) return null;
-  return configFieldsForSection(section, (
+  return (
     <Field label="Agent instructions file" hint={instructionsFileHint}>
       <div className="flex items-center gap-2">
         <DraftInput
@@ -47,5 +45,5 @@ export function CursorLocalConfigFields({
         <ChoosePathButton />
       </div>
     </Field>
-  ));
+  );
 }

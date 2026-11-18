@@ -479,8 +479,6 @@ describe("skills CLI commands", () => {
       "review-prs",
       "--skill",
       "paperclip/qa",
-      "--mode",
-      "add",
       "--company-id",
       "company-1",
       "--api-base",
@@ -500,7 +498,7 @@ describe("skills CLI commands", () => {
       "http://paperclip.test/api/agents/agent-1/skills/sync",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ desiredSkills: ["review-prs", "paperclip/qa"], mode: "add" }),
+        body: JSON.stringify({ desiredSkills: ["review-prs", "paperclip/qa"] }),
       }),
     );
     expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toEqual(snapshot);

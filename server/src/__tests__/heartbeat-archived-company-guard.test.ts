@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  costEvents,
   agents,
   agentWakeupRequests,
   companies,
@@ -36,7 +35,6 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
-    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
@@ -58,6 +56,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       status: "archived",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -92,6 +91,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       status: "active",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values([

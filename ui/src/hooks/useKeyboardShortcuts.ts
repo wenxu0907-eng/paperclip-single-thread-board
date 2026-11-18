@@ -7,23 +7,29 @@ import {
 } from "../lib/keyboardShortcuts";
 
 interface ShortcutHandlers {
+  enabled?: boolean;
   onNewIssue?: () => void;
   onSearch?: () => void;
   onToggleSidebar?: () => void;
+  onToggleCollapse?: () => void;
   onTogglePanel?: () => void;
   onShowShortcuts?: () => void;
   onGoToInbox?: () => void;
 }
 
 export function useKeyboardShortcuts({
+  enabled = true,
   onNewIssue,
   onSearch,
   onToggleSidebar,
+  onToggleCollapse,
   onTogglePanel,
   onShowShortcuts,
   onGoToInbox,
 }: ShortcutHandlers) {
   useEffect(() => {
+    if (!enabled) return;
+
     // g → i chord state. IssueDetail runs its own capture-phase handler with
     // extra chords (g c, g f) and stops propagation when it handles one, so
     // this bubble-phase chord only fires outside the issue detail page.
@@ -90,14 +96,12 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // Don't fire shortcuts over a modal dialog. The dialog owns the
-      // keyboard until it closes (Escape or its own controls).
-      if (hasBlockingShortcutDialog()) {
-        return;
-      }
-
       // / → Page search when available, otherwise quick search
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (hasBlockingShortcutDialog()) {
+          return;
+        }
+
         e.preventDefault();
         if (!focusPageSearchShortcutTarget()) {
           onSearch?.();
@@ -124,6 +128,12 @@ export function useKeyboardShortcuts({
         onToggleSidebar?.();
       }
 
+      // Cmd/Ctrl+B → Collapse/expand sidebar (desktop) or toggle drawer (mobile)
+      if ((e.key === "b" || e.key === "B") && (e.metaKey || e.ctrlKey) && !e.altKey) {
+        e.preventDefault();
+        onToggleCollapse?.();
+      }
+
       // ] → Toggle Panel
       if (e.key === "]" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
@@ -145,5 +155,5 @@ export function useKeyboardShortcuts({
       document.removeEventListener("focusin", handleFocusIn, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onNewIssue, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts, onGoToInbox]);
+  }, [enabled, onNewIssue, onSearch, onToggleSidebar, onToggleCollapse, onTogglePanel, onShowShortcuts, onGoToInbox]);
 }

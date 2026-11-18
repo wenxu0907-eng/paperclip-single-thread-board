@@ -47,7 +47,6 @@ type SourceDecision = {
 };
 
 type ListInput = {
-  readCondition?: SQL<boolean>;
   projectId?: string;
   kind?: DecisionTrainingSourceKind;
   author?: string;
@@ -305,7 +304,6 @@ export function decisionTrainingService(db: Db) {
     },
     list: async (companyId: string, input: ListInput = {}) => {
       const filters: SQL[] = [eq(decisionTrainingExamples.companyId, companyId)];
-      if (input.readCondition) filters.push(input.readCondition);
       if (input.projectId) filters.push(eq(issues.projectId, input.projectId));
       if (input.kind) filters.push(eq(decisionTrainingExamples.sourceKind, input.kind));
       if (input.author) filters.push(eq(decisionTrainingExamples.createdByUserId, input.author));

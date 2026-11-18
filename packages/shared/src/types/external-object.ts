@@ -32,7 +32,6 @@ export interface ExternalObject {
   lastChangedAt: string | null;
   lastErrorAt: string | null;
   nextRefreshAt: string | null;
-  refreshStartedAt: string | null;
   lastErrorCode: string | null;
   lastErrorMessage: string | null;
   createdAt: string;

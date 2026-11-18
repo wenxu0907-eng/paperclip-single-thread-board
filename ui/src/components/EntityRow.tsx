@@ -6,8 +6,7 @@ interface EntityRowProps {
   leading?: ReactNode;
   identifier?: string;
   title: string;
-  titleAccessory?: ReactNode;
-  subtitle?: ReactNode;
+  subtitle?: string;
   /**
    * Optional metadata columns rendered immediately after the title. When set,
    * the title stops flex-growing and a spacer is inserted between `meta` and
@@ -39,15 +38,12 @@ interface EntityRowProps {
    * behind `hidden xl:flex` so wide layouts are unchanged.
    */
   secondaryRow?: ReactNode;
-  /** Override the secondary line's default spacing or indentation. */
-  secondaryRowClassName?: string;
 }
 
 export function EntityRow({
   leading,
   identifier,
   title,
-  titleAccessory,
   subtitle,
   meta,
   metaSpacerClassName,
@@ -62,7 +58,6 @@ export function EntityRow({
   reserveSubtitleSpace,
   titlePriority,
   secondaryRow,
-  secondaryRowClassName,
 }: EntityRowProps) {
   const isClickable = !!(to || onClick);
   const shellClasses = cn(
@@ -96,7 +91,6 @@ export function EntityRow({
           <span className={cn(!titleTextClassName && "truncate", titleTextClassName)} title={title}>
             {title}
           </span>
-          {titleAccessory}
         </div>
         {(subtitle || reserveSubtitleSpace) && (
           <p
@@ -135,7 +129,7 @@ export function EntityRow({
   const body = secondaryRow ? (
     <>
       <div className="flex items-center gap-3">{content}</div>
-      <div className={cn("mt-1 pl-5", secondaryRowClassName)}>{secondaryRow}</div>
+      <div className="mt-1 pl-5">{secondaryRow}</div>
     </>
   ) : (
     content

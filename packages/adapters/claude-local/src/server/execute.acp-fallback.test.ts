@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -39,10 +39,10 @@ const {
 
 vi.mock("./acp.js", () => ({
   createClaudeAcpExecutor: () => executeClaudeAcp,
+  formatClaudeAcpFallbackMessage: (reason: string) =>
+    `[paperclip] Claude ACP default unavailable; falling back to Claude CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`,
   resolveClaudeExecutionEngineForRun: async (ctx: { config: Record<string, unknown> }) =>
-    ctx.config.engine === "cli"
-      ? { engine: "cli", explicit: true }
-      : ctx.config.engine === "acp"
+    ctx.config.engine === "acp"
       ? { engine: "acp", explicit: true }
       : { engine: "acp", explicit: false },
 }));
@@ -78,7 +78,7 @@ function buildContext(config: Record<string, unknown> = {}) {
       sessionDisplayId: null,
       taskKey: null,
     },
-    config: { model: "claude-opus-5", ...config },
+    config,
     context: {},
     onLog: vi.fn(async () => {}),
   };
@@ -89,36 +89,21 @@ describe("claude_local ACP startup fallback", () => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("does not start CLI after default ACP fails", async () => {
+  it("falls back to Claude CLI when auto-selected ACP fails before execution starts", async () => {
     const ctx = buildContext();
-    await expect(execute(ctx as never)).rejects.toThrow('Unexpected "<<"');
+
+    const result = await execute(ctx as never);
+
+    expect(result.exitCode).toBe(0);
     expect(executeClaudeAcp).toHaveBeenCalledTimes(1);
-    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
-  });
-
-  it("trusts the Paperclip API URL when network access is allowlisted", async () => {
-    const paperclipApiUrl = "http://127.0.0.1:4310";
-    vi.stubEnv("PAPERCLIP_API_URL", paperclipApiUrl);
-    const ctx = buildContext({ engine: "cli", networkScope: "allowlist" });
-
-    await execute(ctx as never);
-
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
-    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
-      expect.any(String),
-      null,
-      expect.any(String),
-      expect.any(Array),
-      expect.objectContaining({
-        localProcessSandbox: expect.objectContaining({
-          networkScope: "allowlist",
-          networkTrustedUrls: [paperclipApiUrl],
-        }),
-      }),
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining("Claude ACP startup failed"),
+    );
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining('Unexpected "<<"'),
     );
   });
 

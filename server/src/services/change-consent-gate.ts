@@ -19,13 +19,6 @@ export function agentProfileChangeTargetKey(agentId: string) {
   return `agent:${agentId}:profile`;
 }
 
-/** Canonical and legacy consent targets that deliver a peer configuration proposal. */
-export function agentConfigurationChangeTargetId(key: string): string | null {
-  return /^agent:([^:]+):(?:instructions|profile)$/.exec(key)?.[1]
-    ?? /^reflection-coach:agent-(?:instructions|description):([^:]+)$/.exec(key)?.[1]
-    ?? null;
-}
-
 export function skillChangeTargetKey(skillId: string) {
   return `skill:${skillId}`;
 }
@@ -119,7 +112,7 @@ function expandTargetKeysForLegacyCompatibility(targetKeys: string[]) {
   return [...expanded];
 }
 
-export function changeConsentGateService(db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0]) {
+export function changeConsentGateService(db: Db) {
   return {
     assertConsented: async (input: {
       companyId: string;

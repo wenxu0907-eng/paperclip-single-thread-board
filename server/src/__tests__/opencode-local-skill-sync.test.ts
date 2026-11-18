@@ -20,7 +20,7 @@ describe("opencode local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("defaults and installs the operational Paperclip skill in the shared Claude/OpenCode skills home", async () => {
+  it("reports configured Paperclip skills and installs them into the shared Claude/OpenCode skills home", async () => {
     const home = await makeTempDir("paperclip-opencode-skill-sync-");
     cleanupDirs.add(home);
 
@@ -31,6 +31,9 @@ describe("opencode local skill sync", () => {
       config: {
         env: {
           HOME: home,
+        },
+        paperclipSkillSync: {
+          desiredSkills: [paperclipKey],
         },
       },
     } as const;

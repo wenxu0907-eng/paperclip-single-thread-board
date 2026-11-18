@@ -45,11 +45,6 @@
     "publishFromCi": false
   },
   {
-    "dir": "packages/adapters/kimi-local",
-    "name": "@paperclipai/adapter-kimi-local",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -125,19 +120,9 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/plugins/sandbox-providers/boxd",
-    "name": "@paperclipai/plugin-boxd",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/plugins/sandbox-providers/cloudflare",
     "name": "@paperclipai/plugin-cloudflare-sandbox",
     "publishFromCi": true
-  },
-  {
-    "dir": "packages/plugins/sandbox-providers/createos",
-    "name": "@paperclipai/plugin-createos",
-    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/daytona",

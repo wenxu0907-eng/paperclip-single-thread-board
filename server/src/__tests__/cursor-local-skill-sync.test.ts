@@ -27,7 +27,7 @@ describe("cursor local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("defaults and installs the operational Paperclip skill in the Cursor skills home", async () => {
+  it("reports configured Paperclip skills and installs them into the Cursor skills home", async () => {
     const home = await makeTempDir("paperclip-cursor-skill-sync-");
     cleanupDirs.add(home);
 
@@ -38,6 +38,9 @@ describe("cursor local skill sync", () => {
       config: {
         env: {
           HOME: home,
+        },
+        paperclipSkillSync: {
+          desiredSkills: [paperclipKey],
         },
       },
     } as const;
@@ -52,25 +55,6 @@ describe("cursor local skill sync", () => {
     expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
   });
 
-  it("keeps the operational skill installed after an explicit empty replacement", async () => {
-    const home = await makeTempDir("paperclip-cursor-required-skill-");
-    cleanupDirs.add(home);
-
-    const snapshot = await syncCursorSkills({
-      agentId: "agent-required",
-      companyId: "company-1",
-      adapterType: "cursor",
-      config: {
-        env: { HOME: home },
-        paperclipSkillSync: { desiredSkills: [] },
-      },
-    }, []);
-
-    expect(snapshot.desiredSkills).toEqual([paperclipKey, "paperclipai/paperclip/complain", "paperclipai/paperclip/suggestion-box"]);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
-  });
-
   it("recognizes company-library runtime skills supplied outside the bundled Paperclip directory", async () => {
     const home = await makeTempDir("paperclip-cursor-runtime-skills-home-");
     const runtimeSkills = await makeTempDir("paperclip-cursor-runtime-skills-src-");
@@ -79,6 +63,7 @@ describe("cursor local skill sync", () => {
 
     const paperclipDir = await createSkillDir(runtimeSkills, "paperclip");
     const asciiHeartDir = await createSkillDir(runtimeSkills, "ascii-heart");
+    const paraMemoryDir = await createSkillDir(runtimeSkills, "para-memory-files");
 
     const ctx = {
       agentId: "agent-3",
@@ -99,6 +84,11 @@ describe("cursor local skill sync", () => {
             runtimeName: "ascii-heart",
             source: asciiHeartDir,
           },
+          {
+            key: "para-memory-files",
+            runtimeName: "para-memory-files",
+            source: paraMemoryDir,
+          },
         ],
         paperclipSkillSync: {
           desiredSkills: ["ascii-heart"],
@@ -108,7 +98,7 @@ describe("cursor local skill sync", () => {
 
     const before = await listCursorSkills(ctx);
     expect(before.warnings).toEqual([]);
-    expect(before.desiredSkills).toEqual(["ascii-heart"]);
+    expect(before.desiredSkills).toContain("ascii-heart");
     expect(before.entries.find((entry) => entry.key === "ascii-heart")?.state).toBe("missing");
 
     const after = await syncCursorSkills(ctx, ["ascii-heart"]);

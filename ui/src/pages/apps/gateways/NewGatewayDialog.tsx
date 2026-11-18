@@ -15,7 +15,6 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { allowedToolsLabel } from "./gateway-helpers";
-import { describeError } from "@/api/errors";
 
 export const gatewaysQueryKey = (companyId: string) => ["tools", "gateways", companyId] as const;
 
@@ -74,7 +73,7 @@ export function NewGatewayDialog({
     onError: (error) => {
       pushToast({
         title: "Gateway was not created",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : String(error),
         tone: "error",
       });
     },

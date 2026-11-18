@@ -1,5 +1,5 @@
 import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
-import { api, type RequestOptions } from "./client";
+import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
 
@@ -8,6 +8,7 @@ type InviteSummary = {
   companyId: string | null;
   companyName?: string | null;
   companyLogoUrl?: string | null;
+  companyBrandColor?: string | null;
   inviteType: "company_join" | "bootstrap_ceo";
   allowedJoinTypes: "human" | "agent" | "both";
   humanRole?: HumanCompanyRole | null;
@@ -149,7 +150,6 @@ export type CompanyMembersResponse = {
 export type CompanyUserDirectoryEntry = {
   principalId: string;
   status: "active";
-  membershipRole: string | null;
   user: { id: string; email: string | null; name: string | null; image: string | null } | null;
 };
 
@@ -311,18 +311,16 @@ export const accessApi = {
     companyId: string,
     status: "pending_approval" | "approved" | "rejected" = "pending_approval",
     requestType?: "human" | "agent",
-    options?: RequestOptions,
   ) =>
     api.get<CompanyJoinRequest[]>(
       `/companies/${companyId}/join-requests?status=${status}${requestType ? `&requestType=${requestType}` : ""}`,
-      options,
     ),
 
   listMembers: (companyId: string) =>
     api.get<CompanyMembersResponse>(`/companies/${companyId}/members`),
 
-  listUserDirectory: (companyId: string, options?: RequestOptions) =>
-    api.get<CompanyUserDirectoryResponse>(`/companies/${companyId}/user-directory`, options),
+  listUserDirectory: (companyId: string) =>
+    api.get<CompanyUserDirectoryResponse>(`/companies/${companyId}/user-directory`),
 
   updateMember: (
     companyId: string,

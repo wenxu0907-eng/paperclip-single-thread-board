@@ -1,5 +1,4 @@
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import type { Db } from "@paperclipai/db";
 import {
   documentAnnotationAnchorSnapshots,
@@ -424,8 +423,6 @@ export function documentAnnotationService(db: Db) {
       `);
       const doc = await getIssueDocument(issueId, key, tx);
       if (!doc) throw notFound("Document not found");
-      await assertAgentInteraction(tx, { companyId: doc.companyId, actorAgentId: actor.agentId,
-        operation: "comment", issueId, texts: [input.body], lock: true });
       if (
         input.baseRevisionId !== doc.latestRevisionId
         || input.baseRevisionNumber !== doc.latestRevisionNumber
@@ -685,8 +682,6 @@ export function documentAnnotationService(db: Db) {
     ) => db.transaction(async (tx) => {
       const thread = await getThreadForIssue(issueId, key, threadId, tx);
       if (!thread) throw notFound("Annotation thread not found");
-      await assertAgentInteraction(tx, { companyId: thread.companyId, actorAgentId: actor.agentId,
-        operation: "comment", issueId, texts: [input.body], lock: true });
       const now = new Date();
       const linkedIssueComment = await assertLinkedIssueComment(issueId, input.issueCommentId, tx);
       const [comment] = await tx
@@ -862,8 +857,6 @@ export function documentAnnotationService(db: Db) {
     ) => db.transaction(async (tx) => {
       const thread = await getThreadForIssue(issueId, key, threadId, tx);
       if (!thread) throw notFound("Annotation thread not found");
-      await assertAgentInteraction(tx, { companyId: thread.companyId, actorAgentId: actor.agentId,
-        operation: "edit", issueId, lock: true });
       if (!input.status || input.status === thread.status) return thread;
 
       const now = new Date();

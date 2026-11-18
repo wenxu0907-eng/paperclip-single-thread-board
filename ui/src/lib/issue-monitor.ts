@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -28,7 +27,6 @@ type ScheduledRetry = {
 };
 
 export interface MonitorIssueLike {
-  status?: string;
   executionState?: { monitor?: MonitorDetails | null } | null;
   executionPolicy?: { monitor?: MonitorPolicy | null } | null;
   monitorNextCheckAt?: MonitorDate | null;
@@ -55,15 +53,6 @@ export interface DerivedMonitorState {
 export interface MonitorDateTimeFormatOptions {
   locale?: Intl.LocalesArgument;
   timeZone?: string;
-}
-
-export function areAutomaticMonitorChecksPaused(issue: Pick<MonitorIssueLike, "status">): boolean {
-  return issue.status !== undefined && issue.status !== "in_progress" && issue.status !== "in_review";
-}
-
-export function canCheckIssueMonitorNow(issue: Pick<MonitorIssueLike, "status">, serviceName?: string | null): boolean {
-  return !areAutomaticMonitorChecksPaused(issue) ||
-    (issue.status === "blocked" && serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME);
 }
 
 function toTimestamp(value: MonitorDate): number {
@@ -184,28 +173,25 @@ export function formatMonitorAbsoluteFull(
 }
 
 export function deriveMonitorState(issue: MonitorIssueLike, now: MonitorDate = new Date()): DerivedMonitorState {
-  if (issue.status === "done" || issue.status === "cancelled") {
-    return { state: "none", source: "none", nextCheckAt: null, attemptCount: 0, serviceName: null };
-  }
-
   const runtimeMonitor = issue.executionState?.monitor ?? null;
   const policyMonitor = issue.executionPolicy?.monitor ?? null;
   const scheduledRetry = issue.scheduledRetry ?? null;
-  // Promotion preserves scheduledRetryAt as history. Once queued or running,
-  // the retry is no longer waiting for that timestamp and cannot be overdue.
-  const retryIsScheduled = scheduledRetry?.status === "scheduled_retry";
+  const retryIsActive =
+    scheduledRetry?.status === "scheduled_retry" ||
+    scheduledRetry?.status === "queued" ||
+    scheduledRetry?.status === "running";
   const nextCheckAt =
     runtimeMonitor?.nextCheckAt ??
     issue.monitorNextCheckAt ??
     policyMonitor?.nextCheckAt ??
-    (retryIsScheduled ? scheduledRetry?.scheduledRetryAt : null) ??
+    (retryIsActive ? scheduledRetry?.scheduledRetryAt : null) ??
     null;
   const hasMonitor = runtimeMonitor !== null || policyMonitor !== null || issue.monitorNextCheckAt != null;
-  const source = hasMonitor ? "monitor" : retryIsScheduled ? "scheduled-retry" : "none";
+  const source = hasMonitor ? "monitor" : retryIsActive ? "scheduled-retry" : "none";
   const attemptCount =
     runtimeMonitor?.attemptCount ??
     (hasMonitor ? issue.monitorAttemptCount : null) ??
-    (retryIsScheduled ? scheduledRetry?.scheduledRetryAttempt : null) ??
+    (retryIsActive ? scheduledRetry?.scheduledRetryAttempt : null) ??
     0;
   const serviceName = runtimeMonitor?.serviceName ?? policyMonitor?.serviceName ?? null;
 
@@ -213,11 +199,11 @@ export function deriveMonitorState(issue: MonitorIssueLike, now: MonitorDate = n
     return { state: "cleared", source, nextCheckAt, attemptCount, serviceName };
   }
 
-  if (!hasMonitor && !retryIsScheduled) {
+  if (!hasMonitor && !retryIsActive) {
     return { state: "none", source, nextCheckAt: null, attemptCount: 0, serviceName: null };
   }
   if (!nextCheckAt) {
-    return { state: retryIsScheduled || attemptCount > 1 ? "retrying" : "scheduled", source, nextCheckAt, attemptCount, serviceName };
+    return { state: retryIsActive || attemptCount > 1 ? "retrying" : "scheduled", source, nextCheckAt, attemptCount, serviceName };
   }
 
   const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
@@ -228,7 +214,7 @@ export function deriveMonitorState(issue: MonitorIssueLike, now: MonitorDate = n
     return { state: "due-now", source, nextCheckAt, attemptCount, serviceName };
   }
   return {
-    state: retryIsScheduled || attemptCount > 1 ? "retrying" : "scheduled",
+    state: retryIsActive || attemptCount > 1 ? "retrying" : "scheduled",
     source,
     nextCheckAt,
     attemptCount,

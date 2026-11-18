@@ -29,7 +29,6 @@ export const resolvePathValue = serverUtils.resolvePathValue;
 export const renderTemplate = serverUtils.renderTemplate;
 export const redactEnvForLogs = serverUtils.redactEnvForLogs;
 export const buildPaperclipEnv = serverUtils.buildPaperclipEnv;
-export const buildRuntimeToolsEnv = serverUtils.buildRuntimeToolsEnv;
 export const isPaperclipRuntimeEnvKey = serverUtils.isPaperclipRuntimeEnvKey;
 export const isForbiddenConfigEnvKey = serverUtils.isForbiddenConfigEnvKey;
 export const defaultPathForPlatform = serverUtils.defaultPathForPlatform;

@@ -16,8 +16,8 @@ import { ScheduleEditor } from "./ScheduleEditor";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
 import { describeCron } from "../lib/cron-readable";
 
-const signingModes = ["app_webhook", "bearer", "hmac_sha256", "github_hmac", "none"];
-const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["app_webhook", "bearer", "github_hmac", "fireflies_hmac", "none"]);
+const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
+const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
 
 function getLocalTimezone(): string {
   try {
@@ -63,10 +63,9 @@ export function RoutineTriggerCard({
   const KindIcon =
     trigger.kind === "schedule" ? Clock3 : trigger.kind === "webhook" ? Webhook : Zap;
   const humanCron = trigger.kind === "schedule" ? describeCron(draft.cronExpression) : null;
-  const lastResultFailed = /fail|error/i.test(trigger.lastResult ?? "");
-  const lastResultLabel = trigger.lastResult?.startsWith("Created execution issue ")
-    ? "Task created"
-    : trigger.lastResult;
+  const lastResultOk =
+    trigger.lastResult != null &&
+    /succeed|success|ok|200|delivered/i.test(String(trigger.lastResult));
 
   return (
     <form
@@ -88,8 +87,8 @@ export function RoutineTriggerCard({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {trigger.lastResult ? (
-            <Badge variant={lastResultFailed ? "destructive" : "secondary"}>
-              {lastResultLabel}
+            <Badge variant={lastResultOk ? "secondary" : "destructive"}>
+              {String(trigger.lastResult)}
             </Badge>
           ) : null}
           <span className="text-xs text-muted-foreground">
@@ -101,16 +100,6 @@ export function RoutineTriggerCard({
           </span>
         </div>
       </div>
-
-      {trigger.kind === "webhook" && trigger.webhookUrl && (
-        <div className="space-y-1.5">
-          <Label htmlFor={`webhook-url-${trigger.id}`} className="text-xs">Webhook URL</Label>
-          <Input id={`webhook-url-${trigger.id}`} value={trigger.webhookUrl} readOnly onFocus={(event) => event.target.select()} />
-          <p className="text-xs text-muted-foreground">
-            Send a POST request with Content-Type: application/json. Keep this URL private when signing is disabled.
-          </p>
-        </div>
-      )}
 
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-1.5">

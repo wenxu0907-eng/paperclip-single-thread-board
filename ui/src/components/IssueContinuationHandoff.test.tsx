@@ -75,7 +75,7 @@ describe("IssueContinuationHandoff", () => {
     expect(container.textContent).not.toContain("Resume from the activity tab.");
 
     const copyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.getAttribute("aria-label") === "Continue with an agent");
+      .find((button) => button.textContent?.includes("Copy"));
     expect(copyButton).toBeTruthy();
 
     await act(async () => {
@@ -84,7 +84,6 @@ describe("IssueContinuationHandoff", () => {
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(handoff.body);
     expect(container.textContent).toContain("Copied");
-    expect(document.querySelector('pre[aria-label="Setup prompt"]')?.textContent).toBe(handoff.body);
 
     await act(async () => {
       root.unmount();

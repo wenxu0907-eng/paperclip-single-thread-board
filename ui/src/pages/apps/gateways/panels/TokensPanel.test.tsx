@@ -10,19 +10,13 @@ import { TokensPanel } from "./TokensPanel";
 
 const createGatewayTokenMock = vi.hoisted(() => vi.fn());
 const revokeGatewayTokenMock = vi.hoisted(() => vi.fn());
-const revealGatewayTokenMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     createGatewayToken: (...args: unknown[]) => createGatewayTokenMock(...args),
     revokeGatewayToken: (...args: unknown[]) => revokeGatewayTokenMock(...args),
-    revealGatewayToken: (...args: unknown[]) => revealGatewayTokenMock(...args),
   },
-}));
-
-vi.mock("@/api/companies-query", () => ({
-  useAccountIdentity: () => ({ userId: "user-1", settled: true, failed: false, bootstrap: undefined, updatedAt: 0 }),
 }));
 
 vi.mock("@/context/ToastContext", () => ({
@@ -117,7 +111,6 @@ describe("TokensPanel", () => {
 
   beforeEach(() => {
     vi.spyOn(Date, "now").mockReturnValue(new Date("2026-06-16T12:00:00.000Z").getTime());
-    vi.clearAllMocks();
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -147,16 +140,6 @@ describe("TokensPanel", () => {
     });
   }
 
-  function clickButtonContaining(label: string) {
-    const button = [...container.querySelectorAll("button")].find(
-      (el) => el.textContent?.includes(label),
-    );
-    if (!button) throw new Error(`Button containing "${label}" not found`);
-    return act(async () => {
-      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-  }
-
   function setInput(selectorText: string, value: string) {
     const input = container.querySelector<HTMLInputElement>(selectorText);
     if (!input) throw new Error(`Input ${selectorText} not found`);
@@ -169,16 +152,11 @@ describe("TokensPanel", () => {
 
   it("masks existing tokens and never renders the full secret at rest", async () => {
     await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [token()] })} />);
-    expect(container.textContent).not.toContain("pcgw_live_8x4Pa•••");
-    expect(container.textContent).toContain("fresh one-hour runtime token");
-    expect(container.textContent).toContain("one run may leave two revoked rows");
-
-    await clickButtonContaining("Token history");
     expect(container.textContent).toContain("pcgw_live_8x4Pa•••");
     expect(container.textContent).toContain("Active");
   });
 
-  it("autofills a token name, reuses it as the client label, and reveals the token once", async () => {
+  it("mints a token and reveals it once, then copies the full value", async () => {
     const created = { ...token({ id: "new-token" }), token: "pcgw_live_FULLSECRETVALUE" };
     createGatewayTokenMock.mockResolvedValue(created);
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -186,27 +164,16 @@ describe("TokensPanel", () => {
 
     await render(<TokensPanel companyId="company-1" gateway={gateway()} />);
 
-    await clickButton("Issue token");
+    await clickButton("Mint token"); // open the mint form
+    await setInput('input[placeholder="cto-cursor"]', "cto-cursor");
     const form = container.querySelector("form");
-    if (!form) throw new Error("token form not found");
-    const nameInput = form.querySelector<HTMLInputElement>('input:not([type="date"])');
-    if (!nameInput) throw new Error("token name input not found");
-    expect(nameInput.value).toMatch(/^cto-agents-\d{12}$/);
+    if (!form) throw new Error("mint form not found");
     await act(async () => {
       form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
     await flushReact();
 
     expect(createGatewayTokenMock).toHaveBeenCalledTimes(1);
-    expect(createGatewayTokenMock).toHaveBeenCalledWith(
-      "company-1",
-      "gateway-1",
-      expect.objectContaining({
-        name: nameInput.value,
-        clientLabel: nameInput.value,
-        ownerNote: "",
-      }),
-    );
     expect(container.textContent).toContain("New token — copy now");
     // Reveal-once banner shows the full value immediately after creation.
     expect(container.textContent).toContain("pcgw_live_FULLSECRETVALUE");
@@ -215,40 +182,10 @@ describe("TokensPanel", () => {
     expect(writeText).toHaveBeenCalledWith("pcgw_live_FULLSECRETVALUE");
   });
 
-  it("lets the person reveal an agent-created token value once, outside the folded history", async () => {
-    const pending = token({ id: "agent-token", name: "Replacement client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-1", pendingReveal: true });
-    revealGatewayTokenMock.mockResolvedValue({ ...pending, pendingReveal: false, token: "pcgw_live_REVEALEDVALUE" });
-    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
-
-    expect(container.textContent).toContain("Waiting for you to reveal");
-    expect(container.textContent).toContain("Replacement client");
-    expect(container.textContent).not.toContain("pcgw_live_REVEALEDVALUE");
-
-    await clickButton("Reveal token");
-    await flushReact();
-    expect(revealGatewayTokenMock).toHaveBeenCalledWith("company-1", "agent-token");
-    expect(container.textContent).toContain("New token — copy now");
-    expect(container.textContent).toContain("pcgw_live_REVEALEDVALUE");
-  });
-
-  it("does not offer to reveal a token that expired before its reveal", async () => {
-    const pending = token({ id: "agent-token", name: "Expired client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-1", pendingReveal: true, expiresAt: "2026-06-01T00:00:00.000Z" });
-    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
-    expect(container.textContent).not.toContain("Waiting for you to reveal");
-  });
-
-  it("does not offer to reveal a token that acts for another person", async () => {
-    const pending = token({ id: "agent-token", name: "Someone else's client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-2", pendingReveal: true });
-    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
-    expect(container.textContent).not.toContain("Waiting for you to reveal");
-    expect([...container.querySelectorAll("button")].some((el) => el.textContent?.trim() === "Reveal token")).toBe(false);
-  });
-
   it("gates revoke behind a typed confirmation matching the token name", async () => {
     revokeGatewayTokenMock.mockResolvedValue(token({ revokedAt: "2026-06-16T12:00:00.000Z" }));
     await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [token()] })} />);
 
-    await clickButtonContaining("Token history");
     await clickButton("Revoke");
     const confirmButton = [...container.querySelectorAll("button")].find(
       (el) => el.textContent?.trim() === "Revoke token",
@@ -261,32 +198,5 @@ describe("TokensPanel", () => {
     await clickButton("Revoke token");
     await flushReact();
     expect(revokeGatewayTokenMock).toHaveBeenCalledWith("company-1", "token-1");
-  });
-
-  it("paginates the folded token log and labels past expiry as expired", async () => {
-    const tokens = Array.from({ length: 11 }, (_, index) => token({
-      id: `token-${index}`,
-      name: `client-${index}`,
-      tokenPrefix: `pcgw_${index}`,
-      expiresAt: index === 0 ? "2026-06-01T00:00:00.000Z" : "2026-09-01T00:00:00.000Z",
-      revokedAt: index === 0 ? "2026-06-10T00:00:00.000Z" : null,
-      createdAt: new Date(Date.UTC(2026, 5, index + 1)).toISOString(),
-    }));
-    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens })} />);
-
-    expect(container.textContent).not.toContain("client-10");
-    await clickButtonContaining("Token history");
-    expect(container.textContent).toContain("Page 1 of 2");
-    expect(container.textContent).toContain("client-10");
-    expect(container.textContent).not.toContain("client-0");
-
-    const next = container.querySelector<HTMLButtonElement>('button[aria-label="Next token page"]');
-    if (!next) throw new Error("next token page button not found");
-    await act(async () => next.click());
-
-    expect(container.textContent).toContain("Page 2 of 2");
-    expect(container.textContent).toContain("client-0");
-    expect(container.textContent).toContain("Expired");
-    expect(container.textContent).not.toContain("Expires 2 months ago");
   });
 });

@@ -54,15 +54,8 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
 
   const type = asString(parsed.type);
 
-  // RPC protocol messages and adapter-generated progress metadata are
-  // internal implementation details, not transcript entries.
-  if (
-    type === "response" ||
-    type === "extension_ui_request" ||
-    type === "extension_ui_response" ||
-    type === "extension_error" ||
-    type === "paperclip_progress"
-  ) {
+  // RPC protocol messages - filter these out (internal implementation detail)
+  if (type === "response" || type === "extension_ui_request" || type === "extension_ui_response" || type === "extension_error") {
     return [];
   }
 

@@ -91,7 +91,6 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
-    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -396,39 +395,6 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("paused by board");
   });
 
-  it("names the recorded cause of an adapter failure and keeps the plain label for older runs", () => {
-    renderLedger({
-      runs: [
-        createRun({
-          runId: "run-adapter-cause",
-          status: "failed",
-          errorCode: "adapter_failed",
-          failureCause: "40001",
-          resultJson: { stopReason: "adapter_failed" },
-        }),
-        createRun({
-          runId: "run-adapter-legacy",
-          status: "failed",
-          errorCode: "adapter_failed",
-          resultJson: { stopReason: "adapter_failed" },
-          createdAt: "2026-04-18T19:57:00.000Z",
-        }),
-        createRun({
-          runId: "run-adapter-malformed",
-          status: "failed",
-          errorCode: "adapter_failed",
-          failureCause: "select * from secrets",
-          resultJson: { stopReason: "adapter_failed" },
-          createdAt: "2026-04-18T19:56:00.000Z",
-        }),
-      ],
-    });
-
-    expect(container.textContent).toContain("adapter failed (40001)");
-    expect(container.textContent?.match(/adapter failed(?! \()/g)).toHaveLength(2);
-    expect(container.textContent).not.toContain("secrets");
-  });
-
   it("surfaces active and completed child issue summaries", () => {
     renderLedger({
       childIssues: [
@@ -451,23 +417,6 @@ describe("IssueRunLedger", () => {
     });
 
     expect(container.textContent).toContain("all 2 terminal (1 done, 1 cancelled)");
-  });
-
-  it("shows the current execution instruction and clears stale instructions after a recorded successor", () => {
-    const execution = {
-      phase: "recovery_needed" as const, label: "Stopped", cause: "native_continuation_requires_reconciliation",
-      lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
-      recoveryOwner: null, nextAction: "Saved work recovered. Send a message to continue.",
-      permittedActions: ["inspect_run"] as const, predecessorRunId: null, successorRunId: null,
-    };
-    const stopped = createRun({ status: "failed", nextAction: "Repair the retained sandbox.",
-      execution: { ...execution, permittedActions: ["inspect_run"] } });
-    renderLedger({ runs: [stopped] });
-    expect(container.textContent).toContain(execution.nextAction);
-    expect(container.textContent).not.toContain("Repair the retained sandbox.");
-    renderLedger({ runs: [{ ...stopped, execution: { ...stopped.execution!, phase: "completed",
-      label: "Continued in another run", nextAction: null, successorRunId: "successor" } }] });
-    expect(container.textContent).not.toContain("Next action:");
   });
 
   it("uses wrapping-friendly markup for long next action text", () => {
@@ -498,7 +447,7 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("2 older items not shown");
   });
 
-  it("renders legacy evaluation context with watchdog actions and a silence badge", () => {
+  it("renders stale-run banner, watchdog actions, and silence badge for live runs", () => {
     const onWatchdogDecision = vi.fn();
     renderLedger({
       runs: [createRun({ runId: "run-live-1", status: "running", finishedAt: null })],
@@ -506,12 +455,11 @@ describe("IssueRunLedger", () => {
       onWatchdogDecision,
     });
 
-    expect(container.textContent).toContain("Critical output silence");
+    expect(container.textContent).toContain("Stale-run watchdog alert");
     expect(container.textContent).toContain("PAP-404");
-    expect(container.textContent).toContain("Critical silence");
-    expect(container.textContent).toContain("Paperclip did not create new delegated recovery work");
+    expect(container.textContent).toContain("Stale run");
     const watchdogBanner = Array.from(container.querySelectorAll("p"))
-      .find((node) => node.textContent?.includes("Critical output silence"))
+      .find((node) => node.textContent?.includes("Stale-run watchdog alert"))
       ?.closest("div");
     expect(watchdogBanner?.className).toContain("border-red-500/30");
     expect(watchdogBanner?.className).toContain("bg-red-500/10");
@@ -530,54 +478,39 @@ describe("IssueRunLedger", () => {
     });
   });
 
-  it.each([
-    {
-      level: "suspicious" as const,
-      heading: "Output silence watchdog warning",
-      badge: "Output silence",
-    },
-    {
-      level: "critical" as const,
-      heading: "Critical output silence",
-      badge: "Critical silence",
-    },
-  ])("renders a $level UI-only signal without an evaluation-task link", ({ level, heading, badge }) => {
-    const onWatchdogDecision = vi.fn();
-    const activeRun = createActiveRun();
+  it("renders requested/applied model profile and surfaces fallback reasons", () => {
     renderLedger({
-      runs: [createRun({ runId: activeRun.id, status: "running", finishedAt: null })],
-      activeRun: createActiveRun({
-        outputSilence: {
-          ...activeRun.outputSilence!,
-          level,
-          evaluationIssueId: null,
-          evaluationIssueIdentifier: null,
-          evaluationIssueAssigneeAgentId: null,
-        },
-      }),
-      onWatchdogDecision,
+      runs: [
+        createRun({
+          runId: "run-cheap-applied",
+          resultJson: {
+            modelProfile: {
+              requested: "cheap",
+              applied: "cheap",
+              configSource: "agent_runtime",
+              fallbackReason: null,
+            },
+          },
+        }),
+        createRun({
+          runId: "run-cheap-fallback",
+          createdAt: "2026-04-18T19:50:00.000Z",
+          resultJson: {
+            modelProfile: {
+              requested: "cheap",
+              applied: null,
+              configSource: null,
+              fallbackReason: "agent_runtime_profile_disabled",
+            },
+          },
+        }),
+      ],
     });
 
-    expect(container.textContent).toContain(heading);
-    expect(container.textContent).toContain(badge);
-    expect(container.textContent).toContain("Paperclip did not create or assign a recovery task");
-    expect(container.textContent).not.toContain("PAP-404");
-    expect(container.querySelector('a[href^="/issues/"]')).toBeNull();
-    expect(container.textContent).toContain("Continue monitoring");
-    expect(container.textContent).toContain("Snooze 1h");
-    expect(container.textContent).toContain("Mark false positive");
-
-    const continueButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Continue monitoring"),
-    );
-    act(() => {
-      continueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(onWatchdogDecision).toHaveBeenCalledWith({
-      runId: "run-live-1",
-      decision: "continue",
-      evaluationIssueId: null,
-    });
+    expect(container.textContent).toContain("Profile: cheap");
+    expect(container.textContent).toContain("Profile: cheap (unavailable)");
+    expect(container.textContent).toContain("Cheap profile fell back to primary");
+    expect(container.textContent).toContain("agent_runtime_profile_disabled");
   });
 
   it("hides watchdog decision actions for known non-owner viewers", () => {
@@ -589,16 +522,12 @@ describe("IssueRunLedger", () => {
       onWatchdogDecision,
     });
 
-    expect(container.textContent).toContain("Critical output silence");
+    expect(container.textContent).toContain("Stale-run watchdog alert");
     expect(container.textContent).toContain("PAP-404");
     expect(container.textContent).not.toContain("Continue monitoring");
     expect(container.textContent).not.toContain("Snooze 1h");
     expect(container.textContent).not.toContain("Mark false positive");
-    expect(
-      Array.from(container.querySelectorAll("button")).filter((button) =>
-        /continue|snooze|false positive/i.test(button.textContent ?? ""),
-      ),
-    ).toHaveLength(0);
+    expect(container.querySelectorAll("button")).toHaveLength(0);
     expect(onWatchdogDecision).not.toHaveBeenCalled();
   });
 

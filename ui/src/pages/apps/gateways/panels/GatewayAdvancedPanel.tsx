@@ -7,9 +7,7 @@ import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/context/ToastContext";
-import { copyTextToClipboard } from "@/lib/clipboard";
 import { gatewaysQueryKey } from "../NewGatewayDialog";
-import { describeError } from "@/api/errors";
 
 /**
  * Advanced tab — raw protocol/transport details, config JSON and the archive
@@ -59,14 +57,14 @@ export function GatewayAdvancedPanel({
     onError: (error) =>
       pushToast({
         title: "Couldn't archive the gateway",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : String(error),
         tone: "error",
       }),
   });
 
   async function copy(value: string, label: string) {
     try {
-      await copyTextToClipboard(value);
+      await navigator.clipboard.writeText(value);
       pushToast({ title: "Copied", body: label, tone: "success" });
     } catch {
       pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });

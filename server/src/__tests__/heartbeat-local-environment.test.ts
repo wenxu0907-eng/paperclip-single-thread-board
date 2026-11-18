@@ -62,7 +62,6 @@ async function waitForRunLeasesToRelease(
 
 describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   let db!: ReturnType<typeof createDb>;
-  let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let previousAgentJwtSecret: string | undefined;
 
@@ -71,16 +70,9 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "heartbeat-local-environment-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-local-environment-");
     db = createDb(tempDb.connectionString);
-    heartbeat = heartbeatService(db);
   }, 20_000);
 
   afterEach(async () => {
-    // A run reaches its terminal status before finalizeRun finishes writing
-    // its trailing lifecycle events and side effects (see the comment on
-    // drainActiveRunExecutions in heartbeat.ts). Drain those in-flight writes
-    // before the TRUNCATE below, or a write that lands after the company row
-    // is gone violates heartbeat_run_events' foreign key.
-    await heartbeat.drainActiveRunExecutions();
     await db.execute(sql.raw(`
       TRUNCATE TABLE
         "environment_leases",
@@ -98,10 +90,6 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   });
 
   afterAll(async () => {
-    // Same reasoning as the afterEach drain: closing the embedded database
-    // while a run's finalize work is still in flight lets a queued write hit
-    // a socket that cleanup() already tore down.
-    await heartbeat.drainActiveRunExecutions();
     await tempDb?.cleanup();
     if (previousAgentJwtSecret === undefined) {
       delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
@@ -121,6 +109,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -138,6 +127,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       permissions: {},
     });
 
+    const heartbeat = heartbeatService(db);
     const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
     expect(queued).not.toBeNull();
 
@@ -209,6 +199,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       permissions: {},
     });
 
+    const heartbeat = heartbeatService(db);
     const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
     expect(queued).not.toBeNull();
 

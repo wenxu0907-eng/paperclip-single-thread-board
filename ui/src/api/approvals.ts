@@ -1,11 +1,10 @@
 import type { Approval, ApprovalComment, Issue } from "@paperclipai/shared";
-import { api, type RequestOptions } from "./client";
+import { api } from "./client";
 
 export const approvalsApi = {
-  list: (companyId: string, status?: string, options?: RequestOptions) =>
+  list: (companyId: string, status?: string) =>
     api.get<Approval[]>(
       `/companies/${companyId}/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`,
-      options,
     ),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Approval>(`/companies/${companyId}/approvals`, data),
@@ -16,9 +15,6 @@ export const approvalsApi = {
     api.post<Approval>(`/approvals/${id}/reject`, { decisionNote }),
   requestRevision: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/request-revision`, { decisionNote }),
-  /** Withdraw an out-of-date approval. It never approves; the gate stays closed. */
-  cancel: (id: string, reason?: string) =>
-    api.post<Approval>(`/approvals/${id}/cancel`, { reason }),
   resubmit: (id: string, payload?: Record<string, unknown>) =>
     api.post<Approval>(`/approvals/${id}/resubmit`, { payload }),
   listComments: (id: string) => api.get<ApprovalComment[]>(`/approvals/${id}/comments`),

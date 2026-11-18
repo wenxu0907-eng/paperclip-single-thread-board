@@ -21,7 +21,7 @@ import {
 import { documentAnnotationService } from "../services/document-annotations.js";
 import { documentService } from "../services/documents.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
-import { buildDocumentReviewContext, buildPlanReviewContext, PLAN_REVIEW_CONTEXT_LIMITS } from "../services/plan-review-context.js";
+import { buildPlanReviewContext, PLAN_REVIEW_CONTEXT_LIMITS } from "../services/plan-review-context.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -81,6 +81,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      boardOnlyOnParents: false,
     });
 
     await db.insert(issues).values({
@@ -402,7 +403,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     });
   });
 
-  it("infers an omitted target issue id while rejecting cross-issue interaction context", async () => {
+  it("includes same-issue plan confirmation target/result and rejects cross-issue interaction context", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const otherIssueId = randomUUID();
     await db.insert(issues).values({
@@ -428,6 +429,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
           prompt: "Approve this plan?",
           target: {
             type: "issue_document",
+            issueId,
             documentId: document.id,
             key: "plan",
             revisionId: document.latestRevisionId,
@@ -717,7 +719,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     });
   });
 
-  it("includes rejection result with an omitted target issue id even when the reason is empty", async () => {
+  it("includes rejection result and open plan annotations even when the reason is empty", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     await annotations.createThread(
       issueId,
@@ -746,6 +748,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
           prompt: "Approve this plan?",
           target: {
             type: "issue_document",
+            issueId,
             documentId: document.id,
             key: "plan",
             revisionId: document.latestRevisionId,
@@ -797,62 +800,5 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
         }),
       ],
     });
-  });
-
-  it("groups non-plan annotations by most recently updated document and applies global caps", async () => {
-    const { companyId, issueId } = await createIssueWithDocument("standard");
-    const older = (await docs.upsertIssueDocument({
-      issueId,
-      key: "qa-evidence",
-      title: "QA evidence",
-      format: "markdown",
-      body: "Alpha selected text omega",
-    })).document;
-    const newer = (await docs.upsertIssueDocument({
-      issueId,
-      key: "run-summary",
-      title: "Run summary",
-      format: "markdown",
-      body: "Alpha selected text omega",
-    })).document;
-    await db.update(issueDocuments)
-      .set({ updatedAt: new Date("2026-06-01T00:00:00.000Z") })
-      .where(eq(issueDocuments.documentId, older.id));
-    await db.update(issueDocuments)
-      .set({ updatedAt: new Date("2026-06-02T00:00:00.000Z") })
-      .where(eq(issueDocuments.documentId, newer.id));
-
-    for (let index = 0; index < PLAN_REVIEW_CONTEXT_LIMITS.maxThreads + 1; index += 1) {
-      await annotations.createThread(
-        issueId,
-        index === 0 ? "run-summary" : "qa-evidence",
-        {
-          baseRevisionId: index === 0 ? newer.latestRevisionId! : older.latestRevisionId!,
-          baseRevisionNumber: index === 0 ? newer.latestRevisionNumber : older.latestRevisionNumber,
-          selector: {
-            quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
-            position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
-          },
-          body: `Annotation ${index}`,
-        },
-        { actorType: "user", actorId: "board-user", userId: "board-user" },
-      );
-    }
-
-    const context = await buildDocumentReviewContext({
-      db,
-      companyId,
-      issueId,
-      includeForIssueComment: true,
-    });
-
-    expect(context?.documents.map((document) => document.documentKey)).toEqual(["run-summary", "qa-evidence"]);
-    expect(context?.totals).toMatchObject({
-      openThreadCount: PLAN_REVIEW_CONTEXT_LIMITS.maxThreads + 1,
-      includedThreadCount: PLAN_REVIEW_CONTEXT_LIMITS.maxThreads,
-      omittedThreadCount: 1,
-    });
-    expect(context?.documents[1]).toMatchObject({ truncated: true });
-    expect(context?.truncated).toBe(true);
   });
 });

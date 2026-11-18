@@ -4,7 +4,6 @@ import type {
   AdapterEnvironmentTestResult,
 } from "../types.js";
 import { asString, parseObject } from "../utils.js";
-import { guardedHttpAdapterFetch } from "./remote-fetch.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -78,7 +77,7 @@ export async function testEnvironment(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     try {
-      const response = await guardedHttpAdapterFetch(url, {
+      const response = await fetch(url, {
         method: "HEAD",
         signal: controller.signal,
       });

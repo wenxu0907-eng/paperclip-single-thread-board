@@ -1,4 +1,4 @@
-FROM node:24-trixie-slim
+FROM node:lts-trixie-slim
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \

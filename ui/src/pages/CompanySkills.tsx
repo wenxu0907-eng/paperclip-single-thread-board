@@ -1,11 +1,4 @@
-import { SkillsNavigationTabs } from "@/components/skill-studio/SkillsNavigationTabs";
-import { SkillsToolbar, type DiscoverySort } from "@/components/skill-studio/SkillsToolbar";
-import { SkillBinaryFile } from "../components/SkillBinaryFile";
-import { skillFileLinkHref } from "@/lib/skill-file-links";
-import { SkillSourceProvenance } from "../components/SkillSourceProvenance";
-import { AgentIdentity } from "@/components/AgentIdentity";
-import { AgentAvatar } from "@/components/AgentAvatar";
-import { useCallback, useEffect, useMemo, useRef, useState, type SVGProps } from "react";
+import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -26,28 +19,24 @@ import type {
   CompanySkillTrustLevel,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
-  CompanySkillVersionSummary,
+  CompanySkillVersion,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
-import { ConnectedAppSkills } from "../components/skills/ConnectedAppSkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
-import { copyTextToClipboard } from "../lib/clipboard";
-import { useCopyAction } from "../lib/use-copy-action";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { QueryErrorState, useQueryView, type QueryViewSource } from "@/components/QueryView";
 import { CopyText } from "../components/CopyText";
 import { Identity } from "../components/Identity";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { AgentMultiSelect } from "../components/AgentMultiSelect";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import {
   SkillPolicyDenialNotice,
   useSkillPolicyDenial,
@@ -85,10 +74,6 @@ import {
   resolveSkillRouteToken,
   type CompanySkillRouteSubject,
 } from "../lib/company-skill-routes";
-import {
-  resolveSkillsDiscoveryView,
-  withSkillsDiscoveryView,
-} from "./skills/skills-navigation";
 import {
   SKILL_CREATE_ACCENTS,
   buildBlankSkillDraft,
@@ -140,7 +125,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Code2,
-  Compass,
   Download,
   Eye,
   Filter,
@@ -151,6 +135,7 @@ import {
   FolderOpen,
   FolderSearch,
   GitFork,
+  Github,
   Globe,
   HelpCircle,
   LayoutGrid,
@@ -178,9 +163,7 @@ import {
   X,
   XOctagon,
 } from "lucide-react";
-import { GithubIcon } from "../components/icons/github-icon";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
-import { describeError } from "@/api/errors";
 
 type SkillTreeNode = {
   name: string;
@@ -281,7 +264,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "github":
       return isSkillsShManaged
         ? { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" }
-        : { icon: GithubIcon, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
+        : { icon: Github, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
     case "url":
       return { icon: Link2, label: sourceLabel ?? "URL", managedLabel: "URL managed" };
     case "local":
@@ -337,7 +320,7 @@ type SourceFilter = "all" | "company" | "bundled" | "optional" | "external";
 
 const SOURCE_FILTER_LABELS: Record<SourceFilter, string> = {
   all: "All",
-  company: "Organization",
+  company: "Company",
   bundled: "Bundled",
   optional: "Optional",
   external: "External",
@@ -568,14 +551,23 @@ function formatBytes(bytes: number) {
 // Skills Store discovery grid (PAP-10879)
 // ---------------------------------------------------------------------------
 
-export type DiscoveryTab = "installed" | "discover";
+export type DiscoveryTab = "all" | "installed" | "catalog" | "bundled";
+
+const DISCOVERY_TABS: DiscoveryTab[] = ["all", "installed", "catalog", "bundled"];
 
 export function resolveDiscoveryTab(tabParam: string | null): DiscoveryTab {
-  return resolveSkillsDiscoveryView(tabParam);
+  return DISCOVERY_TABS.includes(tabParam as DiscoveryTab)
+    ? (tabParam as DiscoveryTab)
+    : "installed";
 }
 
 export function withDiscoveryTab(current: URLSearchParams, tab: DiscoveryTab): URLSearchParams {
-  return withSkillsDiscoveryView(current, tab);
+  const params = new URLSearchParams(current);
+  if (tab === "installed") params.delete("tab");
+  else params.set("tab", tab);
+  params.delete("category");
+  if (tab !== "installed") params.delete("folder");
+  return params;
 }
 
 export function skillDetailBreadcrumbs(
@@ -594,6 +586,18 @@ export function skillDetailBreadcrumbs(
     { label: detail.name },
   ];
 }
+
+type DiscoverySort = "agents" | "stars" | "forks" | "recent" | "alphabetical";
+
+const DISCOVERY_SORT_LABELS: Record<DiscoverySort, string> = {
+  agents: "Most agents",
+  stars: "Most stars",
+  forks: "Most forks",
+  recent: "Recently updated",
+  alphabetical: "Alphabetical",
+};
+
+const DISCOVERY_SORTS: DiscoverySort[] = ["agents", "stars", "forks", "recent", "alphabetical"];
 
 export type DiscoveryCard = {
   key: string;
@@ -618,7 +622,6 @@ export type DiscoveryCard = {
   updatedAt: number;
   sourceBadge?: CompanySkillSourceBadge | null;
   sourceLabel?: string | null;
-  sourceKind?: "bundled" | "optional" | null;
 };
 
 export { SkillCardIcon } from "../components/SkillCardIcon";
@@ -650,7 +653,7 @@ function categorySetKey(categories: string[]) {
 }
 
 function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "sharingScope">) {
-  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: organization";
+  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: company";
   const categories = skill.categories.length ? `Categories: ${skill.categories.join(", ")}` : "Categories: none";
   return `${sharing} | ${categories}`;
 }
@@ -658,36 +661,17 @@ function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "
 // Merge installed company skills and the install catalog into one card model.
 // Installed skills win on dedup (they carry the richer social-proof metadata);
 // catalog-only skills fill in the rest of the discoverable surface.
-function discoveryCardIdentity(key: string): string {
-  return key.trim().toLowerCase();
-}
-
-export function buildDiscoveryCards(
+function buildDiscoveryCards(
   installed: CompanySkillListItem[],
   catalog: CatalogSkill[],
 ): DiscoveryCard[] {
-  const installedByKey = new Map<string, CompanySkillListItem>();
-  for (const skill of installed) {
-    const identity = discoveryCardIdentity(skill.key);
-    const existing = installedByKey.get(identity);
-    if (!existing || new Date(skill.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
-      installedByKey.set(identity, skill);
-    }
-  }
-
-  const catalogByKey = new Map<string, CatalogSkill>();
-  for (const entry of catalog) {
-    const identity = discoveryCardIdentity(entry.key);
-    if (!catalogByKey.has(identity)) catalogByKey.set(identity, entry);
-  }
-
+  const catalogByKey = new Map(catalog.map((entry) => [entry.key, entry]));
   const cards: DiscoveryCard[] = [];
   const installedKeys = new Set<string>();
 
-  for (const skill of installedByKey.values()) {
-    const identity = discoveryCardIdentity(skill.key);
-    installedKeys.add(identity);
-    const catalogMatch = catalogByKey.get(identity) ?? null;
+  for (const skill of installed) {
+    installedKeys.add(skill.key);
+    const catalogMatch = catalogByKey.get(skill.key) ?? null;
     const required = skill.catalogKind === "bundled" || catalogMatch?.kind === "bundled";
     cards.push({
       key: skill.key,
@@ -712,12 +696,11 @@ export function buildDiscoveryCards(
       updatedAt: new Date(skill.updatedAt).getTime() || 0,
       sourceBadge: skill.sourceBadge,
       sourceLabel: skill.sourceLabel,
-      sourceKind: skill.catalogKind ?? catalogMatch?.kind ?? null,
     });
   }
 
-  for (const [identity, entry] of catalogByKey) {
-    if (installedKeys.has(identity)) continue;
+  for (const entry of catalog) {
+    if (installedKeys.has(entry.key)) continue;
     const required = entry.kind === "bundled";
     cards.push({
       key: entry.key,
@@ -742,7 +725,6 @@ export function buildDiscoveryCards(
       updatedAt: 0,
       sourceBadge: "catalog",
       sourceLabel: entry.packageName ?? "Catalog",
-      sourceKind: entry.kind,
     });
   }
 
@@ -750,7 +732,17 @@ export function buildDiscoveryCards(
 }
 
 function cardsForTab(cards: DiscoveryCard[], tab: DiscoveryTab): DiscoveryCard[] {
-  return tab === "installed" ? cards.filter((card) => card.installed) : cards;
+  switch (tab) {
+    case "installed":
+      return cards.filter((card) => card.installed);
+    case "catalog":
+      return cards.filter((card) => card.catalogRef != null);
+    case "bundled":
+      return cards.filter((card) => card.required);
+    case "all":
+    default:
+      return cards;
+  }
 }
 
 function sortDiscoveryCards(cards: DiscoveryCard[], sort: DiscoverySort, demoteRequired: boolean): DiscoveryCard[] {
@@ -830,8 +822,6 @@ function SkillCard({
   onCreateFolderAndMove?: (card: DiscoveryCard) => void;
   onOpenMove?: (card: DiscoveryCard) => void;
 }) {
-  const source = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
-  const SourceIcon = source.icon;
   const badgeFolder = showFolderBadge && card.installed
     ? (card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null)
     : undefined;
@@ -882,6 +872,16 @@ function SkillCard({
             </div>
           ) : null}
         </div>
+        {/* Where the skill came from (PAP-10907 E); native title gives a hover hint. */}
+        {(() => {
+          const meta = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
+          const SourceIcon = meta.icon;
+          return (
+            <span className="shrink-0 text-muted-foreground" title={`From ${meta.label}`} aria-label={`From ${meta.label}`}>
+              <SourceIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+          );
+        })()}
         {canMove && folders && onMove && onCreateFolderAndMove ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -934,15 +934,9 @@ function SkillCard({
       </p>
 
       <div className="mt-auto pt-3">
-        {/* Installation and agent enablement are separate states. */}
+        {/* Stats: installed agents · stars · forks — stars/forks only when > 0. */}
         <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-          <span>
-            {card.installed
-              ? card.agentCount > 0
-                ? `Enabled for ${card.agentCount} ${card.agentCount === 1 ? "agent" : "agents"}`
-                : "Not enabled for any agents"
-              : "Available to install"}
-          </span>
+          <span>{card.agentCount} {card.agentCount === 1 ? "agent" : "agents"}</span>
           {card.starCount > 0 ? (
             <>
               <span aria-hidden="true">·</span>
@@ -958,14 +952,10 @@ function SkillCard({
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {card.installed ? (
-            <Badge variant="secondary" className="text-(length:--text-nano)">
+            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
               Installed
             </Badge>
           ) : null}
-          <Badge variant="outline" className="max-w-full text-(length:--text-nano) text-muted-foreground">
-            <SourceIcon className="h-3 w-3" aria-hidden="true" />
-            <span className="truncate">{source.label}</span>
-          </Badge>
           {card.categories.slice(0, 2).map((category) => (
             <SkillCategoryChip key={category} label={category} />
           ))}
@@ -973,10 +963,6 @@ function SkillCard({
             <Badge variant="outline" className="ml-auto border-border bg-muted/60 text-(length:--text-nano) text-muted-foreground">
               <Lock className="h-3 w-3" aria-hidden="true" />
               Bundled
-            </Badge>
-          ) : card.sourceKind === "optional" ? (
-            <Badge variant="outline" className="ml-auto text-(length:--text-nano) text-muted-foreground">
-              Optional
             </Badge>
           ) : null}
         </div>
@@ -1030,9 +1016,9 @@ function CategoryNav({
 }
 
 export function DiscoveryGrid({
-  collectionView,
-  navigation,
   tab,
+  tabCounts,
+  onTabChange,
   categories,
   categoryTotal,
   activeCategory,
@@ -1045,13 +1031,11 @@ export function DiscoveryGrid({
   onOpenCard,
   loading,
   error,
-  onRetry,
-  retrying = false,
   totalCount,
   onCreate,
   onImport,
   onImportFromProject,
-  onBrowseDiscover,
+  onBrowseCatalog,
   onScan,
   scanPending,
   scanStatus,
@@ -1078,11 +1062,10 @@ export function DiscoveryGrid({
   onEnsureMyFolder,
   onOpenMoveCard,
   folderNudgeStorageKey,
-  showBrowseRails = true,
 }: {
-  collectionView?: "authored";
-  navigation?: React.ReactNode;
   tab: DiscoveryTab;
+  tabCounts: Record<DiscoveryTab, number>;
+  onTabChange: (tab: DiscoveryTab) => void;
   categories: DiscoveryCategory[];
   categoryTotal: number;
   activeCategory: string | null;
@@ -1094,16 +1077,13 @@ export function DiscoveryGrid({
   cards: DiscoveryCard[];
   onOpenCard: (card: DiscoveryCard) => void;
   loading: boolean;
-  /** The query error when the skill list could not load; null while data (even stale) is available. */
-  error: unknown;
-  onRetry?: () => void;
-  retrying?: boolean;
+  error: string | null;
   totalCount: number;
   onCreate: () => void;
   onImport: () => void;
   onImportFromProject: () => void;
-  onBrowseDiscover: () => void;
-  onScan: (projectId?: string) => void;
+  onBrowseCatalog: () => void;
+  onScan: () => void;
   scanPending: boolean;
   scanStatus: string | null;
   folderResult?: FolderListResult | null;
@@ -1133,46 +1113,22 @@ export function DiscoveryGrid({
   onOpenMoveCard?: (card: DiscoveryCard) => void;
   /** When set and no folders exist yet, show the dismissible all-unfiled nudge (ux-spec §6.3). */
   folderNudgeStorageKey?: string;
-  /** Category/folder navigation stays available in production, but the Streamlined UI relies on search and scrolling. */
-  showBrowseRails?: boolean;
 }) {
-  const installedView = tab === "installed";
-  const authoredView = collectionView === "authored";
-  const viewTitle = authoredView ? "My Skills" : installedView ? "Installed skills" : "Discover skills";
-  const viewDescription = authoredView
-    ? "Skills you can open, edit and test in Studio."
-    : installedView
-    ? "Skills available to this organization."
-    : "Browse skills from every available source.";
-  const searchLabel = authoredView ? "Search my skills" : installedView ? "Search installed skills" : "Search discoverable skills";
   // Source filter (github / skills.sh / local / …) lives in the grid so it
   // narrows whatever the parent already filtered by tab/category/search (PAP-10907 E).
   const [sourceBadgeFilter, setSourceBadgeFilter] = useState<string>("all");
   const availableSources = useMemo(() => {
-    const facets = new Map<string, string>();
-    for (const card of cards) {
-      if (card.sourceKind) {
-        facets.set(`kind:${card.sourceKind}`, card.sourceKind === "bundled" ? "Bundled" : "Optional");
-      }
-      if (card.sourceBadge) {
-        facets.set(`badge:${card.sourceBadge}`, sourceMeta(card.sourceBadge, null).label);
-      }
-    }
-    return Array.from(facets, ([value, label]) => ({ value, label }))
-      .sort((left, right) => left.label.localeCompare(right.label));
+    const set = new Set<string>();
+    for (const card of cards) if (card.sourceBadge) set.add(card.sourceBadge);
+    return Array.from(set).sort();
   }, [cards]);
   useEffect(() => {
-    if (sourceBadgeFilter !== "all" && !availableSources.some((source) => source.value === sourceBadgeFilter)) {
+    if (sourceBadgeFilter !== "all" && !availableSources.includes(sourceBadgeFilter)) {
       setSourceBadgeFilter("all");
     }
   }, [availableSources, sourceBadgeFilter]);
   const sourceFilteredCards = useMemo(
-    () => sourceBadgeFilter === "all"
-      ? cards
-      : cards.filter((card) => {
-          const [facet, value] = sourceBadgeFilter.split(":", 2);
-          return facet === "kind" ? card.sourceKind === value : card.sourceBadge === value;
-        }),
+    () => (sourceBadgeFilter === "all" ? cards : cards.filter((card) => card.sourceBadge === sourceBadgeFilter)),
     [cards, sourceBadgeFilter],
   );
   const sourceFilterActive = sourceBadgeFilter !== "all";
@@ -1181,15 +1137,7 @@ export function DiscoveryGrid({
   );
   // The nested folder tree owns the left rail whenever folders (reserved roots
   // or user folders) exist for the installed view.
-  const showFolderRail = Boolean(
-    showBrowseRails && folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady,
-  );
-  const activeProjectFolder = useMemo(() => {
-    if (!folderResult || folderSelection === "all" || folderSelection === "unfiled") return null;
-    const folder = folderResult.folders.find((candidate) => candidate.id === folderSelection);
-    return folder?.systemKey?.startsWith("project:") ? folder : null;
-  }, [folderResult, folderSelection]);
-  const activeProjectId = activeProjectFolder?.systemKey?.slice("project:".length) || null;
+  const showFolderRail = Boolean(folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady);
 
   return (
     // On desktop the store is bounded to the viewport so the category sidebar
@@ -1215,48 +1163,146 @@ export function DiscoveryGrid({
           />
         </div>
       ) : null}
-      {showBrowseRails ? (
-        <aside className={cn("hidden w-60 shrink-0 flex-col overflow-hidden border-r border-border md:flex", showFolderRail && "md:hidden")}>
-          <div className="border-b border-border px-4 py-4">
-            <h2 className="text-sm font-semibold text-foreground">Browse by category</h2>
-            <p className="text-xs text-muted-foreground">
-              Filter {installedView ? "installed" : "discoverable"} skills.
-            </p>
-          </div>
-          <div className="px-4 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-            Categories
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto pb-4">
-            <CategoryNav
-              categories={categories}
-              total={categoryTotal}
-              active={activeCategory}
-              onSelect={onCategoryChange}
-            />
-          </div>
-        </aside>
-      ) : null}
+      {/* Secondary category sidebar — the main app nav collapses to a rail while
+          this is present (handled in Layout). */}
+      <aside className={cn("hidden w-60 shrink-0 flex-col overflow-hidden border-r border-border md:flex", showFolderRail && "md:hidden")}>
+        <div className="border-b border-border px-4 py-4">
+          <h2 className="text-sm font-semibold text-foreground">Skills Store</h2>
+          <p className="text-xs text-muted-foreground">Discover, install, fork, share</p>
+        </div>
+        <div className="px-4 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
+          Categories
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+          <CategoryNav
+            categories={categories}
+            total={categoryTotal}
+            active={activeCategory}
+            onSelect={onCategoryChange}
+          />
+        </div>
+      </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Search + sort + actions */}
-        <SkillsToolbar
-          navigation={navigation}
-          viewTitle={viewTitle} viewDescription={viewDescription} searchLabel={searchLabel}
-          search={search} onSearchChange={onSearchChange} sort={sort} onSortChange={onSortChange}
-          availableSources={availableSources} sourceBadgeFilter={sourceBadgeFilter} setSourceBadgeFilter={setSourceBadgeFilter}
-          onScan={onScan} scanPending={scanPending} onCreate={onCreate} onBrowseDiscover={onBrowseDiscover}
-          onImport={onImport} onImportFromProject={onImportFromProject}
-          onCreateFolder={!showFolderRail ? onCreateFolder : undefined}
-          selectMode={selectMode} onToggleSelectMode={onToggleSelectMode}
-          folderControl={showBrowseRails && folderResult && onFolderSelect ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+          <div className="flex h-9 min-w-(--sz-12rem) flex-1 items-center gap-2 rounded-md border border-border px-2.5">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <input
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder="Search skills, authors, categories…"
+              className="h-full w-full bg-transparent text-base outline-none placeholder:text-muted-foreground sm:text-sm"
+            />
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <span className="text-muted-foreground">Sort</span>
+                <span className="ml-1.5">{DISCOVERY_SORT_LABELS[sort]}</span>
+                <ChevronDown className="ml-1 h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup value={sort} onValueChange={(value) => onSortChange(value as DiscoverySort)}>
+                {DISCOVERY_SORTS.map((option) => (
+                  <DropdownMenuRadioItem key={option} value={option}>
+                    {DISCOVERY_SORT_LABELS[option]}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {availableSources.length > 1 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <span className="text-muted-foreground">Source</span>
+                  <span className="ml-1.5 capitalize">
+                    {sourceBadgeFilter === "all" ? "All" : sourceMeta(sourceBadgeFilter as CompanySkillSourceBadge, null).label}
+                  </span>
+                  <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuRadioGroup value={sourceBadgeFilter} onValueChange={setSourceBadgeFilter}>
+                  <DropdownMenuRadioItem value="all">All sources</DropdownMenuRadioItem>
+                  {availableSources.map((badge) => (
+                    <DropdownMenuRadioItem key={badge} value={badge}>
+                      {sourceMeta(badge as CompanySkillSourceBadge, null).label}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onScan}
+            disabled={scanPending}
+            title="Scan project workspaces for skills"
+          >
+            <RefreshCw className={cn("h-4 w-4", scanPending && "animate-spin")} />
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/skills/studio">
+              <FlaskConical className="h-3.5 w-3.5" />
+              Studio
+            </Link>
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="default">
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                New
+                <ChevronDown className="ml-1 h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={onCreate}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Create new skill
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onBrowseCatalog}>
+                <Boxes className="mr-2 h-4 w-4" />
+                Browse catalog
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onImport}>
+                <Globe className="mr-2 h-4 w-4" />
+                Import from path or URL
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onImportFromProject}>
+                <FolderSearch className="mr-2 h-4 w-4" />
+                Import skills from project
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {folderResult && onFolderSelect ? (
             <div className="w-full md:hidden">
-              <FolderChip result={folderResult} selection={folderSelection} allLabel="All skills" onClick={onOpenMobileFolders ?? (() => undefined)} />
+              <FolderChip
+                result={folderResult}
+                selection={folderSelection}
+                allLabel="All skills"
+                onClick={onOpenMobileFolders ?? (() => undefined)}
+              />
             </div>
-          ) : undefined}
-        />
+          ) : null}
+          {onCreateFolder ? (
+            <Button variant="outline" size="sm" onClick={onCreateFolder}>
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              New folder
+            </Button>
+          ) : null}
+          {onToggleSelectMode ? (
+            <Button variant="ghost" size="sm" onClick={onToggleSelectMode}>
+              {selectMode ? "Done" : "Select"}
+            </Button>
+          ) : null}
+        </div>
 
         {/* Mobile category selector (sidebar is hidden below md) */}
-        {showBrowseRails && categories.length > 0 ? (
+        {categories.length > 0 ? (
           <div className="border-b border-border px-4 py-2 md:hidden">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1282,25 +1328,36 @@ export function DiscoveryGrid({
           </div>
         ) : null}
 
+        {/* Tab strip — Bundled/required lives at the end */}
+        <div className="border-b border-border px-4">
+          <Tabs value={tab} onValueChange={(value) => onTabChange(value as DiscoveryTab)}>
+            <TabsList variant="line" className="p-0">
+              <TabsTrigger value="all" className="px-3">
+                <span>All</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.all}</span>
+              </TabsTrigger>
+              <TabsTrigger value="installed" className="px-3">
+                <span>Installed</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.installed}</span>
+              </TabsTrigger>
+              <TabsTrigger value="catalog" className="px-3">
+                <span>Catalog</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.catalog}</span>
+              </TabsTrigger>
+              <TabsTrigger value="bundled" className="px-3">
+                <span>Bundled</span>
+                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.bundled}</span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+
         {/* Grid body */}
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {scanStatus ? <p className="mb-3 text-xs text-muted-foreground">{scanStatus}</p> : null}
           {showFolderRail && onFolderSelect ? (
-            <div className="mb-4 flex items-center justify-between gap-2">
+            <div className="mb-4">
               <FolderBreadcrumb result={folderResult} selection={folderSelection} onSelect={onFolderSelect} />
-              {activeProjectFolder && activeProjectId ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onScan(activeProjectId)}
-                  disabled={scanPending}
-                  aria-label={`Refresh ${activeProjectFolder.name} project skills`}
-                  title={`Refresh skills from ${activeProjectFolder.name}`}
-                >
-                  <RefreshCw className={cn("h-3.5 w-3.5", scanPending && "animate-spin")} />
-                  Refresh
-                </Button>
-              ) : null}
             </div>
           ) : null}
           {folderNudgeStorageKey && onCreateFolder && folderResult && folderResult.folders.length === 0 && !loading && cards.length > 0 ? (
@@ -1322,34 +1379,27 @@ export function DiscoveryGrid({
               />
             </div>
           ) : null}
-          {error ? (
-            <div className="py-6">
-              <QueryErrorState error={error} action="load skills" onRetry={onRetry} retrying={retrying} />
-            </div>
-          ) : loading ? (
+          {loading ? (
             <PageSkeleton variant="list" />
+          ) : error ? (
+            <div className="py-6 text-sm text-destructive">{error}</div>
           ) : sourceFilteredCards.length === 0 ? (
             <div className="py-12">
               <EmptyState
                 icon={LayoutGrid}
                 message={
                   totalCount === 0
-                    ? installedView
-                      ? authoredView ? "No skills yet. Create a skill to start working in Studio." : "No installed skills yet. Discover a skill or create one."
-                      : "No skills are available to discover yet."
+                    ? "No skills yet. Create one or install from the catalog."
                     : search || activeCategory || sourceFilterActive
                       ? "No skills match your filters."
-                      : "No skills in this view yet."
+                      : "No skills in this tab yet."
                 }
               />
               {totalCount === 0 ? (
                 <div className="mt-3 flex flex-col items-center gap-2">
-                  {installedView ? (
-                    <Button size="sm" onClick={onBrowseDiscover}>
-                      <Compass className="mr-1.5 h-3.5 w-3.5" /> Discover skills
-                    </Button>
-                  ) : null}
-                  <Button size="sm" variant="outline" asChild><Link to="/skills/sources/new">Import from GitHub</Link></Button>
+                  <Button size="sm" onClick={onBrowseCatalog}>
+                    <Boxes className="mr-1.5 h-3.5 w-3.5" /> Browse catalog
+                  </Button>
                   <Button size="sm" variant="ghost" onClick={onCreate}>
                     Create a skill
                   </Button>
@@ -1571,7 +1621,7 @@ function NewSkillWizard({
             <span className="text-muted-foreground">Slug</span>
             <span className="font-mono">{effectiveSlug || "skill"}</span>
             <span className="text-muted-foreground">Scope</span>
-            <span>{draft.sharingScope === "private" ? "Private" : "Organization"}</span>
+            <span>{draft.sharingScope === "private" ? "Private" : "Company"}</span>
             <span className="text-muted-foreground">Categories</span>
             <span>{draft.categories.length ? draft.categories.join(", ") : "none"}</span>
           </div>
@@ -1588,9 +1638,9 @@ function NewSkillWizard({
                     draft.sharingScope === scope ? "border-foreground bg-accent/50" : "border-border",
                   )}
                 >
-                  <span className="block font-medium">{scope === "company" ? "Organization" : "Private"}</span>
+                  <span className="block font-medium">{scope === "company" ? "Company" : "Private"}</span>
                   <span className="mt-1 block text-xs text-muted-foreground">
-                    {scope === "company" ? "Visible inside this organization." : "Only visible in your library."}
+                    {scope === "company" ? "Visible inside this company." : "Only visible in your library."}
                   </span>
                 </button>
               ))}
@@ -1797,14 +1847,13 @@ function CatalogDetailPane({
   packageVersion: string | null;
   installedSkill: CompanySkillListItem | null;
   installedSkillId: string | null;
-  fileQuery: QueryViewSource<CatalogSkillFileDetail> & { isLoading: boolean };
+  fileQuery: { data: CatalogSkillFileDetail | undefined; isLoading: boolean; error: unknown };
   selectedPath: string;
   onInstall: () => void;
   onUpdate: () => void;
   onOpenInstalled: (skillId: string) => void;
   loadingPrimaryAction: boolean;
 }) {
-  const fileView = useQueryView(fileQuery);
   if (!skill) {
     return <EmptyState icon={Boxes} message="Select a catalog skill to inspect." />;
   }
@@ -1928,10 +1977,10 @@ function CatalogDetailPane({
       </div>
 
       <div className="min-h-(--sz-400px) px-5 py-5">
-        {fileQuery.isLoading || fileView.kind === "reconnecting" ? (
+        {fileQuery.isLoading ? (
           <PageSkeleton variant="detail" />
-        ) : fileView.kind === "error" ? (
-          <QueryErrorState error={fileQuery.error} action="load the file" onRetry={fileView.retry} retrying={fileView.isFetching} />
+        ) : fileQuery.error ? (
+          <div className="text-sm text-destructive">{fileQuery.error instanceof Error ? fileQuery.error.message : "Failed to load file"}</div>
         ) : !fileQuery.data ? (
           <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
         ) : fileQuery.data.markdown ? (
@@ -1946,17 +1995,7 @@ function CatalogDetailPane({
   );
 }
 
-// Installing only adds a skill to the company library; an agent can use it only
-// once it is also enabled for that agent. Pre-select every agent that can
-// receive the skill so "install" defaults to a state where the skill is
-// actually usable, instead of a library row no agent has.
-export function defaultInstallAgentSelection(
-  agents: Array<Pick<AttachAgentOption, "id" | "supportsSkills" | "required">>,
-): Set<string> {
-  return new Set(agents.filter((agent) => agent.supportsSkills && !agent.required).map((agent) => agent.id));
-}
-
-export function InstallPreviewDialog({
+function InstallPreviewDialog({
   open,
   onOpenChange,
   skill,
@@ -1966,7 +2005,6 @@ export function InstallPreviewDialog({
   defaultSlug,
   defaultForce,
   defaultAction,
-  agents,
   isPending,
   error,
   onConfirm,
@@ -1980,21 +2018,13 @@ export function InstallPreviewDialog({
   defaultSlug: string | null;
   defaultForce: boolean;
   defaultAction: "install" | "update" | "replace";
-  agents: AttachAgentOption[];
   isPending: boolean;
   error: string | null;
-  onConfirm: (input: { slug: string | null; force: boolean; agentIds: string[] }) => void;
+  onConfirm: (input: { slug: string | null; force: boolean }) => void;
 }) {
   const [slug, setSlug] = useState<string>("");
   const [force, setForce] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
-  // Whether the user changed the agent selection this open. Until then the
-  // selection keeps tracking the default: the agents query may resolve after
-  // the dialog opens, and a one-shot seed would freeze an empty selection and
-  // install the skill for nobody.
-  const [selectionTouched, setSelectionTouched] = useState(false);
-  const wasOpenRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -2002,18 +2032,6 @@ export function InstallPreviewDialog({
     setForce(defaultForce);
     setAdvancedOpen(defaultAction === "replace" || defaultForce);
   }, [open, defaultSlug, defaultForce, defaultAction]);
-
-  useEffect(() => {
-    if (open && !wasOpenRef.current) setSelectionTouched(false);
-    wasOpenRef.current = open;
-  }, [open]);
-
-  // Track the default selection while the dialog is open and untouched; the
-  // user's first change takes over and background refetches never clobber it.
-  useEffect(() => {
-    if (!open || selectionTouched) return;
-    setSelectedAgentIds(defaultAction === "install" ? defaultInstallAgentSelection(agents) : new Set());
-  }, [open, selectionTouched, defaultAction, agents]);
 
   if (!skill) return null;
 
@@ -2099,33 +2117,6 @@ export function InstallPreviewDialog({
             </div>
           ) : null}
 
-          {defaultAction === "install" ? (
-            <div className="rounded-md border border-border p-3">
-              <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">Enable for agents</div>
-              <p className="mb-2 text-xs text-muted-foreground">
-                Installing adds the skill to the organization library. Agents can only use it once it is enabled for them.
-              </p>
-              <AgentMultiSelect
-                agents={agents}
-                selectedAgentIds={selectedAgentIds}
-                onChange={(next) => {
-                  setSelectionTouched(true);
-                  setSelectedAgentIds(next);
-                }}
-                showSelectionPreview={false}
-                emptyMessage="No agents in this organization support skills yet."
-                isAgentDisabled={(agent) => {
-                  const option = agent as AttachAgentOption;
-                  return option.required || !option.supportsSkills;
-                }}
-                getDescription={(agent) => {
-                  const option = agent as AttachAgentOption;
-                  return `${option.adapterType}${option.required ? " · required" : ""}${!option.supportsSkills ? " · skills not supported" : ""}`;
-                }}
-              />
-            </div>
-          ) : null}
-
           <button
             type="button"
             onClick={() => setAdvancedOpen((value) => !value)}
@@ -2160,13 +2151,7 @@ export function InstallPreviewDialog({
           </Button>
           <Button
             variant={confirmVariant}
-            onClick={() =>
-              onConfirm({
-                slug: slug.trim().length > 0 ? slug.trim() : null,
-                force,
-                agentIds: defaultAction === "install" ? Array.from(selectedAgentIds) : [],
-              })
-            }
+            onClick={() => onConfirm({ slug: slug.trim().length > 0 ? slug.trim() : null, force })}
             disabled={isPending}
           >
             {confirmLabel}
@@ -2198,7 +2183,7 @@ function AttachAgentsPopover({
 }: {
   agents: AttachAgentOption[];
   attachedAgentIds: string[];
-  versions: CompanySkillVersionSummary[];
+  versions: CompanySkillVersion[];
   selectedVersionId: string | null;
   pending: boolean;
   onSubmit: (nextIds: string[], versionId: string | null) => void;
@@ -2243,7 +2228,7 @@ function AttachAgentsPopover({
           </select>
         </div>
       ) : null}
-      emptyMessage={eligible.length === 0 ? "No agents in this organization support skills yet." : "No agents yet."}
+      emptyMessage={eligible.length === 0 ? "No agents in this company support skills yet." : "No agents yet."}
       isAgentDisabled={(agent) => {
         const option = agent as AttachAgentOption;
         return option.required || !option.supportsSkills;
@@ -2492,12 +2477,12 @@ function currentVersionSelection(detail: CompanySkillDetail | null | undefined) 
   return selected ?? null;
 }
 
-function versionLabel(version: CompanySkillVersionSummary | null | undefined) {
+function versionLabel(version: CompanySkillVersion | null | undefined) {
   if (!version) return "Latest";
   return `v${version.revisionNumber}${version.label ? ` · ${version.label}` : ""}`;
 }
 
-export function getSkillVersionDiffSelection(versions: CompanySkillVersionSummary[], targetVersionId?: string | null) {
+export function getSkillVersionDiffSelection(versions: CompanySkillVersion[], targetVersionId?: string | null) {
   const sorted = [...versions].sort((a, b) => b.revisionNumber - a.revisionNumber);
   const right = targetVersionId
     ? sorted.find((version) => version.id === targetVersionId) ?? null
@@ -2522,27 +2507,15 @@ function SkillVersionDiffDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  versions: CompanySkillVersionSummary[];
+  versions: CompanySkillVersion[];
   leftVersionId: string | null;
   rightVersionId: string | null;
   onLeftVersionChange: (id: string | null) => void;
   onRightVersionChange: (id: string | null) => void;
 }) {
   const sorted = [...versions].sort((a, b) => b.revisionNumber - a.revisionNumber);
-  const selectedLeft = sorted.find((version) => version.id === leftVersionId);
-  const selectedRight = sorted.find((version) => version.id === rightVersionId);
-  const leftQuery = useQuery({
-    queryKey: [...queryKeys.companySkills.versions(selectedLeft?.companyId ?? "", selectedLeft?.companySkillId ?? ""), leftVersionId],
-    queryFn: () => companySkillsApi.version(selectedLeft!.companyId, selectedLeft!.companySkillId, selectedLeft!.id),
-    enabled: open && Boolean(selectedLeft),
-  });
-  const rightQuery = useQuery({
-    queryKey: [...queryKeys.companySkills.versions(selectedRight?.companyId ?? "", selectedRight?.companySkillId ?? ""), rightVersionId],
-    queryFn: () => companySkillsApi.version(selectedRight!.companyId, selectedRight!.companySkillId, selectedRight!.id),
-    enabled: open && Boolean(selectedRight),
-  });
-  const left = leftQuery.data ?? null;
-  const right = rightQuery.data ?? null;
+  const left = sorted.find((version) => version.id === leftVersionId) ?? null;
+  const right = sorted.find((version) => version.id === rightVersionId) ?? null;
   const allPaths = useMemo(() => {
     const paths = new Set<string>();
     for (const file of left?.fileInventory ?? []) paths.add(file.path);
@@ -2584,8 +2557,6 @@ function SkillVersionDiffDialog({
         <div className="flex flex-wrap items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>Diff · skill files</DialogTitle>
-            {(leftQuery.error || rightQuery.error) && <p role="alert" className="text-sm text-destructive">{(leftQuery.error ?? rightQuery.error)?.message}</p>}
-            {(leftQuery.isLoading || rightQuery.isLoading) && <p className="text-sm text-muted-foreground">Loading selected versions…</p>}
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-2">
@@ -2677,7 +2648,7 @@ function SkillLocationCard({
   folderPath: string | null | undefined;
   onMove?: () => void;
 }) {
-  const { copied, failed, copy } = useCopyAction();
+  const [copied, setCopied] = useState(false);
   const canonical = folderPath && folderPath.length > 0 ? folderPath : "Unfiled";
   return (
     <section>
@@ -2691,11 +2662,14 @@ function SkillLocationCard({
           size="sm"
           variant="outline"
           onClick={() => {
-            void copy(canonical);
+            void navigator.clipboard?.writeText(canonical).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            });
           }}
         >
           <Copy className="mr-1.5 h-3.5 w-3.5" />
-          {copied ? "Copied" : failed ? "Copy failed" : "Copy path"}
+          {copied ? "Copied" : "Copy path"}
         </Button>
         {onMove ? (
           <Button size="sm" variant="outline" onClick={onMove}>
@@ -2838,7 +2812,7 @@ export function SkillDetailPage({
   setDraft: (value: string) => void;
   onSave: () => void;
   savePending: boolean;
-  versions: CompanySkillVersionSummary[];
+  versions: CompanySkillVersion[];
   versionsLoading: boolean;
   attachAgents: AttachAgentOption[];
   onSubmitAttach: (ids: string[], versionId: string | null) => void;
@@ -2898,7 +2872,7 @@ export function SkillDetailPage({
 
   // Track unsaved edits so we can float a save bar and warn before the page is
   // unloaded with a dirty draft (PAP-10907 J).
-  const savedFileContent = file?.markdown ? splitFrontmatter(file.content).body : file?.content ?? "";
+  const savedFileContent = file?.content ?? "";
   const isDirty = editMode && Boolean(file?.editable) && draft !== savedFileContent;
   useEffect(() => {
     if (!isDirty) return;
@@ -2909,11 +2883,6 @@ export function SkillDetailPage({
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
-
-  const resolveFileLinkHref = useCallback(
-    (href: string) => detail ? skillFileLinkHref(detail, selectedPath, href, routeSkills ?? [detail]) : null,
-    [detail, selectedPath, routeSkills],
-  );
 
   if (!detail) {
     return loading ? <PageSkeleton variant="detail" /> : <EmptyState icon={Boxes} message="Skill not found." />;
@@ -3002,7 +2971,7 @@ export function SkillDetailPage({
                 editMode ? (
                   <>
                     <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>Cancel</Button>
-                    <Button size="sm" onClick={onSave} disabled={savePending || !isDirty}>
+                    <Button size="sm" onClick={onSave} disabled={savePending}>
                       <Save className="mr-1.5 h-3.5 w-3.5" />
                       {savePending ? "Saving..." : "Save"}
                     </Button>
@@ -3021,7 +2990,7 @@ export function SkillDetailPage({
                   title={skill.editableReason ?? "Fork this skill to edit it."}
                 >
                   <GitFork className="mr-1.5 h-3.5 w-3.5" />
-                  {skill.sourceType === "github" ? "Make a copy" : "Fork"}
+                  Fork
                 </Button>
               ) : null}
             </div>
@@ -3030,7 +2999,7 @@ export function SkillDetailPage({
             <PageSkeleton variant="detail" />
           ) : !file ? (
             <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
-          ) : file.encoding === "base64" ? <SkillBinaryFile file={file} /> : editMode && file.editable ? (
+          ) : editMode && file.editable ? (
             file.markdown ? (
               <MarkdownEditor value={draft} onChange={setDraft} bordered={false} className="min-h-(--sz-520px)" />
             ) : (
@@ -3041,13 +3010,7 @@ export function SkillDetailPage({
               />
             )
           ) : file.markdown && viewMode === "preview" ? (
-            <MarkdownBody
-              softBreaks={false}
-              linkIssueReferences={false}
-              resolveLinkHref={resolveFileLinkHref}
-            >
-              {body}
-            </MarkdownBody>
+            <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
           ) : (
             <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
               <code>{file.content}</code>
@@ -3094,7 +3057,7 @@ export function SkillDetailPage({
                   <span>Read only</span>
                   <Button type="button" variant="outline" size="xs" onClick={onFork}>
                     <GitFork className="mr-1 h-3 w-3" />
-                    {skill.sourceType === "github" ? "Make a copy" : "Fork"}
+                    Fork
                   </Button>
                 </>
               )}
@@ -3191,7 +3154,7 @@ export function SkillDetailPage({
               const meta = attachAgentMetaById.get(agent.id);
               return (
                 <div key={agent.id} className="flex items-center gap-3 border-b border-border py-3 text-sm last:border-b-0">
-                  <AgentAvatar agent={meta} size={16} className="h-4 w-4 shrink-0 text-muted-foreground"/>
+                  <AgentIcon icon={meta?.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate font-medium">{agent.name}</span>
@@ -3315,7 +3278,7 @@ export function SkillDetailPage({
                     <span className="hidden sm:inline">{detail.attachedAgentCount === 1 ? "install" : "installs"}</span>
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>Agents in this organization that currently have this skill installed.</TooltipContent>
+                <TooltipContent>Agents in this company that currently have this skill installed.</TooltipContent>
               </Tooltip>
               <button
                 type="button"
@@ -3335,7 +3298,7 @@ export function SkillDetailPage({
                 title="Fork this skill"
               >
                 <GitFork className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">{skill.sourceType === "github" ? "Make a copy" : "Fork"}</span>
+                <span className="hidden sm:inline">Fork</span>
                 <span className="font-medium text-foreground">{detail.forkCount}</span>
               </button>
             </div>
@@ -3364,7 +3327,6 @@ export function SkillDetailPage({
         </main>
 
         <aside className="min-w-0 space-y-6 border-t border-border pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
-          <SkillSourceProvenance skill={detail} />
           <SkillLocationCard
             folderPath={folderDisplayPath ?? skillFolderPathDisplayFallback(detail.folderPath)}
             onMove={onMoveToFolder}
@@ -3400,7 +3362,7 @@ export function SkillDetailPage({
                         to={`/agents/${agent.urlKey}/skills`}
                         className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm no-underline hover:bg-accent/40"
                       >
-                        <AgentAvatar agent={meta} size={16} className="h-4 w-4 shrink-0 text-muted-foreground"/>
+                        <AgentIcon icon={meta?.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
                         {meta?.paused ? (
                           <Pause className="h-3 w-3 shrink-0 text-amber-500" aria-label="Paused" />
@@ -3425,7 +3387,7 @@ export function SkillDetailPage({
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Source</div>
             {githubSource ? (
               <div className="flex items-start gap-2 text-sm">
-                <GithubIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <Github className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div className="min-w-0">
                   <div className="text-foreground">{githubLabel}</div>
                   <a
@@ -3573,7 +3535,7 @@ export function SkillDetailPage({
                 disabled={updateSettingsPending}
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
               >
-                <option value="company">Organization — visible inside this organization</option>
+                <option value="company">Company — visible inside this company</option>
                 <option value="private">Private — only visible in your library</option>
               </select>
               <p className="text-xs text-muted-foreground">Public link sharing is coming later.</p>
@@ -3605,7 +3567,7 @@ export function SkillDetailPage({
               <div className="rounded-md border border-destructive/40 p-3">
                 <div className="text-xs font-semibold uppercase tracking-wide text-destructive">Danger zone</div>
                 <div className="mt-2 flex items-center justify-between gap-3">
-                  <p className="min-w-0 text-xs text-muted-foreground">Remove this skill from the organization library.</p>
+                  <p className="min-w-0 text-xs text-muted-foreground">Remove this skill from the company library.</p>
                   <Button
                     variant="destructive"
                     size="sm"
@@ -3674,7 +3636,7 @@ function SkillPane({
   onSave: () => void;
   savePending: boolean;
   attachAgents: AttachAgentOption[];
-  versions: CompanySkillVersionSummary[];
+  versions: CompanySkillVersion[];
   onSubmitAttach: (ids: string[], versionId: string | null) => void;
   attachPending: boolean;
 }) {
@@ -3861,7 +3823,7 @@ function SkillPane({
                     to={`/agents/${agent.urlKey}/skills`}
                     className="group rounded-md border border-transparent p-2 no-underline hover:border-border hover:bg-accent/40"
                   >
-                    <AgentIdentity agent={agent} size="sm" />
+                    <Identity name={agent.name} size="sm" />
                   </Link>
                 ))}
               </div>
@@ -3945,7 +3907,7 @@ function SkillPane({
   );
 }
 
-export function CompanySkills({ collectionView }: { collectionView?: "authored" } = {}) {
+export function CompanySkills() {
   const { "*": routePath } = useParams<{ "*": string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -3954,18 +3916,17 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const adapterCaps = useAdapterCapabilities();
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const policyDenial = useSkillPolicyDenial();
   // Route a failed skill mutation to the persistent policy banner when it is an
   // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
   // the existing transient error toast. This is the core "actionable denial only
-  // for real restrictions" behavior from `doc/company-skill-policy.md` (PAP-13865).
+  // for real restrictions" behavior from §9.10 (PAP-13865).
   const reportSkillError = (error: unknown, title: string, fallbackBody: string, actionLabel?: string) => {
     if (policyDenial.capture(error, actionLabel)) return;
     pushToast({
       tone: "error",
       title,
-      body: error instanceof Error ? describeError(error).body : fallbackBody,
+      body: error instanceof Error && error.message ? error.message : fallbackBody,
     });
   };
   const [skillFilter, setSkillFilter] = useState("");
@@ -3998,7 +3959,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     error: string | null;
   }>({ open: false, catalogSkill: null, conflict: null, defaultSlug: null, defaultForce: false, defaultAction: "install", error: null });
   const [discoverySearch, setDiscoverySearch] = useState("");
-  const [discoverySort, setDiscoverySort] = useState<DiscoverySort>(collectionView === "authored" ? "recent" : "agents");
+  const [discoverySort, setDiscoverySort] = useState<DiscoverySort>("agents");
   const [createError, setCreateError] = useState<string | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importFromProjectOpen, setImportFromProjectOpen] = useState(false);
@@ -4026,17 +3987,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     : "all";
   const selectedCatalogRef = searchParams.get("catalog");
   const tabParam = searchParams.get("tab");
-  const discoveryTab = resolveDiscoveryTab(tabParam ?? (viewParam === "catalog" ? "catalog" : null));
-  const legacyDiscoveryTab = (["all", "installed", "catalog", "bundled"] as const).includes(
-    tabParam as "all" | "installed" | "catalog" | "bundled",
-  )
-    ? (tabParam as "all" | "installed" | "catalog" | "bundled")
-    : "installed";
-  const effectiveDiscoveryTab: DiscoveryTab = collectionView === "authored" ? "installed" : streamlinedUiEnabled
-    ? discoveryTab
-    : legacyDiscoveryTab === "installed"
-      ? "installed"
-      : "discover";
+  const discoveryTab = resolveDiscoveryTab(tabParam);
   const detailTab: SkillDetailTab = (["overview", "files", "versions", "agents"] as SkillDetailTab[]).includes(tabParam as SkillDetailTab)
     ? (tabParam as SkillDetailTab)
     : parsedRoute.hasExplicitFilePath || selectedPath !== "SKILL.md"
@@ -4049,23 +4000,9 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   // selected; selecting either drops into the existing master/detail surfaces.
   const isDiscovery = !isStudioNew && !routeSkillToken && !selectedCatalogRef;
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
-  const browseRailsEnabled = !streamlinedUiEnabled;
-  const visibleDiscoveryCategory = browseRailsEnabled ? discoveryCategory : null;
-  const visibleFolderSelection: FolderSelection = browseRailsEnabled ? folderSelection : "all";
 
   function setDiscoveryTab(tab: DiscoveryTab) {
     setSearchParams((current) => withDiscoveryTab(current, tab));
-  }
-
-  function setLegacyDiscoveryTab(tab: "all" | "installed" | "catalog" | "bundled") {
-    setSearchParams((current) => {
-      const params = new URLSearchParams(current);
-      if (tab === "installed") params.delete("tab");
-      else params.set("tab", tab);
-      params.delete("category");
-      if (tab !== "installed") params.delete("folder");
-      return params;
-    });
   }
 
   function setFolderSelection(selection: FolderSelection) {
@@ -4129,36 +4066,20 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     setCreateError(null);
   }, [isStudioNew, studioForkFromId]);
 
-  // Canonicalize the old split-view and multi-tab URLs into the single Discover
-  // destination while keeping every stale deep link useful.
+  // The old split catalog view no longer exists — catalog/bundled skills now open
+  // as a regular full page keyed by `?catalog=<ref>`. Strip the legacy `view`
+  // param so stale `?view=catalog` deep links land on the new surface (PAP-10907).
   useEffect(() => {
-    if (!streamlinedUiEnabled) return;
-    const legacyTab = searchParams.get("tab");
-    const hasLegacyDiscoveryTab = isDiscovery && ["all", "catalog", "bundled"].includes(legacyTab ?? "");
-    const hasRetiredBrowseFilter = isDiscovery && (searchParams.has("category") || searchParams.has("folder"));
-    if (!searchParams.has("view") && !hasLegacyDiscoveryTab && !hasRetiredBrowseFilter) return;
+    if (!searchParams.has("view")) return;
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
-        if (hasLegacyDiscoveryTab || (next.get("view") === "catalog" && !next.has("tab"))) {
-          next.set("tab", "discover");
-        }
         next.delete("view");
-        if (isDiscovery) {
-          next.delete("category");
-          next.delete("folder");
-        }
         return next;
       },
       { replace: true },
     );
-  }, [isDiscovery, searchParams, setSearchParams, streamlinedUiEnabled]);
-
-  useEffect(() => {
-    if (!streamlinedUiEnabled) return;
-    setSelectMode(false);
-    setSelectedSkillIds([]);
-  }, [streamlinedUiEnabled]);
+  }, [searchParams, setSearchParams]);
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
@@ -4168,10 +4089,9 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   const skillFoldersQuery = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId ?? "", "skill"),
     queryFn: () => foldersApi.list(selectedCompanyId!, "skill"),
-    enabled: Boolean(selectedCompanyId && ((isDiscovery && effectiveDiscoveryTab === "installed") || routeSkillToken)),
+    enabled: Boolean(selectedCompanyId && ((isDiscovery && discoveryTab === "installed") || routeSkillToken)),
   });
 
-  const skillsView = useQueryView(skillsQuery);
   const installedSkills = skillsQuery.data ?? [];
   const routeResolution = useMemo(
     () => resolveSkillRouteToken(routeSkillToken, installedSkills),
@@ -4187,7 +4107,6 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     queryFn: () => companySkillsApi.detail(selectedCompanyId!, selectedSkillId!),
     enabled: Boolean(selectedCompanyId && selectedSkillId),
   });
-  const detailView = useQueryView(detailQuery);
 
   const fileQuery = useQuery({
     queryKey: queryKeys.companySkills.file(selectedCompanyId ?? "", selectedSkillId ?? "", selectedPath),
@@ -4219,15 +4138,15 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
 
   // The writable folder to seed a new skill into when creating from the browser.
   const defaultNewSkillFolderId = useMemo(() => {
-    if (visibleFolderSelection === "all" || visibleFolderSelection === "unfiled") return null;
+    if (folderSelection === "all" || folderSelection === "unfiled") return null;
     const model = treeFromResult(skillFoldersQuery.data);
-    const folder = model.byId.get(visibleFolderSelection);
+    const folder = model.byId.get(folderSelection);
     if (!folder) return null;
     // Never seed into read-only reserved subtrees (Bundled / Projects).
     if (folder.path === "bundled" || folder.path.startsWith("bundled/")) return null;
     if (folder.path === "projects" || folder.path.startsWith("projects/")) return null;
     return folder.id;
-  }, [skillFoldersQuery.data, visibleFolderSelection]);
+  }, [folderSelection, skillFoldersQuery.data]);
 
   const updateStatusQuery = useQuery({
     queryKey: queryKeys.companySkills.updateStatus(selectedCompanyId ?? "", selectedSkillId ?? ""),
@@ -4300,7 +4219,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   useEffect(() => {
     setBreadcrumbs([
       { label: "Skills", href: "/skills" },
-      ...(collectionView === "authored" ? [{ label: "My Skills" }] : isStudioNew
+      ...(isStudioNew
         ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }]
         : activeDetail
           ? skillDetailBreadcrumbs(activeDetail, skillFoldersQuery.data).slice(1)
@@ -4308,7 +4227,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
             ? [{ label: "Detail" }]
             : []),
     ]);
-  }, [activeDetail, collectionView, isStudioNew, routeSkillToken, setBreadcrumbs, skillFoldersQuery.data, studioForkFromId]);
+  }, [activeDetail, isStudioNew, routeSkillToken, setBreadcrumbs, skillFoldersQuery.data, studioForkFromId]);
   const activeFile = fileQuery.data ?? displayedFile;
 
   function routeForSkill(skill: CompanySkillRouteSubject, path?: string | null) {
@@ -4356,21 +4275,13 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   });
 
   const scanProjects = useMutation({
-    mutationFn: (projectId?: string) => companySkillsApi.scanProjects(
-      selectedCompanyId!,
-      projectId ? { projectIds: [projectId] } : {},
-    ),
-    onMutate: (projectId) => {
-      setScanStatusMessage(
-        projectId ? "Refreshing project skills..." : "Scanning project workspaces for skills...",
-      );
+    mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
+    onMutate: () => {
+      setScanStatusMessage("Scanning project workspaces for skills...");
     },
     onSuccess: async (result) => {
       setScanStatusMessage("Refreshing skills list...");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
       const summary = formatProjectScanSummary(result);
       setScanStatusMessage(summary);
       pushToast({
@@ -4412,7 +4323,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       });
     },
     onError: (error) => {
-      const message = describeError(error).body;
+      const message = error instanceof Error ? error.message : "Failed to create skill.";
       setCreateError(message);
       reportSkillError(error, "Skill creation failed", "Failed to create skill.", "Creating a skill");
     },
@@ -4443,7 +4354,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Save failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to save skill file.",
       });
     },
   });
@@ -4466,7 +4377,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Star failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to update star.",
       });
     },
   });
@@ -4493,7 +4404,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Skill settings update failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to update skill settings.",
       });
     },
   });
@@ -4525,8 +4436,6 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     enabled: Boolean(selectedCompanyId),
     staleTime: 60_000,
   });
-  const catalogListView = useQueryView(catalogListQuery);
-  const discoveryFailure = [skillsView, catalogListView].find((view) => view.kind === "error");
 
   const catalogDetailQuery = useQuery({
     queryKey: queryKeys.companySkills.catalogDetail(selectedCatalogRef ?? ""),
@@ -4534,7 +4443,6 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     enabled: Boolean(selectedCompanyId && selectedCatalogRef),
     staleTime: 60_000,
   });
-  const catalogDetailView = useQueryView(catalogDetailQuery);
 
   const catalogFileQuery = useQuery({
     queryKey: queryKeys.companySkills.catalogFile(selectedCatalogRef ?? "", catalogSelectedPath),
@@ -4564,16 +4472,15 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     () => buildDiscoveryCards(installedSkills, catalogListQuery.data ?? []),
     [installedSkills, catalogListQuery.data],
   );
+  const discoveryTabCounts = useMemo(() => ({
+    all: discoveryCards.length,
+    installed: discoveryCards.filter((card) => card.installed).length,
+    catalog: discoveryCards.filter((card) => card.catalogRef != null).length,
+    bundled: discoveryCards.filter((card) => card.required).length,
+  }), [discoveryCards]);
   const discoveryTabCards = useMemo(
-    () => {
-      if (collectionView === "authored") return cardsForTab(discoveryCards, "installed");
-      if (streamlinedUiEnabled) return cardsForTab(discoveryCards, discoveryTab);
-      if (legacyDiscoveryTab === "installed") return discoveryCards.filter((card) => card.installed);
-      if (legacyDiscoveryTab === "catalog") return discoveryCards.filter((card) => card.catalogRef != null);
-      if (legacyDiscoveryTab === "bundled") return discoveryCards.filter((card) => card.required);
-      return discoveryCards;
-    },
-    [collectionView, discoveryCards, discoveryTab, legacyDiscoveryTab, streamlinedUiEnabled],
+    () => cardsForTab(discoveryCards, discoveryTab),
+    [discoveryCards, discoveryTab],
   );
   const discoveryCategoryCounts = useMemo<DiscoveryCategory[]>(() => {
     const counts = new Map<string, number>();
@@ -4590,24 +4497,24 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   // Selecting a folder shows its whole subtree (folder + descendants), matching
   // the folder-browser model. `null` means no subtree constraint (All/Unfiled).
   const folderSubtreeIds = useMemo(() => {
-    if (visibleFolderSelection === "all" || visibleFolderSelection === "unfiled") return null;
+    if (folderSelection === "all" || folderSelection === "unfiled") return null;
     const model = treeFromResult(skillFoldersQuery.data);
-    if (!model.byId.has(visibleFolderSelection)) return null;
-    return subtreeFolderIds(model, visibleFolderSelection);
-  }, [skillFoldersQuery.data, visibleFolderSelection]);
+    if (!model.byId.has(folderSelection)) return null;
+    return subtreeFolderIds(model, folderSelection);
+  }, [folderSelection, skillFoldersQuery.data]);
   const visibleDiscoveryCards = useMemo(() => {
     const filtered = discoveryTabCards.filter((card) => {
-      if (visibleDiscoveryCategory && !card.categories.includes(visibleDiscoveryCategory)) return false;
+      if (discoveryCategory && !card.categories.includes(discoveryCategory)) return false;
       // Search spans all folders (user story 5): the folder filter only
       // narrows when the user is browsing, never when searching.
-      if (effectiveDiscoveryTab === "installed" && !discoverySearchActive) {
-        if (visibleFolderSelection === "unfiled" && card.folderId) return false;
+      if (discoveryTab === "installed" && !discoverySearchActive) {
+        if (folderSelection === "unfiled" && card.folderId) return false;
         if (folderSubtreeIds && (!card.folderId || !folderSubtreeIds.has(card.folderId))) return false;
       }
       return discoveryMatchesSearch(card, discoverySearch.trim());
     });
-    return sortDiscoveryCards(filtered, discoverySort, effectiveDiscoveryTab === "discover");
-  }, [discoverySearch, discoverySearchActive, discoverySort, discoveryTabCards, effectiveDiscoveryTab, folderSubtreeIds, visibleDiscoveryCategory, visibleFolderSelection]);
+    return sortDiscoveryCards(filtered, discoverySort, discoveryTab !== "bundled");
+  }, [discoveryTabCards, discoveryCategory, discoverySearch, discoverySearchActive, discoverySort, discoveryTab, folderSelection, folderSubtreeIds]);
 
   const selectedCatalogSkill = catalogDetailQuery.data
     ?? (catalogListQuery.data ?? []).find((entry) => entry.id === selectedCatalogRef || entry.key === selectedCatalogRef)
@@ -4643,29 +4550,13 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     return counts;
   }, [installedSkills]);
   const installCatalog = useMutation({
-    mutationFn: (payload: { catalogSkillId: string; slug: string | null; force: boolean; agentIds: string[] }) =>
+    mutationFn: (payload: { catalogSkillId: string; slug: string | null; force: boolean }) =>
       companySkillsApi.installCatalog(selectedCompanyId!, {
         catalogSkillId: payload.catalogSkillId,
         slug: payload.slug,
         force: payload.force,
       }),
-    onSuccess: async (result, payload) => {
-      // Enable the skill for the agents chosen in the install dialog before any
-      // invalidation, so the refetched skill detail already reflects the
-      // attachments. Mode "add" appends to each agent's desired set without
-      // clobbering concurrent edits. A per-agent failure must not fail the
-      // install itself — the skill is in the library either way.
-      const enableTargets = result.action === "created" ? payload.agentIds : [];
-      let enabledCount = 0;
-      let enableFailures = 0;
-      for (const agentId of enableTargets) {
-        try {
-          await agentsApi.syncSkills(agentId, [{ key: result.skill.key, versionId: null }], "add", selectedCompanyId ?? undefined);
-          enabledCount += 1;
-        } catch {
-          enableFailures += 1;
-        }
-      }
+    onSuccess: async (result) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, result.skill.id) }),
@@ -4674,19 +4565,8 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "success",
         title: result.action === "created" ? "Skill installed" : result.action === "updated" ? "Skill updated" : "Skill is up to date",
-        body: result.action === "created"
-          ? enabledCount > 0
-            ? `${result.skill.name} — enabled for ${enabledCount} agent${enabledCount === 1 ? "" : "s"}.`
-            : `${result.skill.name} is in the library but not enabled for any agent yet. Use "Add to agent" to enable it.`
-          : result.skill.name,
+        body: result.skill.name,
       });
-      if (enableFailures > 0) {
-        pushToast({
-          tone: "warn",
-          title: "Skill installed, but enabling failed",
-          body: `Could not enable ${result.skill.name} for ${enableFailures} agent${enableFailures === 1 ? "" : "s"}. Use "Add to agent" on the skill page.`,
-        });
-      }
       if (result.warnings[0]) {
         pushToast({ tone: "warn", title: "Install warnings", body: result.warnings[0] });
       }
@@ -4695,7 +4575,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       }
     },
     onError: (error) => {
-      const message = describeError(error).body;
+      const message = error instanceof Error ? error.message : "Failed to install catalog skill.";
       setInstallDialogState((current) => ({ ...current, error: message }));
       // Also surface explicit-policy / platform denials in the persistent banner
       // so the reason stays visible after the dialog closes.
@@ -4725,7 +4605,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           pushToast({
             tone: "error",
             title: "Folder created, move failed",
-            body: describeError(moveError).body,
+            body: moveError instanceof Error ? moveError.message : "Failed to move the selected skills.",
           });
           return;
         }
@@ -4738,7 +4618,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder save failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to save folder.",
       });
     },
   });
@@ -4754,7 +4634,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder save failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to update folder.",
       });
     },
   });
@@ -4774,7 +4654,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder move failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to move folder.",
       });
     },
   });
@@ -4793,7 +4673,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder delete failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to delete folder.",
       });
     },
   });
@@ -4810,7 +4690,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Move failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to move skill.",
       });
     },
   });
@@ -4831,7 +4711,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Failed to move skills",
-        body: describeError(moveError).body,
+        body: moveError instanceof Error ? moveError.message : "Failed to move the selected skills.",
       });
     }
   }
@@ -4847,16 +4727,16 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Couldn't open My Skills",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to create your personal folder.",
       });
     },
   });
 
   async function openNewSkill() {
     const model = treeFromResult(skillFoldersQuery.data);
-    const selectedFolder = visibleFolderSelection === "all" || visibleFolderSelection === "unfiled"
+    const selectedFolder = folderSelection === "all" || folderSelection === "unfiled"
       ? null
-      : model.byId.get(visibleFolderSelection) ?? null;
+      : model.byId.get(folderSelection) ?? null;
     if (selectedFolder?.systemKey === "my") {
       try {
         const personalFolder = await ensureMyFolder.mutateAsync();
@@ -4906,7 +4786,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder create failed",
-        body: describeError(error).body,
+        body: error instanceof Error ? error.message : "Failed to create folder.",
       });
       return null;
     }
@@ -4939,7 +4819,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Move failed",
-        body: describeError(moveError).body,
+        body: moveError instanceof Error ? moveError.message : "Failed to move.",
       });
     }
   }
@@ -4967,7 +4847,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
 
   const attachAgentsMutation = useMutation({
     mutationFn: async (input: { agentId: string; desiredSkills: Array<string | AgentDesiredSkillEntry> }) => {
-      return agentsApi.syncSkills(input.agentId, input.desiredSkills, "replace", selectedCompanyId ?? undefined);
+      return agentsApi.syncSkills(input.agentId, input.desiredSkills, selectedCompanyId ?? undefined);
     },
     onSuccess: async () => {
       await Promise.all([
@@ -5008,7 +4888,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       }
       pushToast({ tone: "success", title: "Agents updated", body: `${nextAgentIds.length} agent(s) attached.` });
     } catch (error) {
-      pushToast({ tone: "error", title: "Update failed", body: describeError(error).body });
+      pushToast({ tone: "error", title: "Update failed", body: error instanceof Error ? error.message : "Failed to update agent skills." });
     }
   }
 
@@ -5059,7 +4939,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "success",
         title: "Skill removed",
-        body: `${skill.name} was removed from the organization skill library.`,
+        body: `${skill.name} was removed from the company skill library.`,
       });
     },
     onError: (error) => {
@@ -5068,14 +4948,13 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   });
 
   const skillFolderResult = skillFoldersQuery.data ?? null;
-  const showInstalledFolders = isDiscovery && effectiveDiscoveryTab === "installed";
-  const showInstalledBulkSelection = showInstalledFolders && !streamlinedUiEnabled;
+  const showInstalledFolders = isDiscovery && discoveryTab === "installed";
   // Rail counts reflect the current category/search scope, never the folder
   // filter itself (ux-spec §5.3).
   const railSkillFolderResult = useMemo(() => {
-    if (!skillFolderResult || effectiveDiscoveryTab !== "installed") return skillFolderResult;
+    if (!skillFolderResult || discoveryTab !== "installed") return skillFolderResult;
     const scoped = discoveryTabCards.filter((card) => {
-      if (visibleDiscoveryCategory && !card.categories.includes(visibleDiscoveryCategory)) return false;
+      if (discoveryCategory && !card.categories.includes(discoveryCategory)) return false;
       return discoveryMatchesSearch(card, discoverySearch.trim());
     });
     const direct = new Map<string, number>();
@@ -5097,14 +4976,14 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
         return { ...folder, itemCount };
       }),
     };
-  }, [discoverySearch, discoveryTabCards, effectiveDiscoveryTab, skillFolderResult, visibleDiscoveryCategory]);
+  }, [skillFolderResult, discoveryTab, discoveryTabCards, discoveryCategory, discoverySearch]);
   const activeSkillFolderDisplayPath = useMemo(
     () => skillFolderDisplayPath(treeFromResult(skillFolderResult), activeDetail?.folderId),
     [skillFolderResult, activeDetail?.folderId],
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message="Select an organization to manage skills." />;
+    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
   }
 
   function handleAddSkillSource() {
@@ -5121,7 +5000,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   // skills open the standalone catalog page (no modal, no legacy split view).
   function openDiscoveryCard(card: DiscoveryCard) {
     if (card.skillId) {
-      navigate(collectionView === "authored" ? skillStudioRoute(card.skillId) : routeForSkillId(card.skillId));
+      navigate(routeForSkillId(card.skillId));
       return;
     }
     if (card.catalogRef) {
@@ -5144,8 +5023,8 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   const studioBackHref = studioForkDetailQuery.data ? routeForSkill(studioForkDetailQuery.data) : "/skills";
   const studioTitle = studioForkFromId ? "Fork skill" : "Create a new skill";
   const studioDescription = studioForkFromId
-    ? "Review the fork metadata and create an editable organization copy."
-    : "Create an editable organization skill in the Paperclip workspace.";
+    ? "Review the fork metadata and create an editable company copy."
+    : "Create an editable company skill in the Paperclip workspace.";
   return (
     <>
       {policyDenial.denial ? (
@@ -5158,7 +5037,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           <DialogHeader>
             <DialogTitle>Remove skill</DialogTitle>
             <DialogDescription>
-              Remove this skill from the organization library. If any agents still use it, removal will be blocked until it is detached.
+              Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -5253,16 +5132,14 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
         defaultSlug={installDialogState.defaultSlug}
         defaultForce={installDialogState.defaultForce}
         defaultAction={installDialogState.defaultAction}
-        agents={eligibleAgentsForAttach}
         isPending={installCatalog.isPending}
         error={installDialogState.error}
-        onConfirm={({ slug, force, agentIds }) => {
+        onConfirm={({ slug, force }) => {
           if (!installDialogState.catalogSkill) return;
           installCatalog.mutate({
             catalogSkillId: installDialogState.catalogSkill.id,
             slug,
             force,
-            agentIds,
           });
         }}
       />
@@ -5272,7 +5149,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           <DialogHeader>
             <DialogTitle>Import a skill</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command to import a skill into this organization.
+              Paste a local path, GitHub URL, or `skills.sh` command to import a skill into this company.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -5407,27 +5284,13 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           </div>
         </div>
       ) : isDiscovery ? (
-        <>
-        {!streamlinedUiEnabled ? (
-          <div className="px-4 pt-4">
-            <Tabs value={legacyDiscoveryTab} onValueChange={(value) => setLegacyDiscoveryTab(value as "all" | "installed" | "catalog" | "bundled")}>
-              <TabsList variant="line" aria-label="Skills view">
-                <TabsTrigger value="all">All</TabsTrigger>
-                <TabsTrigger value="installed">Installed</TabsTrigger>
-                <TabsTrigger value="catalog">Catalog</TabsTrigger>
-                <TabsTrigger value="bundled">Bundled</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          </div>
-        ) : null}
-        {collectionView !== "authored" ? <ConnectedAppSkills companyId={selectedCompanyId} /> : null}
         <DiscoveryGrid
-          collectionView={collectionView}
-          navigation={streamlinedUiEnabled ? <SkillsNavigationTabs activeView={collectionView ?? effectiveDiscoveryTab} /> : undefined}
-          tab={effectiveDiscoveryTab}
+          tab={discoveryTab}
+          tabCounts={discoveryTabCounts}
+          onTabChange={setDiscoveryTab}
           categories={discoveryCategoryCounts}
           categoryTotal={discoveryTabCards.length}
-          activeCategory={visibleDiscoveryCategory}
+          activeCategory={discoveryCategory}
           onCategoryChange={setDiscoveryCategory}
           search={discoverySearch}
           onSearchChange={setDiscoverySearch}
@@ -5435,23 +5298,21 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           onSortChange={setDiscoverySort}
           cards={visibleDiscoveryCards}
           onOpenCard={openDiscoveryCard}
-          loading={skillsQuery.isLoading || catalogListQuery.isLoading || skillsView.kind === "reconnecting" || catalogListView.kind === "reconnecting"}
-          error={discoveryFailure?.error}
-          onRetry={discoveryFailure?.retry}
-          retrying={discoveryFailure?.isFetching}
-          totalCount={discoveryTabCards.length}
+          loading={skillsQuery.isLoading || catalogListQuery.isLoading}
+          error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
+          totalCount={discoveryCards.length}
           onCreate={() => void openNewSkill()}
           onImport={() => setImportDialogOpen(true)}
           onImportFromProject={() => setImportFromProjectOpen(true)}
-          onBrowseDiscover={() => collectionView === "authored" ? navigate("/skills?tab=discover") : streamlinedUiEnabled ? setDiscoveryTab("discover") : setLegacyDiscoveryTab("catalog")}
-          onScan={(projectId) => scanProjects.mutate(projectId)}
+          onBrowseCatalog={() => setDiscoveryTab("catalog")}
+          onScan={() => scanProjects.mutate()}
           scanPending={scanProjects.isPending}
           scanStatus={scanStatusMessage}
           folderResult={showInstalledFolders ? railSkillFolderResult : null}
-          folderSelection={visibleFolderSelection}
+          folderSelection={folderSelection}
           foldersLoading={skillFoldersQuery.isLoading}
-          selectMode={showInstalledBulkSelection && selectMode}
-          selectedSkillIds={showInstalledBulkSelection ? selectedSkillIds : []}
+          selectMode={showInstalledFolders && selectMode}
+          selectedSkillIds={selectedSkillIds}
           onFolderSelect={showInstalledFolders ? setFolderSelection : undefined}
           onOpenMobileFolders={showInstalledFolders ? () => setMobileFoldersOpen(true) : undefined}
           onCreateFolder={showInstalledFolders ? () => openCreateFolder() : undefined}
@@ -5473,11 +5334,11 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           } : undefined}
           onMoveFolder={showInstalledFolders ? (folder, destination) => void moveFolderBetweenScopes(folder, destination) : undefined}
           onDeleteFolder={showInstalledFolders ? setDeleteFolderTarget : undefined}
-          onToggleSelectMode={showInstalledBulkSelection ? () => {
+          onToggleSelectMode={showInstalledFolders ? () => {
             setSelectMode((current) => !current);
             if (selectMode) setSelectedSkillIds([]);
           } : undefined}
-          onSelectCard={showInstalledBulkSelection ? (card, selected) => {
+          onSelectCard={showInstalledFolders ? (card, selected) => {
             if (!card.skillId) return;
             setSelectedSkillIds((current) =>
               selected
@@ -5505,20 +5366,18 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           onCreateFolderAndMoveCard={showInstalledFolders ? (card) => {
             if (card.skillId) openCreateFolder([card.skillId]);
           } : undefined}
-          onMoveSelected={showInstalledBulkSelection ? (folderId) => void moveSelectedSkills(folderId) : undefined}
-          onCreateFolderAndMoveSelected={showInstalledBulkSelection ? () => openCreateFolder(selectedSkillIds) : undefined}
-          onClearSelected={showInstalledBulkSelection ? () => setSelectedSkillIds([]) : undefined}
+          onMoveSelected={showInstalledFolders ? (folderId) => void moveSelectedSkills(folderId) : undefined}
+          onCreateFolderAndMoveSelected={showInstalledFolders ? () => openCreateFolder(selectedSkillIds) : undefined}
+          onClearSelected={showInstalledFolders ? () => setSelectedSkillIds([]) : undefined}
           folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
-          showBrowseRails={browseRailsEnabled}
         />
-        </>
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
           detail={activeDetail}
           folderDisplayPath={activeSkillFolderDisplayPath}
           catalogSource={catalogSourceForDetail}
           routeSkills={installedSkills}
-          loading={skillsQuery.isLoading || detailQuery.isLoading || skillsView.kind === "reconnecting" || detailView.kind === "reconnecting"}
+          loading={skillsQuery.isLoading || detailQuery.isLoading}
           activeTab={detailTab}
           onTabChange={setDetailTab}
           selectedPath={selectedPath}
@@ -5586,7 +5445,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
               Back to store
             </Link>
           </div>
-          {catalogListQuery.isLoading || catalogDetailQuery.isLoading || catalogListView.kind === "reconnecting" || catalogDetailView.kind === "reconnecting" ? (
+          {catalogListQuery.isLoading || catalogDetailQuery.isLoading ? (
             <PageSkeleton variant="detail" />
           ) : !selectedCatalogSkill ? (
             <EmptyState icon={Boxes} message="Catalog skill not found." />
@@ -5631,7 +5490,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
         </div>
       ) : (
         <div className="min-h-(--sz-calc-30)">
-          {skillsQuery.isLoading || skillsView.kind === "reconnecting" ? (
+          {skillsQuery.isLoading ? (
             <PageSkeleton variant="detail" />
           ) : (
             <EmptyState icon={Boxes} message="Skill not found." />

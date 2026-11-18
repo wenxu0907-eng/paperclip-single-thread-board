@@ -54,9 +54,7 @@ export function WorkspaceFileLink({
         path: workspaceFileRef.path,
         line: workspaceFileRef.line ?? null,
         column: workspaceFileRef.column ?? null,
-        // Preserve the workspace that passed the availability preflight so the
-        // click resolves against that target instead of rediscovering one.
-        workspace: workspaceFileRef.workspace ?? "auto",
+        workspace: "auto",
         projectId: workspaceFileRef.projectId ?? null,
         workspaceId: workspaceFileRef.workspaceId ?? null,
       });

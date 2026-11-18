@@ -1,4 +1,3 @@
-import type { Request } from "express";
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
 import { assertBoardOrgAccess, assertCompanyAccess, hasBoardOrgAccess, hasCompanyAccess } from "../routes/authz.js";
@@ -10,7 +9,7 @@ function makeReq(input: {
   return {
     method: input.method ?? "GET",
     actor: input.actor,
-  } as unknown as Request;
+  } as Express.Request;
 }
 
 describe("assertCompanyAccess", () => {

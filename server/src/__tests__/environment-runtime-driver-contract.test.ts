@@ -9,6 +9,7 @@ import {
   getSshEnvLabSupport,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
+  type SshEnvironmentConfig,
 } from "@paperclipai/adapter-utils/ssh";
 import {
   agents,
@@ -20,14 +21,12 @@ import {
   environments,
   heartbeatRuns,
 } from "@paperclipai/db";
-import type { Environment, EnvironmentDriver } from "@paperclipai/shared";
+import type { Environment } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
-import { environmentService } from "../services/environments.js";
-import { hasPendingRunCleanup } from "../services/execution-blocker.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -42,7 +41,7 @@ if (!embeddedPostgresSupport.supported) {
 
 interface RuntimeContractCase {
   name: string;
-  driver: EnvironmentDriver;
+  driver: string;
   config: Record<string, unknown>;
   setup?: () => Promise<() => Promise<void>>;
   expectLease: (lease: {
@@ -58,7 +57,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("environment-runtime-contract");
-    stopDb = started.cleanup;
+    stopDb = started.stop;
     db = createDb(started.connectionString);
   });
 
@@ -83,7 +82,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
   });
 
   async function seedEnvironment(input: {
-    driver: EnvironmentDriver;
+    driver: string;
     config: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
@@ -172,34 +171,18 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
       runId,
       environment: {
         id: resolvedEnvironmentId,
+        companyId,
         name: `${input.driver} contract`,
         description: null,
         driver: input.driver,
         status: "active",
         config,
-        envVars: {},
         metadata: null,
         createdAt: now,
         updatedAt: now,
-      } satisfies Environment,
+      } as Environment,
     };
   }
-
-  it("settles native cleanup through the SSH bookkeeping release contract", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({ driver: "ssh", config: {} });
-    const lease = await environmentService(db).acquireLease({ companyId, environmentId: environment.id,
-      heartbeatRunId: runId, provider: "ssh", providerLeaseId: "ssh://worker@example.invalid:22/workspace",
-      metadata: { driver: "ssh" },
-    });
-    await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native", finishedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId));
-    expect(await hasPendingRunCleanup(db, companyId, runId)).toBe(true);
-    const released = await environmentRuntimeService(db).releaseRunLeases(runId);
-    expect(released).toHaveLength(1);
-    expect(released[0]?.lease).toMatchObject({ id: lease.id, status: "released", cleanupStatus: null });
-    expect(released[0]?.lease.releasedAt).not.toBeNull();
-    expect(await hasPendingRunCleanup(db, companyId, runId)).toBe(false);
-  });
 
   async function runContract(testCase: RuntimeContractCase) {
     const cleanup = await testCase.setup?.();
@@ -300,7 +283,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
     await runContract({
       name: "ssh",
       driver: "ssh",
-      config: { ...sshConfig },
+      config: sshConfig as SshEnvironmentConfig as unknown as Record<string, unknown>,
       expectLease: (lease) => {
         expect(lease.providerLeaseId).toContain(`ssh://${sshConfig.username}@${sshConfig.host}:${sshConfig.port}`);
         expect(lease.metadata).toMatchObject({

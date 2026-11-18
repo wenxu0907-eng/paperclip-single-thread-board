@@ -296,6 +296,7 @@ const plugin = definePlugin({
         operationType,
         title: stringField(params.title),
         prompt: stringField(params.prompt),
+        useCheapModelProfile: params.useCheapModelProfile === true,
       });
     });
 
@@ -446,6 +447,7 @@ const plugin = definePlugin({
           spaceSlug,
           operationType: "backfill",
           title: scope.rootIssueId ? "Backfill Paperclip root issue wiki history" : "Backfill Paperclip project wiki history",
+          useCheapModelProfile: params.useCheapModelProfile === true,
           prompt: [
             "Backfill LLM Wiki distillation was queued from a per-space Paperclip ingestion profile.",
             scope.projectId ? `Project ID: ${scope.projectId}` : null,
@@ -616,6 +618,7 @@ const plugin = definePlugin({
           : projectId
             ? "Distill Paperclip project into wiki"
             : "Distill Paperclip changes into wiki",
+        useCheapModelProfile: params.useCheapModelProfile === true,
         prompt: buildManualDistillPrompt({ companyId, projectId, rootIssueId }),
       });
       return { status: "queued", workItem, operation };
@@ -657,6 +660,7 @@ const plugin = definePlugin({
         spaceSlug,
         operationType: "backfill",
         title: rootIssueId ? "Backfill Paperclip root issue wiki history" : "Backfill Paperclip project wiki history",
+        useCheapModelProfile: params.useCheapModelProfile === true,
         prompt: [
           "Backfill LLM Wiki distillation requested for a bounded Paperclip source window.",
           projectId ? `Project ID: ${projectId}` : null,

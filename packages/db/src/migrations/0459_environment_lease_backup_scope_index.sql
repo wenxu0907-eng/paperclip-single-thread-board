@@ -1,1 +1,0 @@
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "environment_leases_native_backup_scope_idx" ON "environment_leases" USING btree (("metadata"->'nativeHarnessBackup'->>'sessionScopeSha256')) WHERE ("environment_leases"."metadata"->'nativeHarnessBackup'->>'sessionScopeSha256') is not null;

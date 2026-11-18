@@ -175,6 +175,34 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     });
   });
 
+  it("dedupes identical child creates via the /children route (COM-322)", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    // Two identical child creates, as an agent's tool double-submit would produce.
+    const [first, second] = await Promise.all([
+      request(app)
+        .post(`/api/issues/${parent.id}/children`)
+        .send({ title: "Step 12 BUILD" }),
+      request(app)
+        .post(`/api/issues/${parent.id}/children`)
+        .send({ title: "  step 12   BUILD  " }),
+    ]);
+
+    // The recent-open-title guard must collapse them onto a single child row.
+    expect(first.body.id).toBe(second.body.id);
+    expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toHaveLength(1);
+
+    // An explicit opt-out still allows a genuine second child.
+    const explicit = await request(app)
+      .post(`/api/issues/${parent.id}/children`)
+      .send({ title: "Step 12 BUILD", allowDuplicate: true })
+      .expect(201);
+    expect(explicit.body.id).not.toBe(first.body.id);
+    expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toHaveLength(2);
+  });
+
   it("serializes keyed and title-only creates for the same issue", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);

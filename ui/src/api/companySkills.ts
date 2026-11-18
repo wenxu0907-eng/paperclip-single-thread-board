@@ -20,8 +20,6 @@ import type {
   CompanySkillInstallCatalogResult,
   CompanySkillListQuery,
   CompanySkillListItem,
-  CompanySkillProjectBrowseRequest,
-  CompanySkillProjectBrowseResult,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillStarResult,
@@ -38,7 +36,6 @@ import type {
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
-  CompanySkillVersionSummary,
   CompanySkillVersionCreateRequest,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -67,7 +64,7 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
     ),
   versions: (companyId: string, skillId: string) =>
-    api.get<CompanySkillVersionSummary[]>(
+    api.get<CompanySkillVersion[]>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/versions`,
     ),
   version: (companyId: string, skillId: string, versionId: string) =>
@@ -193,10 +190,10 @@ export const companySkillsApi = {
     api.get<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files?path=${encodeURIComponent(relativePath)}`,
     ),
-  updateFile: (companyId: string, skillId: string, path: string, content: string, format: Pick<CompanySkillFileDetail, "encoding" | "executable"> & { expectedVersionId?: string | null } = {}) =>
+  updateFile: (companyId: string, skillId: string, path: string, content: string) =>
     api.patch<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files`,
-      { path, content, ...format },
+      { path, content },
     ),
   deleteFile: (companyId: string, skillId: string, payload: CompanySkillFileDeleteRequest) =>
     api.deleteWithBody<CompanySkillFileDeleteResult>(
@@ -217,11 +214,6 @@ export const companySkillsApi = {
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
       { source },
-    ),
-  browseProject: (companyId: string, payload: CompanySkillProjectBrowseRequest) =>
-    api.post<CompanySkillProjectBrowseResult>(
-      `/companies/${encodeURIComponent(companyId)}/skills/browse-project`,
-      payload,
     ),
   scanProjects: (companyId: string, payload: CompanySkillProjectScanRequest = {}) =>
     api.post<CompanySkillProjectScanResult>(

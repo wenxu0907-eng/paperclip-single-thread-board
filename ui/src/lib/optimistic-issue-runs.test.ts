@@ -108,7 +108,6 @@ describe("clearIssueExecutionRun", () => {
       executionRunId: null,
       executionAgentNameKey: null,
       executionLockedAt: null,
-      updatedAt: issue.updatedAt,
     });
   });
 

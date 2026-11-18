@@ -1,4 +1,3 @@
-import { historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
@@ -45,7 +44,7 @@ export type RecoveryCauseGroup = {
 };
 
 export type RecoveryHandoffSummary = {
-  /** Historical agent takeovers (recovery owner != original assignee) that resolved. */
+  /** Genuine manager takeovers (recovery owner != original assignee) that resolved. */
   resolvedTakeovers: number;
   handedBack: number;
   ownerCompleted: number;
@@ -53,7 +52,6 @@ export type RecoveryHandoffSummary = {
   /** Original agent recovered its own issue (owner == original assignee). */
   selfRecovery: number;
   boardOwned: number;
-  systemOwned: number;
   activeTakeovers: number;
   /** handedBack / (handedBack + ownerCompleted); null when no resolved takeovers. */
   handedBackRatio: number | null;
@@ -74,7 +72,6 @@ export type RecoveryCauseRouting = {
 };
 
 export type RecoveryObservabilityReport = {
-  historicalRecovery: Awaited<ReturnType<typeof historicalRecoveryCounts>>;
   companyId: string;
   generatedAt: string;
   window: { weeks: number; since: string };
@@ -91,12 +88,10 @@ export type HandoffClass =
   | "handed_back"
   | "owner_completed"
   | "board_owned"
-  | "system_owned"
   | "active"
   | "other";
 
 type RecoveryActionFacts = {
-  ownerType?: string;
   status: string;
   outcome: string | null;
   ownerAgentId: string | null;
@@ -106,7 +101,7 @@ type RecoveryActionFacts = {
 };
 
 const ACTIVE_STATUSES = new Set(["active", "escalated"]);
-const TERMINAL_ISSUE_STATUSES = new Set(["done"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "in_review"]);
 
 /**
  * Classify a recovery action by who ended up owning the deliverable work.
@@ -119,7 +114,6 @@ const TERMINAL_ISSUE_STATUSES = new Set(["done"]);
  * doing the work becomes rare".
  */
 export function classifyRecoveryHandoff(facts: RecoveryActionFacts): HandoffClass {
-  if (facts.ownerType === "system") return "system_owned";
   if (ACTIVE_STATUSES.has(facts.status)) return "active";
   if (!facts.ownerAgentId) return "board_owned";
   // Original agent recovered its own issue — the ideal per-cause routing, not a takeover.
@@ -262,7 +256,6 @@ export function recoveryObservabilityService(db: Db) {
         status: issueRecoveryActions.status,
         outcome: issueRecoveryActions.outcome,
         ownerAgentId: issueRecoveryActions.ownerAgentId,
-        ownerType: issueRecoveryActions.ownerType,
         returnOwnerAgentId: issueRecoveryActions.returnOwnerAgentId,
         finalAssigneeAgentId: issues.assigneeAgentId,
         finalIssueStatus: issues.status,
@@ -283,7 +276,6 @@ export function recoveryObservabilityService(db: Db) {
       otherTakeover: 0,
       selfRecovery: 0,
       boardOwned: 0,
-      systemOwned: 0,
       activeTakeovers: 0,
       handedBackRatio: null,
       ownerCompletedRatio: null,
@@ -317,9 +309,7 @@ export function recoveryObservabilityService(db: Db) {
       if (klass === "active") {
         routing.active += 1;
         if (row.status === "escalated") routing.escalated += 1;
-        if (!row.ownerAgentId) {
-          handoff.boardOwned += 1;
-        } else if (row.ownerAgentId !== row.returnOwnerAgentId) {
+        if (row.ownerAgentId && row.ownerAgentId !== row.returnOwnerAgentId) {
           handoff.activeTakeovers += 1;
         }
         continue;
@@ -331,10 +321,6 @@ export function recoveryObservabilityService(db: Db) {
       if (row.status === "cancelled" && row.outcome !== "false_positive") routing.cancelled += 1;
 
       switch (klass) {
-        case "system_owned":
-          handoff.systemOwned += 1;
-          if (ACTIVE_STATUSES.has(row.status)) routing.active += 1;
-          break;
         case "self_recovery":
           handoff.selfRecovery += 1;
           if (row.status === "resolved") routing.retriedByOriginalSucceeded += 1;
@@ -378,7 +364,6 @@ export function recoveryObservabilityService(db: Db) {
       byCause,
       handoff,
       perCauseRouting,
-      historicalRecovery: await historicalRecoveryCounts(db, companyId),
     };
   }
 

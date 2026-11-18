@@ -1,4 +1,4 @@
-export { IssueProperties, type IssuePropertiesDocumentDeepLink } from "./IssueProperties";
+export { IssueProperties } from "./IssueProperties";
 export { ExternalObjectRows } from "./external-object-rows";
 export { PropertyPicker } from "./property-picker";
 export { PropertyChip, PropertyRow, PropertySection } from "./primitives";

@@ -3,10 +3,6 @@ export interface BuildCiliumNetworkPolicyInput {
   paperclipServerNamespace: string;
   egressAllowFqdns: string[];
   egressAllowCidrs: string[];
-  name?: string;
-  endpointSelector?: Record<string, string>;
-  includeBaseRules?: boolean;
-  ownerReferences?: Record<string, unknown>[];
 }
 
 // Design note: no ingress rules are defined here. Paperclip-server does NOT
@@ -16,7 +12,7 @@ export interface BuildCiliumNetworkPolicyInput {
 export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicyInput): Record<string, unknown> {
   const egress: Record<string, unknown>[] = [];
 
-  if (input.includeBaseRules !== false) egress.push({
+  egress.push({
     toEndpoints: [
       { matchLabels: { "k8s:io.kubernetes.pod.namespace": "kube-system", "k8s-app": "kube-dns" } },
     ],
@@ -38,7 +34,7 @@ export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicy
     });
   }
 
-  if (input.includeBaseRules !== false) egress.push({
+  egress.push({
     toEndpoints: [
       {
         matchLabels: {
@@ -60,13 +56,12 @@ export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicy
     apiVersion: "cilium.io/v2",
     kind: "CiliumNetworkPolicy",
     metadata: {
-      name: input.name ?? "paperclip-egress-fqdn",
+      name: "paperclip-egress-fqdn",
       namespace: input.namespace,
       labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" },
-      ...(input.ownerReferences ? { ownerReferences: input.ownerReferences } : {}),
     },
     spec: {
-      endpointSelector: { matchLabels: input.endpointSelector ?? { "paperclip.io/role": "agent" } },
+      endpointSelector: { matchLabels: { "paperclip.io/role": "agent" } },
       egress,
     },
   };

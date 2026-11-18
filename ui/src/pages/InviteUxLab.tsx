@@ -27,14 +27,14 @@ const inviteRoleOptions = [
   {
     value: "viewer",
     label: "Viewer",
-    description: "Can view organization work and follow along.",
-    gets: "View-only organization membership.",
+    description: "Can view company work and follow along.",
+    gets: "View-only company membership.",
   },
   {
     value: "operator",
     label: "Operator",
-    description: "Can edit organization work and invite people.",
-    gets: "Full editing and audit access. Cannot approve join requests or manage member permissions.",
+    description: "Recommended for people who need to help run work without managing access.",
+    gets: "Can assign tasks.",
   },
   {
     value: "admin",
@@ -45,7 +45,7 @@ const inviteRoleOptions = [
   {
     value: "owner",
     label: "Owner",
-    description: "Full organization access, including membership management.",
+    description: "Full company access, including membership management.",
     gets: "Everything in Admin, plus managing members.",
   },
 ] as const;
@@ -196,10 +196,12 @@ function InviteSummaryPanel({
 }) {
   return (
     <>
+      {/* token-extraction: allowlisted — brandColor feeds CompanyPatternIcon's hexToHue() color math via a canvas fill; demo/showcase-only prop, not a rendered CSS value. */}
       <div className="flex items-start gap-4">
         <CompanyPatternIcon
           companyName="Acme Robotics"
           logoUrl="/api/invites/pcp_invite_test/logo"
+          brandColor="#114488"
           className="h-16 w-16 rounded-none border border-zinc-800"
         />
         <div className="min-w-0">
@@ -210,7 +212,7 @@ function InviteSummaryPanel({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <MetaCard label="Organization" value="Acme Robotics" />
+        <MetaCard label="Company" value="Acme Robotics" />
         <MetaCard label="Invited by" value="Board User" />
         <MetaCard label="Requested access" value={requestedAccess} />
         <MetaCard label="Invite expires" value="Mar 7, 2027" />
@@ -371,7 +373,7 @@ function AcceptInvitePreview({
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-lg font-semibold text-zinc-100">Accept organization invite</h3>
+        <h3 className="text-lg font-semibold text-zinc-100">Accept company invite</h3>
         <p className="mt-1 text-sm text-zinc-400">
           {autoAccept
             ? "Granting your access to Acme Robotics."
@@ -411,6 +413,7 @@ function InviteResultPreview({
         <CompanyPatternIcon
           companyName="Acme Robotics"
           logoUrl="/api/invites/pcp_invite_test/logo"
+          brandColor="#114488"
           className="h-12 w-12 rounded-none border border-zinc-800"
         />
         <h3 className="text-lg font-semibold">{title}</h3>
@@ -426,7 +429,7 @@ function InviteResultPreview({
             <div className="border border-zinc-800 p-3">
               <p className="mb-1 text-xs text-zinc-500">Approval page</p>
               <a className="text-sm text-zinc-200 underline underline-offset-2" href="/company/settings/members">
-                Settings → Members
+                Company Settings → Members
               </a>
             </div>
             <p className="text-xs text-zinc-500">
@@ -532,7 +535,7 @@ function CompanyInvitesPreview() {
         <CardHeader className="space-y-3">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <MailPlus className="h-4 w-4" />
-            Organization Invites
+            Company Invites
           </div>
           <div>
             <CardTitle>Create invite</CardTitle>
@@ -680,13 +683,13 @@ function CompanyInvitesPreview() {
             <div className="rounded-2xl border border-border p-4">
               <div className="text-sm font-medium">Empty history state</div>
               <div className="mt-2 text-sm text-muted-foreground">
-                No invites have been created for this organization yet.
+                No invites have been created for this company yet.
               </div>
             </div>
             <div className="rounded-2xl border border-rose-400/40 bg-rose-500/[0.07] p-4">
               <div className="text-sm font-medium text-foreground">Permission error</div>
               <div className="mt-2 text-sm text-muted-foreground">
-                You do not have permission to manage organization invites.
+                You do not have permission to manage company invites.
               </div>
             </div>
           </div>
@@ -708,7 +711,7 @@ export function InviteUxLab() {
             </div>
             <h1 className="mt-4 text-3xl font-semibold tracking-tight">Invite and signup UX review surface</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-              This page collects the current invite landing, signup, approval-result, and organization invite-management states in one place so styling changes can be reviewed without recreating each backend condition by hand.
+              This page collects the current invite landing, signup, approval-result, and company invite-management states in one place so styling changes can be reviewed without recreating each backend condition by hand.
             </p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -734,7 +737,7 @@ export function InviteUxLab() {
                 "Inline account creation and sign-in variants, including feedback/error copy",
                 "Human accept, agent request, and auto-accept transitions",
                 "Pending approval, joined-now, claim secret, and onboarding result screens",
-                "Organization invite creation, copied-link, history, empty, and permission-error states",
+                "Company invite creation, copied-link, history, empty, and permission-error states",
               ].map((highlight) => (
                 <div
                   key={highlight}
@@ -763,7 +766,7 @@ export function InviteUxLab() {
           <StatusCard
             icon={<Clock3 className="h-4 w-4" />}
             title="Checking your access"
-            body="Shown after sign-in while the app verifies whether the current user already belongs to the invited organization."
+            body="Shown after sign-in while the app verifies whether the current user already belongs to the invited company."
           />
           <StatusCard
             icon={<KeyRound className="h-4 w-4" />}
@@ -791,7 +794,7 @@ export function InviteUxLab() {
           <StatusCard
             icon={<Users className="h-4 w-4" />}
             title="Already a member"
-            body="Acceptance stays disabled and the page redirects into the organization once membership is confirmed."
+            body="Acceptance stays disabled and the page redirects into the company once membership is confirmed."
           />
           <StatusCard
             icon={<UserPlus className="h-4 w-4" />}
@@ -874,7 +877,7 @@ export function InviteUxLab() {
                 signedInLabel="Jane Example"
               />
             }
-            right={<AcceptInvitePreview error="This account already belongs to the organization." isCurrentMember />}
+            right={<AcceptInvitePreview error="This account already belongs to the company." isCurrentMember />}
           />
         </div>
       </LabSection>
@@ -893,13 +896,13 @@ export function InviteUxLab() {
             onboardingTextUrl="/api/invites/pcp_invite_test/onboarding.txt"
           />
           <InviteResultPreview
-            title="You joined the organization"
+            title="You joined the company"
             description="Your account already matched the approved invite, so the board can be opened immediately."
             joinedNow
           />
           <InviteResultPreview
             title="Request to join Acme Robotics"
-            description="Ask them to visit Settings → Members to approve your request."
+            description="Ask them to visit Company Settings → Members to approve your request."
           />
         </div>
       </LabSection>
@@ -917,8 +920,8 @@ export function InviteUxLab() {
       </LabSection>
 
       <LabSection
-        eyebrow="Settings"
-        title="Organization invite management"
+        eyebrow="Company settings"
+        title="Company invite management"
         description="This section captures the board-side invite creation flow, copied-link state, audit table, and the edge states that are otherwise tedious to stage."
         accentClassName="bg-[linear-gradient(180deg,rgba(244,114,182,0.06),transparent_28%),var(--background)]"
       >

@@ -1,1 +1,0 @@
-ALTER TABLE "user_workspace_preferences" ADD COLUMN "time_zone" text;

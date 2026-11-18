@@ -1,65 +1,28 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
-import { createPortal } from "react-dom";
-import { useSidebar } from "../context/SidebarContext";
 import { usePanel } from "../context/PanelContext";
 import { cn } from "../lib/utils";
-
-function resolveScrollTarget() {
-  const mainContent = document.getElementById("main-content");
-
-  if (mainContent instanceof HTMLElement) {
-    const overflowY = window.getComputedStyle(mainContent).overflowY;
-    const usesOwnScroll =
-      (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay")
-      && mainContent.scrollHeight > mainContent.clientHeight + 1;
-
-    if (usesOwnScroll) {
-      return { type: "element" as const, element: mainContent };
-    }
-  }
-
-  return { type: "window" as const };
-}
-
-function distanceFromBottom(target: ReturnType<typeof resolveScrollTarget>) {
-  if (target.type === "element") {
-    return target.element.scrollHeight - target.element.scrollTop - target.element.clientHeight;
-  }
-
-  const scroller = document.scrollingElement ?? document.documentElement;
-  return scroller.scrollHeight - window.scrollY - window.innerHeight;
-}
+import {
+  chaseScrollToPageEnd,
+  distanceFromPageBottom,
+  resolvePageScrollTarget,
+} from "../lib/scroll-to-page-end";
 
 /**
  * Floating scroll-to-bottom button that follows the active page scroller.
  * On desktop that is `#main-content`; on mobile it falls back to window/page scroll.
+ *
+ * The actual scrolling lives in `lib/scroll-to-page-end` so this button and the
+ * thread's `Jump to latest` control share one implementation (COM-374).
  */
 export function ScrollToBottom() {
   const [visible, setVisible] = useState(false);
   const { panelVisible, panelContent } = usePanel();
-  const { isMobile } = useSidebar();
-  const [composerDock, setComposerDock] = useState<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!isMobile) {
-      setComposerDock(null);
-      return;
-    }
-    const main = document.getElementById("main-content");
-    if (!main) return;
-    const findDock = () => setComposerDock(
-      main.querySelector<HTMLElement>('[data-testid="task-chat-composer-dock"]'),
-    );
-    findDock();
-    const observer = new MutationObserver(findDock);
-    observer.observe(main, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, [isMobile]);
+  const cancelChaseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const check = () => {
-      setVisible(distanceFromBottom(resolveScrollTarget()) > 300);
+      setVisible(distanceFromPageBottom(resolvePageScrollTarget()) > 300);
     };
 
     const mainContent = document.getElementById("main-content");
@@ -69,43 +32,74 @@ export function ScrollToBottom() {
     window.addEventListener("scroll", check, { passive: true });
     window.addEventListener("resize", check);
 
+    // Scroll/resize events alone leave the button stale: on a live task the
+    // thread grows underneath a stationary scroller (a run streams new rows in),
+    // which fires neither. The distance to the bottom jumps from 0 to thousands
+    // of px and the arrow never appears — "I used the floating arrow and it is
+    // not working", because there was nothing to click (COM-374).
+    //
+    // Watch the scroll host and its content boxes instead, so the button tracks
+    // content growth as well as user scrolling.
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    const observed = new Set<Element>();
+    const observe = (element: Element | null | undefined) => {
+      if (!element || !resizeObserver || observed.has(element)) return;
+      observed.add(element);
+      resizeObserver.observe(element);
+    };
+
+    const syncObservedContent = () => {
+      // The scroll host itself covers viewport-box changes; its children are the
+      // content whose height actually moves the bottom.
+      observe(mainContent);
+      observe(document.body);
+      for (const child of mainContent?.children ?? []) observe(child);
+      check();
+    };
+
+    syncObservedContent();
+
+    // The content wrapper inside `#main-content` is remounted on navigation, so
+    // re-attach the observer when the subtree is replaced.
+    let mutationObserver: MutationObserver | null = null;
+    if (mainContent && typeof MutationObserver !== "undefined") {
+      mutationObserver = new MutationObserver(syncObservedContent);
+      mutationObserver.observe(mainContent, { childList: true });
+    }
+
     return () => {
       mainContent?.removeEventListener("scroll", check);
       window.removeEventListener("scroll", check);
       window.removeEventListener("resize", check);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      cancelChaseRef.current?.();
+      cancelChaseRef.current = null;
     };
   }, []);
 
   const scroll = useCallback(() => {
-    const target = resolveScrollTarget();
-
-    if (target.type === "element") {
-      target.element.scrollTo({ top: target.element.scrollHeight, behavior: "smooth" });
-      return;
-    }
-
-    const scroller = document.scrollingElement ?? document.documentElement;
-    window.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    cancelChaseRef.current?.();
+    cancelChaseRef.current = chaseScrollToPageEnd({
+      onSettled: () => {
+        cancelChaseRef.current = null;
+      },
+    });
   }, []);
 
   if (!visible) return null;
 
-  const button = (
+  return (
     <button
-      data-slot="icon-button"
       onClick={scroll}
       className={cn(
-        "z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-(--tp-background-color-right) duration-200",
-        isMobile && composerDock
-          ? "absolute bottom-full left-1/2 -translate-x-1/2 mb-3"
-          : "fixed bottom-(--sz-calc-21) right-6 md:bottom-6",
-        !isMobile && panelVisible && panelContent && "md:right-(--sz-calc-22)",
+        "fixed bottom-(--sz-calc-21) right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-(--tp-background-color-right) duration-200 md:bottom-6",
+        panelVisible && panelContent && "md:right-(--sz-calc-22)",
       )}
       aria-label="Scroll to bottom"
     >
       <ArrowDown className="h-4 w-4" />
     </button>
   );
-  // Anchoring to the dock follows editor growth and the nav's sticky offset.
-  return isMobile && composerDock ? createPortal(button, composerDock) : button;
 }

@@ -1,13 +1,12 @@
 import type { CSSProperties } from "react";
 import {
   Ban,
-  Clock,
   Circle,
   CircleCheck,
   CircleDashed,
   CircleDot,
   CircleMinus,
-  createLucideIcon,
+  RotateCw,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -19,13 +18,9 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  * `viewBox="0 0 24 24"` so they scale proportionally at any size), so the whole
  * set reads as one consistent icon family:
  *
- *   backlog → circle-dashed · todo → circle · in_progress → animated open circle ·
+ *   backlog → circle-dashed · todo → circle · in_progress → rotate-cw ·
  *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
- *   cancelled → ban · monitoring → clock · in_queue → circle-minus (blocked recoloured blue).
- *
- * The in-progress animation represents task workflow status, independently of
- * run execution. It remains between runs until the task status changes; live
- * indicators and run details report whether an agent is currently executing.
+ *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
  * Colour comes from the `--status-task-icon-*` CSS vars (AA-tuned, mode-aware;
  * see `index.css`). The glyph paints in `currentColor`, and the component
@@ -42,7 +37,6 @@ const SIZE_PX: Record<StatusGlyphSize, number> = { sm: 14, md: 16, lg: 20 };
 export type StatusGlyphStatus =
   | "backlog"
   | "todo"
-  | "monitoring"
   | "in_progress"
   | "in_review"
   | "done"
@@ -50,19 +44,11 @@ export type StatusGlyphStatus =
   | "cancelled"
   | "in_queue";
 
-// LoaderCircle uses a 9-unit radius. Keep its open arc, but use the same
-// 10-unit circle and unscaled stroke as the other task glyphs.
-const TaskProgressSpinner = createLucideIcon("TaskProgressSpinner", [
-  ["circle", { cx: "12", cy: "12", r: "10", pathLength: "100", strokeDasharray: "80 20", key: "progress" }],
-]);
-
 /** Status → Lucide icon. `in_queue` borrows the blocked icon; its colour var resolves to blue. */
 const STATUS_ICON: Record<string, LucideIcon> = {
-  idle: Circle,
   backlog: CircleDashed,
   todo: Circle,
-  in_progress: TaskProgressSpinner,
-  monitoring: Clock,
+  in_progress: RotateCw,
   in_review: CircleDot,
   done: CircleCheck,
   blocked: CircleMinus,
@@ -92,7 +78,7 @@ export function StatusGlyph({ status, size = "md", className, title }: StatusGly
   return (
     <Icon
       size={px}
-      className={cn("inline-block shrink-0 align-middle", status === "in_progress" && "motion-safe:animate-spin", className)}
+      className={cn("inline-block shrink-0 align-middle", className)}
       style={{ color: `var(${cssVar})` } as CSSProperties}
       {...a11y}
     >

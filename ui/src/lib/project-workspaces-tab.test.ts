@@ -76,7 +76,6 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace>): Execu
     strategyType: overrides.strategyType ?? "git_worktree",
     name: overrides.name ?? "PAP-893",
     status: overrides.status ?? "active",
-    deliveryState: overrides.deliveryState ?? "unknown",
     cwd: overrides.cwd ?? "/repo/.worktrees/PAP-893",
     repoUrl: overrides.repoUrl ?? null,
     baseRef: overrides.baseRef ?? "public-gh/master",

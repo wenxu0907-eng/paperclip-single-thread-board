@@ -6,7 +6,7 @@ import { forbidden, notFound } from "../errors.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
 import { builtInAgentService } from "../services/built-in-agents.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
-import { assertBoard, assertCompanyAccess, COMPANY_BUDGETS_PAGE, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { BuiltInAgentState } from "../services/built-in-agents.js";
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -186,7 +186,6 @@ export function builtInAgentRoutes(db: Db) {
       await assertBuiltInAgentsEnabled();
       await assertCanProvisionBuiltInAgents(req, companyId);
       const actor = getActorInfo(req);
-      if (req.body.budgetMonthlyCents !== undefined) assertBoard(req, COMPANY_BUDGETS_PAGE);
       const result = await svc.provision(companyId, key, req.body, {
         requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
         requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -218,7 +217,7 @@ export function builtInAgentRoutes(db: Db) {
     const key = req.params.key as string;
     await assertBuiltInAgentsEnabled();
     await assertCanProvisionBuiltInAgents(req, companyId);
-    const state = await svc.reset(companyId, key, req.body, req.actor);
+    const state = await svc.reset(companyId, key, req.body);
     await logBuiltInAgentMutation(req, {
       companyId,
       action: "built_in_agent.reset",

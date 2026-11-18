@@ -36,6 +36,14 @@ describe("project-mentions", () => {
     expect(extractAgentMentionIds(`[@CodexCoder](${href})`)).toEqual(["agent-123"]);
   });
 
+  it("extracts plain-text @<uuid> agent mentions written by agents", () => {
+    const uuid = "ee4be461-eca0-4180-a5c9-b92e05b9959d";
+    expect(extractAgentMentionIds(`@${uuid} please handle this`)).toEqual([uuid]);
+    expect(extractAgentMentionIds(`Hey @${uuid}, can you close this?`)).toEqual([uuid]);
+    // should not match non-UUID patterns
+    expect(extractAgentMentionIds("@CTO please fix this")).toEqual([]);
+  });
+
   it("round-trips user mentions", () => {
     const href = buildUserMentionHref("user-123");
     expect(parseUserMentionHref(href)).toEqual({

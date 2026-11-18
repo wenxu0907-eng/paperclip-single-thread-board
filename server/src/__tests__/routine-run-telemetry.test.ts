@@ -85,6 +85,7 @@ describeEmbeddedPostgres("routine run telemetry", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+      boardOnlyOnParents: false,
     });
 
     await db.insert(agents).values({
@@ -149,7 +150,6 @@ describeEmbeddedPostgres("routine run telemetry", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
-        variables: [],
       },
       {},
     );

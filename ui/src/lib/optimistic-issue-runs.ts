@@ -80,7 +80,6 @@ export function clearIssueExecutionRun(
     executionRunId: null,
     executionAgentNameKey: null,
     executionLockedAt: null,
-    // Clearing a cached run lock is not a server task edit. Keep its version
-    // so a later authoritative status (including Slack Idle) can replace it.
+    updatedAt: new Date(),
   };
 }

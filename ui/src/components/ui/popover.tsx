@@ -2,7 +2,6 @@ import * as React from "react"
 import { Popover as PopoverPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { useFlyoutAppearance } from "./flyout-appearance"
 
 function Popover({
   ...props
@@ -23,11 +22,9 @@ function PopoverContent({
   disablePortal = false,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content> & { disablePortal?: boolean }) {
-  const appearance = useFlyoutAppearance()
   const content = (
     <PopoverPrimitive.Content
       data-slot="popover-content"
-      data-flyout-appearance={appearance}
       align={align}
       sideOffset={sideOffset}
       className={cn(

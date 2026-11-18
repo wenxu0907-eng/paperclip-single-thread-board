@@ -1,15 +1,11 @@
-import { TranscriptSequence } from "@/lib/transcript-sequence";
-import { usePageVisibility } from "@/lib/page-visibility";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent, SummarySlotIssueRef } from "@paperclipai/shared";
 
-import { readTranscriptRequest } from "./transcript/read-transcript-request";
 import type { RunLogChunk } from "@/adapters";
 import { heartbeatsApi } from "@/api/heartbeats";
-import { useCompanyLiveEvent, useTranscriptLiveStream } from "@/context/LiveUpdatesProvider";
+import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
-import { retryTransientOnly } from "@/lib/query-client";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,
@@ -66,7 +62,6 @@ export function useSummaryDraftStream(
   companyId: string | null | undefined,
   generatingIssue: SummarySlotIssueRef | null,
 ): SummaryDraftStream {
-  const { visible } = usePageVisibility();
   const issueId = generatingIssue?.id ?? null;
   const [runId, setRunId] = useState<string | null>(null);
   const [chunks, setChunks] = useState<RunLogChunk[]>([]);
@@ -74,30 +69,6 @@ export function useSummaryDraftStream(
   const mergeRefs = useRef<ChunkMergeRefs>(freshMergeRefs());
   const pendingLogRowsRef = useRef(new Map<string, string>());
   const logOffsetRef = useRef(0);
-  const logIdentityRef = useRef<string | null>(null);
-  const retiredLogIdentitiesRef = useRef(new Set<string>());
-  const sequenceRef = useRef(new TranscriptSequence());
-  const gapPendingRef = useRef(false);
-  const [catchupGeneration, setCatchupGeneration] = useState(0);
-  const requestCatchup = () => {
-    if (gapPendingRef.current) return;
-    gapPendingRef.current = true;
-    setCatchupGeneration(value => value + 1);
-  };
-  const bindLog = (store: unknown, ref: unknown) => {
-    if (typeof ref !== "string" || !ref) return "same";
-    const identity = `${typeof store === "string" ? store : ""}:${ref}`;
-    if (identity === logIdentityRef.current) return "same";
-    if (retiredLogIdentitiesRef.current.has(identity)) return "stale";
-    const prior = logIdentityRef.current;
-    logIdentityRef.current = identity;
-    if (!prior) return "same";
-    retiredLogIdentitiesRef.current.add(prior);
-    if (retiredLogIdentitiesRef.current.size > 8) retiredLogIdentitiesRef.current.delete(retiredLogIdentitiesRef.current.values().next().value!);
-    logOffsetRef.current = 0; pendingLogRowsRef.current.clear(); sequenceRef.current = new TranscriptSequence();
-    mergeRefs.current = freshMergeRefs(); setChunks([]);
-    return "changed";
-  };
 
   // Reset all stream state whenever the tracked generation changes — including
   // a superseded generation (new issue id) or generation ending (null).
@@ -107,7 +78,7 @@ export function useSummaryDraftStream(
     mergeRefs.current = freshMergeRefs();
     pendingLogRowsRef.current = new Map();
     logOffsetRef.current = 0;
-  }, [companyId, issueId]);
+  }, [issueId]);
 
   const appendChunks = useCallback((incoming: IncomingRunLogChunk[]) => {
     if (incoming.length === 0) return;
@@ -125,7 +96,7 @@ export function useSummaryDraftStream(
 
   // Learn the generation run id from live progress/queued events for the issue.
   useCompanyLiveEvent((event: LiveEvent) => {
-    if (!issueId || event.companyId !== companyId) return;
+    if (!issueId) return;
     if (event.type !== "heartbeat.run.progress" && event.type !== "heartbeat.run.queued") return;
     const payload = event.payload ?? {};
     if (payload.issueId !== issueId) return;
@@ -138,8 +109,8 @@ export function useSummaryDraftStream(
   const activeRunQuery = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId ?? "__none__"),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
-    enabled: visible && Boolean(companyId) && Boolean(issueId) && !runId,
-    retry: retryTransientOnly(0),
+    enabled: Boolean(companyId) && Boolean(issueId) && !runId,
+    retry: false,
     refetchInterval: runId ? false : 4000,
   });
   const fallbackRunId = activeRunQuery.data?.id ?? null;
@@ -147,26 +118,12 @@ export function useSummaryDraftStream(
     if (fallbackRunId) setRunId((current) => current ?? fallbackRunId);
   }, [fallbackRunId]);
 
-  useEffect(() => {
-    logOffsetRef.current = 0;
-    pendingLogRowsRef.current = new Map();
-    logIdentityRef.current = null; retiredLogIdentitiesRef.current.clear(); sequenceRef.current = new TranscriptSequence();
-    gapPendingRef.current = false; mergeRefs.current = freshMergeRefs(); setChunks([]);
-  }, [runId, companyId, issueId]);
   // Live token deltas over the shared company-events socket.
-  const stream = useTranscriptLiveStream(runId ? [runId] : [], { companyId, enabled: visible && Boolean(issueId) }, (event: LiveEvent) => {
-    if (!visible || !runId) return;
-    if (event.type === "heartbeat.run.status" && event.payload.runId === runId) { setCatchupGeneration(value => value + 1); return; }
+  useCompanyLiveEvent((event: LiveEvent) => {
+    if (!runId) return;
     if (event.type !== "heartbeat.run.log") return;
     const payload = event.payload ?? {};
     if (payload.runId !== runId) return;
-    const binding = bindLog(payload.logStore, payload.logRef);
-    if (binding === "stale") return;
-    const seq = readChunkSeq(payload.seq);
-    if (payload.truncated === true) sequenceRef.current.requireHistory(seq);
-    const gap = sequenceRef.current.observe(seq);
-    if (binding === "changed" || payload.truncated === true || gap) requestCatchup();
-    if (payload.truncated === true) return;
     const chunk = readPayloadString(payload.chunk);
     if (!chunk) return;
     const ts = readPayloadString(payload.ts) ?? event.createdAt;
@@ -179,40 +136,33 @@ export function useSummaryDraftStream(
 
   // Hydrate already-emitted output and fill any gaps from the persisted run log.
   useEffect(() => {
-    if (!visible || !runId) return;
+    if (!runId) return;
+    logOffsetRef.current = 0;
+    pendingLogRowsRef.current = new Map();
+
     let cancelled = false;
-    const controller = new AbortController();
-    let timer: number | undefined;
     const read = async () => {
-      let failed = false;
       try {
-        for (;;) {
-          const offset = logOffsetRef.current;
-          const result = await readTranscriptRequest(signal => heartbeatsApi.log(runId, offset, LOG_READ_LIMIT_BYTES, { signal }), controller.signal);
-          if (cancelled) return;
-          const binding = bindLog(result.store, result.logRef);
-          if (binding === "stale") { failed = true; break; }
-          if (binding === "changed" && offset !== 0) continue;
-          const rows = parsePersistedLogContent(runId, result.content, pendingLogRowsRef.current);
-          appendChunks(rows);
-          for (const row of rows) sequenceRef.current.confirm(row.seq);
-          const next = result.nextOffset ?? offset + new TextEncoder().encode(result.content).byteLength;
-          logOffsetRef.current = next;
-          if (result.nextOffset === undefined || !result.content || next <= offset) break;
+        const result = await heartbeatsApi.log(runId, logOffsetRef.current, LOG_READ_LIMIT_BYTES);
+        if (cancelled) return;
+        appendChunks(parsePersistedLogContent(runId, result.content, pendingLogRowsRef.current));
+        if (result.nextOffset !== undefined) {
+          logOffsetRef.current = result.nextOffset;
+        } else if (result.content.length > 0) {
+          logOffsetRef.current += result.content.length;
         }
-        failed ||= sequenceRef.current.needsCatchup;
-        if (!failed) gapPendingRef.current = false;
       } catch {
-        failed = true;
+        // Ignore transient/404 reads (log not yet flushed, run just started).
       }
-      if (!cancelled && (!stream.healthy || failed)) timer = window.setTimeout(() => void read(), LOG_POLL_INTERVAL_MS);
     };
+
     void read();
+    const interval = window.setInterval(() => void read(), LOG_POLL_INTERVAL_MS);
     return () => {
-      cancelled = true; controller.abort();
-      if (timer !== undefined) window.clearTimeout(timer);
+      cancelled = true;
+      window.clearInterval(interval);
     };
-  }, [visible, companyId, runId, appendChunks, stream.healthy, stream.epoch, catchupGeneration]);
+  }, [runId, appendChunks]);
 
   const parse = useMemo(() => parseSummaryDraftStream(extractAssistantOutputText(chunks)), [chunks]);
 

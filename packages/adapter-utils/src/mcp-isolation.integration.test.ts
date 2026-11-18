@@ -27,8 +27,7 @@ interface McpObservation {
   tools: string[];
 }
 
-// `mcpServers` also accepts a per-session resolver; this test passes the list form.
-type McpServer = Extract<NonNullable<AcpRuntimeOptions["mcpServers"]>, readonly unknown[]>[number];
+type McpServer = NonNullable<AcpRuntimeOptions["mcpServers"]>[number];
 
 afterEach(async () => {
   await Promise.all(

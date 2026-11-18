@@ -1,14 +1,34 @@
 import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
-import { issueExecutionPolicySchema } from "@paperclipai/shared";
-import { parseAssigneeValue } from "./assignees.js";
-import { createUuid as newId } from "./uuid.js";
+import { parseAssigneeValue } from "./assignees";
 
 type StageType = "review" | "approval";
-const nullablePolicySchema = issueExecutionPolicySchema.nullable();
 
-/** Apply wire-format defaults without treating an invalid policy as no policy. */
-export function readExecutionPolicy(policy: unknown) {
-  return nullablePolicySchema.safeParse(policy ?? null);
+function newId() {
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.randomUUID === "function") {
+    return webCrypto.randomUUID();
+  }
+
+  const bytes = new Uint8Array(16);
+  if (typeof webCrypto?.getRandomValues === "function") {
+    webCrypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+  return [
+    hex.slice(0, 4).join(""),
+    hex.slice(4, 6).join(""),
+    hex.slice(6, 8).join(""),
+    hex.slice(8, 10).join(""),
+    hex.slice(10, 16).join(""),
+  ].join("-");
 }
 
 function principalKey(principal: IssueExecutionStagePrincipal | IssueExecutionStageParticipant) {
@@ -31,14 +51,12 @@ export function selectionValueFromPrincipal(principal: IssueExecutionStagePrinci
 }
 
 export function stageParticipantValues(policy: IssueExecutionPolicy | null | undefined, stageType: StageType): string[] {
-  const parsed = readExecutionPolicy(policy);
-  if (!parsed.success) return [];
-  const stage = parsed.data?.stages.find((candidate) => candidate.type === stageType);
+  const stage = policy?.stages.find((candidate) => candidate.type === stageType);
   return stage?.participants.map((participant) => selectionValueFromPrincipal(participant)) ?? [];
 }
 
 function mergeParticipants(
-  existing: Array<IssueExecutionStagePrincipal & { id?: string }> | undefined,
+  existing: IssueExecutionStageParticipant[] | undefined,
   values: string[],
 ): IssueExecutionStageParticipant[] {
   const existingByKey = new Map((existing ?? []).map((participant) => [principalKey(participant), participant]));
@@ -63,14 +81,11 @@ export function buildExecutionPolicy(input: {
   reviewerValues: string[];
   approverValues: string[];
 }): IssueExecutionPolicy | null {
-  const parsed = readExecutionPolicy(input.existingPolicy);
-  if (!parsed.success) throw new Error("Execution policy is unavailable");
-  const existingPolicy = parsed.data;
-  const mode = existingPolicy?.mode ?? "normal";
+  const mode = input.existingPolicy?.mode ?? "normal";
   const stages: IssueExecutionPolicy["stages"] = [];
   const monitor = input.existingPolicy?.monitor ?? null;
 
-  const existingReviewStage = existingPolicy?.stages.find((stage) => stage.type === "review");
+  const existingReviewStage = input.existingPolicy?.stages.find((stage) => stage.type === "review");
   const reviewParticipants = mergeParticipants(existingReviewStage?.participants, input.reviewerValues);
   if (reviewParticipants.length > 0) {
     stages.push({
@@ -81,7 +96,7 @@ export function buildExecutionPolicy(input: {
     });
   }
 
-  const existingApprovalStage = existingPolicy?.stages.find((stage) => stage.type === "approval");
+  const existingApprovalStage = input.existingPolicy?.stages.find((stage) => stage.type === "approval");
   const approvalParticipants = mergeParticipants(existingApprovalStage?.participants, input.approverValues);
   if (approvalParticipants.length > 0) {
     stages.push({
@@ -92,11 +107,9 @@ export function buildExecutionPolicy(input: {
     });
   }
 
-  if (stages.length === 0 && !monitor && !existingPolicy?.authorizationPolicy
-    && !existingPolicy?.reviewPreset && existingPolicy?.maxReviewRounds == null) return null;
+  if (stages.length === 0 && !monitor) return null;
 
   return {
-    ...input.existingPolicy,
     mode,
     commentRequired: true,
     stages,

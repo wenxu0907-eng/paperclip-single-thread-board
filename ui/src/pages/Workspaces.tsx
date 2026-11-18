@@ -8,7 +8,6 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
@@ -16,9 +15,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
 
 type ProjectWorkspaceGroup = {
-  projectId: string | null;
+  projectId: string;
   projectName: string;
-  projectRef: string | null;
+  projectRef: string;
   summaries: ProjectWorkspaceSummary[];
   lastUpdatedAt: Date;
   runningServiceCount: number;
@@ -47,7 +46,7 @@ function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSum
 }
 
 function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWorkspaceGroup[] {
-  const groups = new Map<string | null, ProjectWorkspaceGroup>();
+  const groups = new Map<string, ProjectWorkspaceGroup>();
   for (const item of items) {
     const existing = groups.get(item.projectId);
     const summary = overviewItemToSummary(item);
@@ -61,8 +60,8 @@ function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWor
     }
     groups.set(item.projectId, {
       projectId: item.projectId,
-      projectName: item.projectName ?? "Task workspaces",
-      projectRef: item.projectId ? projectRouteRef({ id: item.projectId, name: item.projectName ?? "Project", urlKey: item.projectUrlKey }) : null,
+      projectName: item.projectName,
+      projectRef: projectRouteRef({ id: item.projectId, name: item.projectName, urlKey: item.projectUrlKey }),
       summaries: [summary],
       lastUpdatedAt: summary.lastUpdatedAt,
       runningServiceCount: summary.runningServiceCount,
@@ -84,7 +83,6 @@ export function Workspaces() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const experimentalSettingsView = useQueryView(experimentalSettingsQuery);
   const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
 
   const overviewQuery = useInfiniteQuery({
@@ -96,7 +94,6 @@ export function Workspaces() {
     getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
     enabled: Boolean(selectedCompanyId && isolatedWorkspacesEnabled),
   });
-  const overviewView = useQueryView(overviewQuery);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Workspaces" }]);
@@ -110,30 +107,13 @@ export function Workspaces() {
   const groups = useMemo(() => buildProjectWorkspaceGroups(overviewItems), [overviewItems]);
   const firstPage = overviewPages[0] ?? null;
   const totalWorkspaceCount = firstPage?.total ?? overviewItems.length;
-  const dataLoading = overviewQuery.isLoading || overviewView.kind === "reconnecting";
+  const dataLoading = overviewQuery.isLoading;
   const error = overviewQuery.error as Error | null;
 
-  // An outage before the settings load must not redirect away as "disabled".
-  if (experimentalSettingsQuery.isLoading || experimentalSettingsView.kind === "reconnecting") {
-    return <PageSkeleton variant="detail" />;
-  }
-  // Nor must a failed settings load: with no settings there is no flag to read.
-  if (experimentalSettingsView.kind === "error" && experimentalSettingsQuery.data === undefined) {
-    return (
-      <QueryErrorState
-        size="page"
-        error={experimentalSettingsQuery.error}
-        action="load workspaces"
-        onRetry={experimentalSettingsView.retry}
-        retrying={experimentalSettingsView.isFetching}
-      />
-    );
-  }
+  if (experimentalSettingsQuery.isLoading) return <PageSkeleton variant="detail" />;
   if (!isolatedWorkspacesEnabled) return <Navigate to="/issues" replace />;
   if (dataLoading) return <PageSkeleton variant="list" />;
-  if (overviewView.kind === "error") {
-    return <QueryErrorState size="page" error={error} action="load workspaces" onRetry={overviewView.retry} retrying={overviewView.isFetching} />;
-  }
+  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
 
   return (
     <div className="space-y-6">
@@ -153,15 +133,15 @@ export function Workspaces() {
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (
-            <section key={group.projectId ?? "task-workspaces"} className="space-y-3">
+            <section key={group.projectId} className="space-y-3">
               <div className="flex flex-wrap items-end justify-between gap-2">
                 <div className="min-w-0">
-                  {group.projectRef ? <Link
+                  <Link
                     to={`/projects/${group.projectRef}/workspaces`}
                     className="text-base font-semibold hover:underline"
                   >
                     {group.projectName}
-                  </Link> : <h3 className="text-base font-semibold">{group.projectName}</h3>}
+                  </Link>
                 </div>
                 <span className="text-xs text-muted-foreground">
                   {group.summaries.length} workspace{group.summaries.length === 1 ? "" : "s"}

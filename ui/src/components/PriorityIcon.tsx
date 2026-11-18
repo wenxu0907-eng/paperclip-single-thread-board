@@ -42,24 +42,11 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
   if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{icon}<span className="text-sm">{config.label}</span></span> : icon;
 
   const trigger = showLabel ? (
-    <button
-      type="button"
-      aria-label={`Change priority (current: ${config.label})`}
-      className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
-    >
+    <button className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
       {icon}
       <span className="text-sm">{config.label}</span>
     </button>
-  ) : (
-    <button
-      type="button"
-      data-slot="icon-button"
-      aria-label={`Change priority (current: ${config.label})`}
-      className="inline-flex cursor-pointer items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
-    >
-      {icon}
-    </button>
-  );
+  ) : icon;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

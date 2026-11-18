@@ -14,7 +14,6 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatShortDate } from "@/lib/utils";
-import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -29,7 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/context/ToastContext";
-import { LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
+import { ErrorState, LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
 import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActionDialog";
 import { allowsLabel, STATUS_LABEL } from "./profile-summary";
 import { useProfilesData } from "./useProfilesData";
@@ -63,7 +62,6 @@ export function ProfileDetail({
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const data = useProfilesData(companyId);
-  const profilesView = useQueryView(data.profiles);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [assignmentToRemove, setAssignmentToRemove] = useState<ToolProfileBinding | null>(null);
   const [reviewOpen, setReviewOpen] = useState(Boolean(initialReviewOpen));
@@ -77,13 +75,8 @@ export function ProfileDetail({
     queryFn: () => toolsApi.getProfileNewTools(profileId),
     enabled: pendingNewTools > 0,
   });
-  const newToolsView = useQueryView(newTools);
-  const newToolsLoading = newTools.isLoading || newToolsView.kind === "reconnecting";
 
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccesses() });
-  };
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
   const errorBody = (error: unknown) => String((error as Error)?.message ?? error);
 
   const allowRows = useMemo(
@@ -165,18 +158,8 @@ export function ProfileDetail({
     onError: (error: unknown) => pushToast({ title: "Could not submit review", body: errorBody(error), tone: "error" }),
   });
 
-  if (data.profiles.isLoading || profilesView.kind === "reconnecting") return <LoadingState label="Loading profile..." />;
-  if (profilesView.kind === "error") {
-    return (
-      <QueryErrorState
-        size="page"
-        error={data.profiles.error}
-        action="load the profile"
-        onRetry={profilesView.retry}
-        retrying={profilesView.isFetching}
-      />
-    );
-  }
+  if (data.profiles.isLoading) return <LoadingState label="Loading profile..." />;
+  if (data.profiles.isError) return <ErrorState error={data.profiles.error} onRetry={() => data.profiles.refetch()} />;
   if (!profile) {
     return (
       <div className="space-y-4">
@@ -255,7 +238,7 @@ export function ProfileDetail({
         <NewToolsReviewBanner
           count={pendingNewTools}
           tools={reviewItems}
-          loading={newToolsLoading}
+          loading={newTools.isLoading}
           onReview={() => setReviewOpen(true)}
         />
       ) : null}
@@ -324,13 +307,12 @@ export function ProfileDetail({
       <NewToolsReviewDialog
         open={reviewOpen}
         tools={reviewItems}
-        loading={newToolsLoading}
-        error={newToolsView.kind === "error" ? newTools.error : null}
+        loading={newTools.isLoading}
+        error={newTools.error}
         decisions={reviewDecisions}
         pending={reviewNewTools.isPending}
         onClose={() => setReviewOpen(false)}
-        onRetry={newToolsView.retry}
-        retrying={newToolsView.isFetching}
+        onRetry={() => newTools.refetch()}
         onDecision={(catalogEntryId, decision) =>
           setReviewDecisions((current) => ({ ...current, [catalogEntryId]: decision }))
         }
@@ -374,20 +356,17 @@ function NewToolsReviewDialog({
   pending,
   onClose,
   onRetry,
-  retrying,
   onDecision,
   onSubmit,
 }: {
   open: boolean;
   tools: ToolProfileNewToolReviewItem[];
   loading: boolean;
-  /** Set only for a real (non-transient) failure with nothing to show. */
   error: unknown;
   decisions: Record<string, ToolProfileNewToolReviewDecision>;
   pending: boolean;
   onClose: () => void;
   onRetry: () => void;
-  retrying: boolean;
   onDecision: (catalogEntryId: string, decision: ToolProfileNewToolReviewDecision) => void;
   onSubmit: () => void;
 }) {
@@ -403,7 +382,7 @@ function NewToolsReviewDialog({
         {loading ? (
           <LoadingState label="Loading new tools..." />
         ) : error ? (
-          <QueryErrorState error={error} action="load new tools" onRetry={onRetry} retrying={retrying} />
+          <ErrorState error={error} onRetry={onRetry} />
         ) : tools.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
             There are no new tools waiting for review.
@@ -555,7 +534,7 @@ function Assignments({
         <div key={binding.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-              {binding.targetType === "company" ? "Or" : binding.targetType.slice(0, 2).toUpperCase()}
+              {binding.targetType === "company" ? "Co" : binding.targetType.slice(0, 2).toUpperCase()}
             </span>
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-foreground">{assignmentLabel(binding, companyId, maps)}</p>
@@ -751,7 +730,7 @@ function RemoveAssignmentDialog({
           <DialogTitle>Remove assignment</DialogTitle>
           <DialogDescription>
             {binding?.targetType === "company"
-              ? "Removing the organization default changes access for every agent that relies on it."
+              ? "Removing the company default changes access for every agent that relies on it."
               : `Remove this profile from ${label}.`}
           </DialogDescription>
         </DialogHeader>
@@ -852,16 +831,16 @@ function assignmentLabel(
   companyId: string,
   maps: ReturnType<typeof useProfilesData>["maps"],
 ): string {
-  if (binding.targetType === "company") return "Organization default";
+  if (binding.targetType === "company") return "Company default";
   if (binding.targetType === "agent") return maps.agentsById.get(binding.targetId) ?? "Unknown agent";
   if (binding.targetType === "project") return maps.projectsById.get(binding.targetId) ?? "Unknown project";
   if (binding.targetType === "routine") return maps.routinesById.get(binding.targetId) ?? "Unknown routine";
-  if (binding.targetId === companyId) return "Organization";
+  if (binding.targetId === companyId) return "Company";
   return binding.targetId;
 }
 
 function assignmentTypeLabel(type: ToolProfileBinding["targetType"]): string {
-  if (type === "company") return "Organization default";
+  if (type === "company") return "Company default";
   if (type === "agent") return "Agent";
   if (type === "project") return "Project";
   if (type === "routine") return "Routine";

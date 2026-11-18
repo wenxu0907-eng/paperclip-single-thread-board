@@ -15,8 +15,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolvePaperclipHomeDir } from "../home-paths.js";
-import { isCloudManagedInstance } from "./cloud-instance.js";
-import { assertExternalAdapterCodeAllowed } from "./adapter-code-policy.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,8 +43,8 @@ interface AdapterSettings {
 // Paths
 // ---------------------------------------------------------------------------
 
-function adapterPluginPaths(homeOverride?: string) {
-  const paperclipDir = resolvePaperclipHomeDir(homeOverride);
+function adapterPluginPaths() {
+  const paperclipDir = resolvePaperclipHomeDir();
   return {
     adapterPluginsDir: path.join(paperclipDir, "adapter-plugins"),
     adapterPluginsStorePath: path.join(paperclipDir, "adapter-plugins.json"),
@@ -81,7 +79,6 @@ function ensureDirs(): string {
 }
 
 function readStore(): AdapterPluginRecord[] {
-  if (isCloudManagedInstance()) return [];
   const { adapterPluginsStorePath } = adapterPluginPaths();
   if (storeCache?.path === adapterPluginsStorePath) return storeCache.records;
   try {
@@ -133,16 +130,11 @@ function writeSettings(settings: AdapterSettings): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function getAdapterPluginStorePath(homeOverride?: string): string {
-  return adapterPluginPaths(homeOverride).adapterPluginsStorePath;
-}
-
 export function listAdapterPlugins(): AdapterPluginRecord[] {
   return readStore();
 }
 
 export function addAdapterPlugin(record: AdapterPluginRecord): void {
-  assertExternalAdapterCodeAllowed();
   const store = [...readStore()];
   const idx = store.findIndex((r) => r.type === record.type);
   if (idx >= 0) {
@@ -154,7 +146,6 @@ export function addAdapterPlugin(record: AdapterPluginRecord): void {
 }
 
 export function removeAdapterPlugin(type: string): boolean {
-  assertExternalAdapterCodeAllowed();
   const store = [...readStore()];
   const idx = store.findIndex((r) => r.type === type);
   if (idx < 0) return false;
@@ -168,7 +159,6 @@ export function getAdapterPluginByType(type: string): AdapterPluginRecord | unde
 }
 
 export function getAdapterPluginsDir(): string {
-  assertExternalAdapterCodeAllowed();
   return ensureDirs();
 }
 

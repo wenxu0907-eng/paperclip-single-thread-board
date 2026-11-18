@@ -14,14 +14,8 @@ export {
   trackSkillImported,
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
-  trackAgentTaskRun,
   trackErrorHandlerCrash,
-  trackInteractionCreated,
   trackInteractionResolved,
-  trackConnectionCreated,
-  trackConnectionUpdated,
-  trackConnectionInvoked,
-  trackServerStarted,
 } from "./events.js";
 export type {
   TelemetryConfig,

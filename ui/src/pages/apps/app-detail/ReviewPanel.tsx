@@ -1,33 +1,32 @@
 import { ReviewQueueCard } from "../ReviewQueueCard";
-import { QuarantinedActionsReview } from "./SetupPanel";
+import { QuarantinePill } from "./SetupPanel";
 import type { AppDetailSectionProps } from "./types";
 
 export function ReviewPanel({
   connectionId,
   quarantined = [],
   pending = false,
-  onReviewQuarantined,
+  onTurnOnQuarantined,
 }: Pick<AppDetailSectionProps, "connectionId"> &
   Partial<Pick<AppDetailSectionProps, "quarantined" | "pending">> & {
-    onReviewQuarantined?: (enabledIds: string[]) => void;
+    onTurnOnQuarantined?: (ids: string[]) => void;
   }) {
-  const showsQuarantinedActions = quarantined.length > 0 && !!onReviewQuarantined;
+  const showsQuarantinedActions = quarantined.length > 0 && !!onTurnOnQuarantined;
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-foreground">Review</h2>
+    <div className="space-y-4">
       {showsQuarantinedActions ? (
-        <QuarantinedActionsReview
+        <QuarantinePill
+          count={quarantined.length}
           entries={quarantined}
           disabled={pending}
-          onSubmit={onReviewQuarantined}
+          onTurnOn={onTurnOnQuarantined}
         />
       ) : null}
       <ReviewQueueCard
         connectionId={connectionId}
         heading="Waiting for your OK"
         emptyState={showsQuarantinedActions ? "hidden" : "reassure"}
-        plain
       />
     </div>
   );

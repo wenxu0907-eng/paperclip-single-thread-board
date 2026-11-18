@@ -7,24 +7,6 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
-  it("keeps public Dot consent outside company-prefixed routes", () => {
-    const path = `/dot-connect/pcmcp_request_${"a".repeat(43)}`;
-    expect(extractCompanyPrefixFromPath(path)).toBeNull();
-    expect(applyCompanyPrefix(path, "DOT")).toBe(path);
-  });
-  it("keeps a company task path whose prefix matches a board route name", () => {
-    expect(extractCompanyPrefixFromPath("/ORG/issues/ORG-1")).toBe("ORG");
-    expect(applyCompanyPrefix("/ORG/issues/ORG-1", "ORG")).toBe("/ORG/issues/ORG-1");
-    expect(applyCompanyPrefix("/ORG/issues/ORG-1", "COM")).toBe("/ORG/issues/ORG-1");
-    expect(applyCompanyPrefix("/org", "ORG")).toBe("/ORG/org");
-    expect(applyCompanyPrefix("/issues/ORG-1", "ORG")).toBe("/ORG/issues/ORG-1");
-  });
-  it("treats the task-list alias as an unprefixed board route", () => {
-    expect(isBoardPathWithoutPrefix("/tasks")).toBe(true);
-    expect(extractCompanyPrefixFromPath("/tasks")).toBeNull();
-    expect(applyCompanyPrefix("/tasks", "PAP")).toBe("/PAP/tasks");
-  });
-
   it("treats execution workspace paths as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123/routines")).toBe(true);
@@ -57,6 +39,9 @@ describe("company routes", () => {
   it("rewrites company package paths with the active prefix", () => {
     expect(applyCompanyPrefix("/company/export", "NEU")).toBe("/NEU/company/export");
     expect(applyCompanyPrefix("/company/import", "NEU")).toBe("/NEU/company/import");
+    expect(applyCompanyPrefix("/company/settings/cloud-upstream", "NEU")).toBe(
+      "/NEU/company/settings/cloud-upstream",
+    );
     expect(applyCompanyPrefix("/org", "NEU")).toBe("/NEU/org");
   });
 
@@ -106,13 +91,6 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
   });
 
-  it("treats /audit as a board route that needs a company prefix", () => {
-    expect(isBoardPathWithoutPrefix("/audit")).toBe(true);
-    expect(extractCompanyPrefixFromPath("/audit")).toBeNull();
-    expect(applyCompanyPrefix("/audit", "PAP")).toBe("/PAP/audit");
-    expect(toCompanyRelativePath("/PAP/audit")).toBe("/audit");
-  });
-
   it("treats /tools routes as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/tools")).toBe(true);
     expect(isBoardPathWithoutPrefix("/tools/runtime")).toBe(true);
@@ -137,14 +115,6 @@ describe("company routes", () => {
     expect(extractCompanyPrefixFromPath("/timeline")).toBeNull();
     expect(applyCompanyPrefix("/timeline", "PAP")).toBe("/PAP/timeline");
     expect(toCompanyRelativePath("/PAP/timeline")).toBe("/timeline");
-  });
-
-  it.each(["cases", "status"])("keeps the active company on /%s navigation links", (root) => {
-    expect(isBoardPathWithoutPrefix(`/${root}`)).toBe(true);
-    expect(extractCompanyPrefixFromPath(`/${root}`)).toBeNull();
-    expect(applyCompanyPrefix(`/${root}`, "PAP")).toBe(`/PAP/${root}`);
-    expect(applyCompanyPrefix(`/PAP/${root}`, "REA")).toBe(`/PAP/${root}`);
-    expect(toCompanyRelativePath(`/PAP/${root}`)).toBe(`/${root}`);
   });
 
   it("treats Skill Studio create mode as an unprefixed board route", () => {

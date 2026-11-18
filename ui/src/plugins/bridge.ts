@@ -35,8 +35,6 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
-import { isTransientError } from "@/api/errors";
-import { retryDelayFor, shouldRetryRequest } from "@/lib/query-client";
 import { useToastActions, type ToastInput } from "@/context/ToastContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { isGlobalPath, normalizeCompanyPrefix } from "@/lib/company-routes";
@@ -369,13 +367,6 @@ export function usePluginData<T = unknown>(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<PluginBridgeError | null>(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
-  /**
-   * The identity of the request whose successful response `data` holds, or
-   * null. Data is kept through an outage only for that same request: once
-   * `key`, `params`, the company, or the render environment change, the old
-   * value belongs to a different request and must not stand in for the new one.
-   */
-  const dataRequestKey = useRef<string | null>(null);
 
   // Stable serialization for params change detection
   const paramsKey = serializeParams(params);
@@ -383,8 +374,9 @@ export function usePluginData<T = unknown>(
   useEffect(() => {
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let failureCount = 0;
-    const requestKey = [pluginId, companyId ?? "", key, paramsKey, renderEnvironmentKey].join("\u0000");
+    let retryCount = 0;
+    const maxRetryCount = 2;
+    const retryableCodes: PluginBridgeErrorCode[] = ["WORKER_UNAVAILABLE", "TIMEOUT"];
     setLoading(true);
     const request = () => {
       pluginsApi
@@ -397,7 +389,6 @@ export function usePluginData<T = unknown>(
         )
         .then((response) => {
           if (!cancelled) {
-            dataRequestKey.current = requestKey;
             setData(response.data as T);
             setError(null);
             setLoading(false);
@@ -406,28 +397,19 @@ export function usePluginData<T = unknown>(
         .catch((err: unknown) => {
           if (cancelled) return;
 
-          // The same policy as every other read: transient failures (a worker
-          // restarting, a gateway blip) retry with backoff, client errors do not.
-          if (shouldRetryRequest(failureCount, err)) {
-            const delay = retryDelayFor(failureCount, err);
-            failureCount += 1;
+          const bridgeError = extractBridgeError(err);
+          if (retryableCodes.includes(bridgeError.code) && retryCount < maxRetryCount) {
+            retryCount += 1;
             retryTimer = setTimeout(() => {
               retryTimer = null;
               if (!cancelled) request();
-            }, delay);
+            }, 150 * retryCount);
             return;
           }
 
-          setLoading(false);
-          if (isTransientError(err) && dataRequestKey.current === requestKey) {
-            // Keep the last good data for this same request through an
-            // outage. The app-level connection banner explains why it is not
-            // updating.
-            return;
-          }
-          dataRequestKey.current = null;
-          setError(extractBridgeError(err));
+          setError(bridgeError);
           setData(null);
+          setLoading(false);
         });
     };
 

@@ -1,5 +1,5 @@
 import type { WorkTimelineResult } from "@paperclipai/shared";
-import { api, type RequestOptions } from "./client";
+import { api } from "./client";
 
 export interface WorkTimelineParams {
   from?: string;
@@ -10,7 +10,6 @@ export interface WorkTimelineParams {
   projectId?: string;
   issueId?: string;
   limit?: number;
-  offset?: number;
 }
 
 function query(params: WorkTimelineParams): string {
@@ -22,12 +21,11 @@ function query(params: WorkTimelineParams): string {
   if (params.projectId) search.set("projectId", params.projectId);
   if (params.issueId) search.set("issueId", params.issueId);
   if (params.limit) search.set("limit", String(params.limit));
-  if (params.offset) search.set("offset", String(params.offset));
   const qs = search.toString();
   return qs ? `?${qs}` : "";
 }
 
 export const workTimelineApi = {
-  get: (companyId: string, params: WorkTimelineParams = {}, options?: RequestOptions) =>
-    api.get<WorkTimelineResult>(`/companies/${companyId}/timeline${query(params)}`, options),
+  get: (companyId: string, params: WorkTimelineParams = {}) =>
+    api.get<WorkTimelineResult>(`/companies/${companyId}/timeline${query(params)}`),
 };

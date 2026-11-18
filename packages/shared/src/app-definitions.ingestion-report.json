@@ -10,8 +10,9 @@
           "label": "initial (managed setup, Advanced expanded)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -22,7 +23,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -42,7 +42,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -58,7 +57,6 @@
           "transport": "rest_api",
           "auth": "api_key",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 2
         }
@@ -74,9 +72,9 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [
+            "platform_shared",
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 5
         }
@@ -94,7 +92,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 1,
           "linkCount": 0
         },
@@ -105,7 +102,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 3
         }
@@ -121,7 +117,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         },
@@ -129,8 +124,9 @@
           "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 7,
           "linkCount": 2
         },
@@ -141,7 +137,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 9,
           "linkCount": 4
         },
@@ -150,7 +145,6 @@
           "transport": "rest_api",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 5
         },
@@ -161,7 +155,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 10,
           "linkCount": 3
         }
@@ -179,8 +172,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -191,7 +185,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -209,9 +202,9 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [
+            "platform_shared",
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 5
         }
@@ -226,8 +219,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -238,7 +232,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -256,7 +249,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 0,
           "linkCount": 0
         },
@@ -265,7 +257,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -276,7 +267,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -293,8 +283,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -305,7 +296,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -323,7 +313,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -341,7 +330,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -359,7 +347,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -374,8 +361,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -386,7 +374,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -404,7 +391,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 0,
           "linkCount": 0
         },
@@ -413,7 +399,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -424,7 +409,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -441,8 +425,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -453,7 +438,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -470,8 +454,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -482,7 +467,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -499,8 +483,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -511,7 +496,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -531,7 +515,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -549,7 +532,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -565,7 +547,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -581,7 +562,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 0,
           "linkCount": 0
         },
@@ -590,7 +570,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -601,7 +580,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -621,7 +599,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -639,7 +616,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -655,7 +631,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 5
         }
@@ -673,7 +648,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -689,7 +663,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -704,8 +677,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -716,7 +690,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -736,7 +709,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -751,8 +723,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -763,7 +736,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -781,7 +753,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 2
         }
@@ -799,7 +770,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -815,9 +785,9 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [
+            "platform_shared",
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 5
         }
@@ -832,8 +802,9 @@
           "label": "Step 2 Configure — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 3,
           "linkCount": 2
         },
@@ -844,7 +815,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 10,
           "linkCount": 2
         }
@@ -864,7 +834,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -882,7 +851,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -898,7 +866,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -914,7 +881,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -929,8 +895,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -941,7 +908,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -959,7 +925,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 0
         }
@@ -975,7 +940,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         },
@@ -983,8 +947,9 @@
           "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -995,7 +960,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         },
@@ -1004,7 +968,6 @@
           "transport": "rest_api",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 6
         }
@@ -1023,7 +986,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         },
@@ -1031,8 +993,9 @@
           "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -1043,7 +1006,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         },
@@ -1054,7 +1016,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 9,
           "linkCount": 4
         }
@@ -1072,8 +1033,9 @@
           "label": "Step 2 Configure — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 2,
           "linkCount": 2
         },
@@ -1084,7 +1046,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 2
         }
@@ -1102,7 +1063,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 5
         }
@@ -1117,8 +1077,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 5,
           "linkCount": 2
         },
@@ -1129,7 +1090,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 2
         }
@@ -1149,7 +1109,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 2
         }
@@ -1164,8 +1123,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 5,
           "linkCount": 2
         },
@@ -1176,7 +1136,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 2
         }
@@ -1193,8 +1152,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -1205,7 +1165,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -1222,8 +1181,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -1234,7 +1194,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -1251,8 +1210,9 @@
           "label": "initial (managed setup)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 5,
           "linkCount": 2
         },
@@ -1263,7 +1223,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 2
         }
@@ -1280,8 +1239,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 5,
           "linkCount": 0
         },
@@ -1292,7 +1252,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 0
         }
@@ -1310,7 +1269,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 0,
           "linkCount": 0
         },
@@ -1319,7 +1277,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         },
@@ -1330,7 +1287,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1350,7 +1306,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1365,8 +1320,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -1377,7 +1333,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -1397,7 +1352,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1413,7 +1367,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         },
@@ -1421,8 +1374,9 @@
           "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -1433,7 +1387,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         },
@@ -1442,7 +1395,6 @@
           "transport": "rest_api",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 5
         },
@@ -1453,7 +1405,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 10,
           "linkCount": 4
         }
@@ -1472,9 +1423,9 @@
           "transport": "rest_api",
           "auth": "oauth",
           "ownershipModes": [
+            "platform_shared",
             "dcr"
           ],
-          "externalCredentialCustody": "vercel_connect",
           "fieldCount": 1,
           "linkCount": 2
         },
@@ -1485,7 +1436,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 10,
           "linkCount": 2
         }
@@ -1501,7 +1451,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         }
@@ -1521,7 +1470,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1539,7 +1487,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1554,8 +1501,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -1566,7 +1514,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -1584,9 +1531,9 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [
+            "platform_shared",
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -1604,7 +1551,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1622,7 +1568,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1637,8 +1582,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 5,
           "linkCount": 0
         },
@@ -1649,7 +1595,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 0
         }
@@ -1666,8 +1611,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -1678,7 +1624,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -1695,8 +1640,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -1707,7 +1653,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -1727,7 +1672,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1742,8 +1686,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -1754,7 +1699,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -1774,7 +1718,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1792,7 +1735,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1808,7 +1750,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         },
@@ -1816,8 +1757,9 @@
           "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 7,
           "linkCount": 2
         },
@@ -1828,7 +1770,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 9,
           "linkCount": 4
         },
@@ -1837,7 +1778,6 @@
           "transport": "rest_api",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -1848,7 +1788,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 4
         },
@@ -1859,7 +1798,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 10,
           "linkCount": 4
         }
@@ -1877,8 +1815,9 @@
           "label": "initial — Step 2 Configure (managed package install view)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 0,
           "linkCount": 2
         },
@@ -1886,8 +1825,9 @@
           "label": "Step 2 Configure — managed view after clicking \"change\" (domain editor)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 1,
           "linkCount": 2
         },
@@ -1898,7 +1838,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 1,
           "linkCount": 0
         }
@@ -1918,7 +1857,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         },
@@ -1926,8 +1864,9 @@
           "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -1938,7 +1877,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         },
@@ -1947,7 +1885,6 @@
           "transport": "rest_api",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 5
         },
@@ -1958,7 +1895,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 10,
           "linkCount": 4
         }
@@ -1979,7 +1915,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -1997,7 +1932,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -2012,8 +1946,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2024,7 +1959,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2042,7 +1976,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 1,
           "linkCount": 0
         }
@@ -2057,8 +1990,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2069,7 +2003,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2086,8 +2019,9 @@
           "label": "Step 2 Configure — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 2,
           "linkCount": 2
         },
@@ -2098,7 +2032,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 9,
           "linkCount": 2
         }
@@ -2116,7 +2049,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 0,
           "linkCount": 0
         },
@@ -2125,7 +2057,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 4,
           "linkCount": 2
         },
@@ -2134,7 +2065,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 1,
           "linkCount": 2
         }
@@ -2153,7 +2083,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 5
         }
@@ -2168,8 +2097,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2180,7 +2110,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2197,8 +2126,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2209,7 +2139,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2229,7 +2158,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -2244,8 +2172,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2256,7 +2185,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2273,8 +2201,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 5,
           "linkCount": 0
         },
@@ -2285,7 +2214,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 0
         }
@@ -2302,8 +2230,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2314,7 +2243,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2332,7 +2260,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 0,
           "linkCount": 0
         },
@@ -2341,7 +2268,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         },
@@ -2352,7 +2278,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 4
         }
@@ -2370,7 +2295,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 2
         },
@@ -2381,7 +2305,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 2
         }
@@ -2399,7 +2322,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 3,
           "linkCount": 0
         },
@@ -2407,8 +2329,9 @@
           "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 7,
           "linkCount": 2
         },
@@ -2419,7 +2342,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 9,
           "linkCount": 4
         },
@@ -2428,7 +2350,6 @@
           "transport": "rest_api",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 7,
           "linkCount": 5
         },
@@ -2439,7 +2360,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 10,
           "linkCount": 3
         }
@@ -2457,8 +2377,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2469,7 +2390,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2487,7 +2407,6 @@
           "transport": "mcp_remote",
           "auth": null,
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 1,
           "linkCount": 0
         }
@@ -2505,9 +2424,9 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [
+            "platform_shared",
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2522,8 +2441,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2534,7 +2454,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2552,7 +2471,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 5
         }
@@ -2567,8 +2485,9 @@
           "label": "initial (managed setup, step 2 \"Configure\")",
           "transport": "mcp_remote",
           "auth": null,
-          "ownershipModes": [],
-          "externalCredentialCustody": "vercel_connect",
+          "ownershipModes": [
+            "platform_shared"
+          ],
           "fieldCount": 6,
           "linkCount": 0
         },
@@ -2579,7 +2498,6 @@
           "ownershipModes": [
             "customer"
           ],
-          "externalCredentialCustody": null,
           "fieldCount": 8,
           "linkCount": 0
         }
@@ -2597,7 +2515,6 @@
           "transport": "mcp_remote",
           "auth": "oauth",
           "ownershipModes": [],
-          "externalCredentialCustody": null,
           "fieldCount": 6,
           "linkCount": 5
         }

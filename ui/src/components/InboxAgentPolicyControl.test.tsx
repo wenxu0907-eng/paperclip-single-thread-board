@@ -137,29 +137,17 @@ describe("InboxAgentPolicyControl", () => {
       expect(save?.disabled).toBe(true);
     });
 
-    // Switch to allowlist — agents stay in the compact selector instead of a
-    // permanently expanded list.
+    // Switch to allowlist — only non-terminated agents are selectable.
     await act(async () => optionByTitle(container, "Only chosen agents")!.click());
     await flush();
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Select agents");
-      expect(container.textContent).not.toContain("Gardener");
-      expect(container.textContent).not.toContain("Coder");
+      expect(container.textContent).toContain("Gardener");
+      expect(container.textContent).toContain("Coder");
       expect(container.textContent).not.toContain("Retired");
     });
 
-    const selector = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Select agents"));
-    await act(async () => selector!.click());
-    await flush();
-    await waitForAssertion(() => {
-      expect(document.body.textContent).toContain("Gardener");
-      expect(document.body.textContent).toContain("Coder");
-      expect(document.body.textContent).not.toContain("Retired");
-    });
-
-    const gardenerCheckbox = document.body.querySelector<HTMLButtonElement>(
-      'button[aria-label="Allow Gardener"]',
+    const gardenerCheckbox = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Allow Gardener to tidy my inbox"]',
     );
     expect(gardenerCheckbox).toBeTruthy();
     await act(async () => gardenerCheckbox!.click());

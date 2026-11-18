@@ -116,7 +116,7 @@ function resetMocks() {
   mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
 }
 
-describe("write-path membership checks (viewer / inactive)", () => {
+describe.sequential("write-path membership checks (viewer / inactive)", () => {
   beforeEach(() => {
     resetMocks();
   });

@@ -21,7 +21,7 @@ const FAKE_MANIFEST: PaperclipPluginManifestV1 = {
   categories: ["connector"],
   capabilities: ["environment.drivers.register"],
   entrypoints: { worker: "./worker.js" },
-  environmentDrivers: [{ driverKey: "fake", displayName: "Fake Driver", configSchema: { type: "object" } }],
+  environmentDrivers: [{ driverKey: "fake", displayName: "Fake Driver" }],
 };
 
 const BASE_PARAMS = {

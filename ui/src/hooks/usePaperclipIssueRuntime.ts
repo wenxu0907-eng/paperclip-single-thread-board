@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   useExternalStoreRuntime,
   type ThreadMessage,
@@ -15,7 +15,6 @@ export interface PaperclipIssueRuntimeSendOptions {
   body: string;
   reopen?: boolean;
   reassignment?: PaperclipIssueRuntimeReassignment;
-  attachmentIds?: string[];
 }
 
 interface UsePaperclipIssueRuntimeOptions {
@@ -26,19 +25,13 @@ interface UsePaperclipIssueRuntimeOptions {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
 function readTextContent(message: AppendMessage) {
   return message.content
-    .filter(
-      (
-        part,
-      ): part is Extract<(typeof message.content)[number], { type: "text" }> =>
-        part.type === "text",
-    )
+    .filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> => part.type === "text")
     .map((part) => part.text)
     .join("")
     .trim();
@@ -52,64 +45,47 @@ export function usePaperclipIssueRuntime({
 }: UsePaperclipIssueRuntimeOptions) {
   const onSendRef = useRef(onSend);
   const onCancelRef = useRef(onCancel);
-  onSendRef.current = onSend;
-  onCancelRef.current = onCancel;
 
-  const adapter = useMemo<ExternalStoreAdapter<ThreadMessage>>(
-    () => ({
-      messages,
-      isRunning,
-      onNew: async (message) => {
-        const body = readTextContent(message);
-        if (!body) return;
+  useEffect(() => {
+    onSendRef.current = onSend;
+  }, [onSend]);
 
-        const custom = asRecord(message.runConfig?.custom);
-        const reassignmentRecord = asRecord(custom?.reassignment);
-        const reassignment =
-          reassignmentRecord &&
-          ("assigneeAgentId" in reassignmentRecord ||
-            "assigneeUserId" in reassignmentRecord)
-            ? {
-                assigneeAgentId:
-                  typeof reassignmentRecord.assigneeAgentId === "string"
-                    ? reassignmentRecord.assigneeAgentId
-                    : null,
-                assigneeUserId:
-                  typeof reassignmentRecord.assigneeUserId === "string"
-                    ? reassignmentRecord.assigneeUserId
-                    : null,
-              }
-            : undefined;
+  useEffect(() => {
+    onCancelRef.current = onCancel;
+  }, [onCancel]);
 
-        await onSendRef.current({
-          body,
-          reopen: custom?.reopen === true ? true : undefined,
-          reassignment,
-          ...(Array.isArray(custom?.attachmentIds) &&
-          custom.attachmentIds.length > 0
-            ? {
-                attachmentIds: [
-                  ...new Set(
-                    custom.attachmentIds.filter(
-                      (id): id is string =>
-                        typeof id === "string" && id.length > 0,
-                    ),
-                  ),
-                ],
-              }
-            : {}),
-        });
+  const adapter = useMemo<ExternalStoreAdapter<ThreadMessage>>(() => ({
+    messages,
+    isRunning,
+    onNew: async (message) => {
+      const body = readTextContent(message);
+      if (!body) return;
+
+      const custom = asRecord(message.runConfig?.custom);
+      const reassignmentRecord = asRecord(custom?.reassignment);
+      const reassignment =
+        reassignmentRecord &&
+        ("assigneeAgentId" in reassignmentRecord || "assigneeUserId" in reassignmentRecord)
+          ? {
+              assigneeAgentId:
+                typeof reassignmentRecord.assigneeAgentId === "string" ? reassignmentRecord.assigneeAgentId : null,
+              assigneeUserId:
+                typeof reassignmentRecord.assigneeUserId === "string" ? reassignmentRecord.assigneeUserId : null,
+            }
+          : undefined;
+
+      await onSendRef.current({
+        body,
+        reopen: custom?.reopen === true ? true : undefined,
+        reassignment,
+      });
+    },
+    ...(onCancel ? {
+      onCancel: async () => {
+        await onCancelRef.current?.();
       },
-      ...(onCancel
-        ? {
-            onCancel: async () => {
-              await onCancelRef.current?.();
-            },
-          }
-        : {}),
-    }),
-    [messages, isRunning, !!onCancel],
-  );
+    } : {}),
+  }), [messages, isRunning, !!onCancel]);
 
   return useExternalStoreRuntime(adapter);
 }

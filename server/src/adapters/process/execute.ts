@@ -1,6 +1,3 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
   asString,
@@ -8,7 +5,6 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
-  buildRuntimeToolsEnv,
   isForbiddenConfigEnvKey,
   isPaperclipRuntimeEnvKey,
   buildInvocationEnvForLogs,
@@ -18,24 +14,6 @@ import {
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  let spawned = false;
-  try {
-    return await executeProcess({ ...ctx, onSpawn: async (meta) => {
-      // Set this before metadata persistence: a failed callback cannot prove
-      // that the already-created process did no billable work.
-      spawned = true;
-      await ctx.onSpawn?.(meta);
-    } });
-  } catch (error) {
-    if (spawned) throw error;
-    return { exitCode: 1, signal: null, timedOut: false,
-      errorMessage: error instanceof Error ? error.message : String(error),
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-    };
-  }
-}
-
-async function executeProcess(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, onLog, onMeta, authToken } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
@@ -44,8 +22,7 @@ async function executeProcess(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent, ctx.agentIdentity),
-    ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    ...buildPaperclipEnv(agent),
   };
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v !== "string") continue;
@@ -83,24 +60,14 @@ async function executeProcess(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
   }
 
-  const instructions = parseObject(ctx.context.connectionInstructions);
-  let instructionsDirectory: string | undefined;
-  // Override configured/inherited paths even when the connection was removed.
-  env.PAPERCLIP_CONNECTION_INSTRUCTIONS_FILE = "";
-  let proc: Awaited<ReturnType<typeof runChildProcess>>;
-  try {
-    if (typeof instructions.text === "string" && instructions.text) {
-      instructionsDirectory = await mkdtemp(join(tmpdir(), "paperclip-connection-instructions-"));
-      const instructionsFile = join(instructionsDirectory, "instructions.json");
-      await writeFile(instructionsFile, JSON.stringify(instructions), { mode: 0o600 });
-      env.PAPERCLIP_CONNECTION_INSTRUCTIONS_FILE = instructionsFile;
-    }
-    proc = await runChildProcess(runId, command, args, {
-      cwd, env, timeoutSec, graceSec, onLog, onSpawn: ctx.onSpawn,
-    });
-  } finally {
-    if (instructionsDirectory) await rm(instructionsDirectory, { recursive: true, force: true });
-  }
+  const proc = await runChildProcess(runId, command, args, {
+    cwd,
+    env,
+    timeoutSec,
+    graceSec,
+    onLog,
+    onSpawn: ctx.onSpawn,
+  });
 
   if (proc.timedOut) {
     return {

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { cva, type VariantProps } from "class-variance-authority";
 import { ShieldAlert, ShieldCheck, type LucideIcon } from "lucide-react";
+import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
@@ -153,7 +154,7 @@ export function EnforcementBanner(props: EnforcementBannerProps) {
           <p>
             <span className="font-medium">{computedCount}</span> governed tool call
             {computedCount === 1 ? " was" : "s were"} denied or failed in the last hour. Access is enforced
-            server-side by the tool gateway — open the affected connector to review what was blocked and why.
+            server-side by the tool gateway — review what was blocked and why in the audit log.
           </p>
         ) : (
           <p>
@@ -163,6 +164,12 @@ export function EnforcementBanner(props: EnforcementBannerProps) {
           </p>
         )}
       </div>
+      <Link
+        to="/apps/advanced/audit"
+        className="shrink-0 text-xs font-medium text-primary hover:underline"
+      >
+        View audit →
+      </Link>
     </div>
   );
 }

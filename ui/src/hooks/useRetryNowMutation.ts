@@ -24,7 +24,6 @@ function readErrorMessage(error: unknown): string {
 export const RETRY_NOW_OUTCOME_HEADLINE: Record<IssueRetryNowOutcome, string> = {
   promoted: "Retry promoted",
   already_promoted: "Retry already running",
-  waiting: "Retry waiting",
   no_scheduled_retry: "No scheduled retry",
   gate_suppressed: "Couldn't retry now",
 };
@@ -50,12 +49,19 @@ export function useRetryNowMutation(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId) });
       }
-      pushToast({
-        title: RETRY_NOW_OUTCOME_HEADLINE[response.outcome],
-        body: response.message,
-        tone: response.outcome === "promoted" || response.outcome === "already_promoted" ? "success"
-          : response.outcome === "gate_suppressed" ? "error" : "info",
-      });
+      if (response.outcome === "promoted") {
+        pushToast({
+          title: RETRY_NOW_OUTCOME_HEADLINE.promoted,
+          body: response.message,
+          tone: "success",
+        });
+      } else if (response.outcome === "gate_suppressed") {
+        pushToast({
+          title: RETRY_NOW_OUTCOME_HEADLINE.gate_suppressed,
+          body: response.message,
+          tone: "error",
+        });
+      }
     },
     onError: (error) => {
       pushToast({

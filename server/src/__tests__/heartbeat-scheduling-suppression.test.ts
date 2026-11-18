@@ -1,16 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  resolveAgentWakeupsEnabled,
+  resolveAutomaticRunRetriesEnabled,
   resolveHeartbeatSchedulingSuppression,
   resolveSkillTestRunCompletionForHeartbeatOutcome,
-  startTaskDrain,
-  stopTaskDrain,
 } from "../services/heartbeat.ts";
 
 describe("heartbeat scheduling suppression", () => {
-  afterEach(() => {
-    stopTaskDrain();
-  });
-
   it("suppresses heartbeat scheduling for worktree runtimes", () => {
     expect(resolveHeartbeatSchedulingSuppression({
       PAPERCLIP_IN_WORKTREE: "true",
@@ -36,6 +32,35 @@ describe("heartbeat scheduling suppression", () => {
     });
   });
 
+  it("allows automatic run retries and agent wakeups by default", () => {
+    expect(resolveAutomaticRunRetriesEnabled({})).toBe(true);
+    expect(resolveAgentWakeupsEnabled({})).toBe(true);
+  });
+
+  it("disables automatic run retries with either emergency env switch", () => {
+    expect(resolveAutomaticRunRetriesEnabled({
+      PAPERCLIP_ENABLE_AUTOMATIC_RUN_RETRIES: "false",
+    })).toBe(false);
+    expect(resolveAutomaticRunRetriesEnabled({
+      PAPERCLIP_DISABLE_AUTOMATIC_RUN_RETRIES: "true",
+    })).toBe(false);
+    expect(resolveAutomaticRunRetriesEnabled({
+      PAPERCLIP_DISABLE_AUTOMATIC_RUN_RETRIES: "1",
+    })).toBe(false);
+  });
+
+  it("disables agent wakeups with either emergency env switch", () => {
+    expect(resolveAgentWakeupsEnabled({
+      PAPERCLIP_ENABLE_AGENT_WAKEUPS: "false",
+    })).toBe(false);
+    expect(resolveAgentWakeupsEnabled({
+      PAPERCLIP_DISABLE_AGENT_WAKEUPS: "true",
+    })).toBe(false);
+    expect(resolveAgentWakeupsEnabled({
+      PAPERCLIP_DISABLE_AGENT_WAKEUPS: "1",
+    })).toBe(false);
+  });
+
   it("lifts worktree suppression when run execution is explicitly allowed", () => {
     expect(
       resolveHeartbeatSchedulingSuppression(
@@ -57,18 +82,6 @@ describe("heartbeat scheduling suppression", () => {
         },
         { allowWorktreeRunExecution: true },
       ),
-    ).toEqual({
-      suppressed: true,
-      reason: "database_restore_in_progress",
-    });
-  });
-
-  it("still suppresses database restore even when a task drain is active", () => {
-    startTaskDrain({});
-    expect(
-      resolveHeartbeatSchedulingSuppression({
-        PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "1",
-      }),
     ).toEqual({
       suppressed: true,
       reason: "database_restore_in_progress",

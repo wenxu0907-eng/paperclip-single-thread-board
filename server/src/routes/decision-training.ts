@@ -1,24 +1,23 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { authorizationService, issueReadSqlCondition } from "../services/authorization.js";
 import { validate } from "../middleware/validate.js";
 import { decisionTrainingService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 const sourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
-const exampleIdSchema = z.string().guid();
+const exampleIdSchema = z.string().uuid();
 const createSchema = z.object({
   sourceKind: sourceKindSchema,
-  sourceId: z.string().guid(),
-  issueId: z.string().guid(),
+  sourceId: z.string().uuid(),
+  issueId: z.string().uuid(),
   notes: z.string().max(100_000).default(""),
 }).strict();
 const updateSchema = z.object({ notes: z.string().max(100_000) }).strict();
 const previewSchema = z.object({
   sourceKind: sourceKindSchema,
-  sourceId: z.string().guid(),
-  issueId: z.string().guid(),
+  sourceId: z.string().uuid(),
+  issueId: z.string().uuid(),
 }).strict();
 
 function requireHumanUser(req: Request, res: Response) {
@@ -53,14 +52,6 @@ function requireExampleOwner(res: Response, userId: string, createdByUserId: str
 export function decisionTrainingRoutes(db: Db) {
   const router = Router();
   const svc = decisionTrainingService(db);
-  async function canRead(req: Request, companyId: string, issueId: string) {
-    return (await authorizationService(db).decide({ actor: req.actor, action: "issue:read", resource: { type: "issue", companyId, issueId } })).allowed;
-  }
-  async function requireRead(req: Request, res: Response, companyId: string, issueId: string) {
-    if (await canRead(req, companyId, issueId)) return true;
-    res.status(404).json({ error: "Decision training source not found" });
-    return false;
-  }
 
   router.post(
     "/companies/:companyId/decision-training",
@@ -70,7 +61,6 @@ export function decisionTrainingRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const userId = requireHumanUser(req, res);
       if (!userId) return;
-      if (!(await requireRead(req, res, companyId, req.body.issueId))) return;
 
       const example = await svc.create({
         companyId,
@@ -107,7 +97,6 @@ export function decisionTrainingRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const userId = requireHumanUser(req, res);
       if (!userId) return;
-      if (!(await requireRead(req, res, companyId, req.body.issueId))) return;
       const preview = await svc.preview({
         companyId,
         sourceKind: req.body.sourceKind,
@@ -127,7 +116,7 @@ export function decisionTrainingRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     const parsed = z.object({
-      project: z.string().guid().optional(),
+      project: z.string().uuid().optional(),
       kind: sourceKindSchema.optional(),
       author: z.string().optional(),
       q: z.string().trim().max(500).optional(),
@@ -137,7 +126,6 @@ export function decisionTrainingRoutes(db: Db) {
       return;
     }
     res.json(await svc.list(companyId, {
-      readCondition: await issueReadSqlCondition(db, req.actor),
       projectId: parsed.data.project,
       kind: parsed.data.kind,
       author: parsed.data.author,
@@ -149,7 +137,7 @@ export function decisionTrainingRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertBoard(req);
     assertCompanyAccess(req, companyId);
-    const rows = await svc.list(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) });
+    const rows = await svc.list(companyId);
     const body = rows
       .map(({ example }) => JSON.stringify({
         retentionPolicy: example.retentionPolicy,
@@ -177,7 +165,7 @@ export function decisionTrainingRoutes(db: Db) {
     const exampleId = parseExampleId(req, res);
     if (!exampleId) return;
     const example = await svc.getById(exampleId);
-    if (!example || !hasCompanyAccess(req, example.companyId) || !(await canRead(req, example.companyId, example.issueId))) {
+    if (!example || !hasCompanyAccess(req, example.companyId)) {
       res.status(404).json({ error: "Decision training example not found" });
       return;
     }
