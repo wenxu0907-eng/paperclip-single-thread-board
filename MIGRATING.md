@@ -138,6 +138,14 @@ Read this part if you have your own checkout or your own running instance.
 - **What you gain:** the Paperclip Runner as the default harness, credentials in Connections, Decisions,
   an exact cost ledger, skills synced from GitHub, MCP assistants, a restart-chaos-tested reliability
   layer, and a supported upgrade channel instead of a 4,909-commit gap.
+- **New system requirement: Rust 1.97.1.** The Paperclip Runner (`packages/paperclip-runner`) is now
+  the default harness on `darwin-arm64` and `linux-aarch64`. Its native binary is built from source at
+  startup via `cargo build --release` against the pinned toolchain in
+  `packages/paperclip-runner/rust-toolchain.toml`. **No prebuilt binary ships in the repository.**
+  If `cargo` is not on your `PATH`, `pnpm dev` fails immediately with `sh: cargo: command not found`.
+  Install Rust via [rustup](https://rustup.rs/), then run `rustup override set 1.97.1` in the repo root
+  (or let `rust-toolchain.toml` pick it up automatically). First build takes ~2–3 minutes. This is a
+  one-time cost; subsequent starts reuse the compiled binary. The legacy line never required Rust.
 
 ---
 
