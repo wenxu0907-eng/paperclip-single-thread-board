@@ -1,3 +1,32 @@
+> ### ⚠️ You are on the re-based line. Read this before you upgrade.
+>
+> This repository is `paperclip-single-thread-board`, a fork of
+> [paperclipai/paperclip](https://github.com/paperclipai/paperclip). **This branch
+> (`upstream-rebase-2026-11`) is the line re-based onto 4,909 commits of upstream work.** It is not the
+> same history as the fork's old `master`.
+>
+> **If you are moving an existing instance onto this line:** the first server start applies **305
+> database migrations with no downgrade path**. **Back up your database first** — and not with
+> `pnpm db:backup`, which omits CHECK constraints (known defect, COM-529). Then read
+> **[MIGRATING.md](MIGRATING.md)**: §4 is written for you, §6.5 gives the exact commands to rehearse
+> the upgrade on a restored copy before you touch live data, and §7 is the branch and tag map.
+>
+> **If your instance broke after a `git pull` on 2026-11-17 or later:** that was our sequencing
+> mistake, and the recovery runbook is
+> **[`DOWNSTREAM_RESCUE_2026-11.md`](./DOWNSTREAM_RESCUE_2026-11.md)** — its Step 1 (a cold copy of
+> your *stopped* Postgres data directory) is time-critical, so do that before any other fix.
+>
+> **Nothing was deleted and nothing was force-pushed.** The old line is permanent at branch
+> `master-legacy` and tag `legacy/old-master-final-2026-11`. Staying there is a supported choice; you
+> simply stop receiving updates. Two of the permanent tags —
+> `legacy/pre-upstream-rebase-2026-11` and `rebase/phase2-merged-2026-11` — are **historical markers
+> that are not safe to install from**; [MIGRATING.md §7](MIGRATING.md#7-which-ref-should-i-be-on)
+> says why.
+>
+> **Going forward, this fork syncs against upstream's `stable` release tags**, one sync per upstream
+> stable release or monthly, whichever comes first — so the next gap is weeks, not four months.
+> [MIGRATING.md §8](MIGRATING.md#8-how-this-fork-tracks-upstream-from-now-on) is the policy.
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
