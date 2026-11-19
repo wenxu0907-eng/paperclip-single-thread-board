@@ -112,9 +112,12 @@ Read this part if you have your own checkout or your own running instance.
 
 **Your clone keeps working. Nothing is being deleted or force-pushed.**
 
-- `master` stays exactly where it is, tagged **`legacy/pre-upstream-rebase-2026-11`**, with a permanent
-  **`master-legacy`** branch. The new line ships on a *new* branch; only the repo's **default branch**
-  flips. Your `git pull` will not fail — you simply stop receiving updates until you choose to move.
+- `master` stays exactly where it is, with a permanent **`master-legacy`** branch and the immutable tag
+  **`legacy/old-master-final-2026-11`**. The new line ships on a *new* branch; only the repo's
+  **default branch** flips. Your `git pull` will not fail — you simply stop receiving updates until you
+  choose to move. (**Correction:** earlier revisions of this bullet named
+  `legacy/pre-upstream-rebase-2026-11` as the ref to stay on. That tag is the Phase 0 *freeze point* and
+  sits 2 commits behind the real legacy tip — see §7 for the full ref map.)
 - **The database upgrade is one-way.** This fork's schema ends at migration `0185`; upstream ends at
   `0487`, and *upstream's own `0184` and `0185` are different migrations than ours* — both of our
   fork-local slots collide, and both were renumbered to the end of upstream's chain (`0488`, `0489`).
@@ -526,3 +529,56 @@ table to lose rows. If any pre-existing table shrinks, stop and do not upgrade i
 backup *and* moving your checkout back to `master-legacy` — the pair, not one or the other (see the
 Phase 0 runbook on rollback pairs). We can only rehearse against our own data; §4's residual risk
 stands, which is precisely why this walkthrough exists.
+
+---
+
+## 7. Which ref should I be on?
+
+There are several permanent refs, and **two of them differ by two commits** — enough to matter if you
+pick the wrong one. Every hash below was resolved against `origin` on 2026-11-19.
+
+| Ref | Commit | Line | Use it for |
+| --- | --- | --- | --- |
+| `master` | `33fa9a2c` | legacy | **Staying put.** The current default branch content: the legacy tip plus three documentation files. This is what you already have if you pulled before the flip. |
+| `master-legacy` | `5fd63cb6` | legacy | **The permanent legacy branch.** Identical code to `master`, without the three docs commits. Rollback target for the pair in §6.5. |
+| `legacy/old-master-final-2026-11` | `5fd63cb6` | legacy | Immutable tag for the same commit as `master-legacy`. Prefer this if you want a ref that can never move. |
+| `legacy/pre-upstream-rebase-2026-11` | `2744b2a7` | legacy | **Historical marker only — not an install target.** This is the Phase 0 freeze point, taken *before* two further legacy commits landed. It is **2 commits behind** the real legacy tip. Earlier revisions of §4 named this tag as the place to stay; use `master-legacy` or `legacy/old-master-final-2026-11` instead. |
+| `upstream-rebase-2026-11` | `caf3c55d` | **new** | **The re-based line.** This is the branch the default-branch flip points at, and the only ref you should upgrade onto. |
+| `rebase/phase2-merged-2026-11` | `e95ef3a1` | new | **Historical marker only — not an install target.** Marks the Phase 2 merge, now **5 commits behind** `upstream-rebase-2026-11`, and it predates the Phase 3 migration renumber (§6.1). A checkout at this tag will try to apply migrations in the colliding `0184`/`0185` slots. Do not install from it. |
+| `rebase/phase2-prhead-2026-11` | `d1018d99` | new | Historical marker only — the Phase 2 pull-request head. Same caveat as above. |
+
+**Short version:** stay on `master-legacy`, or move to `upstream-rebase-2026-11`. The four `legacy/…`
+and `rebase/…` tags exist so our own audit trail is reproducible; none of them is a supported
+starting point except `legacy/old-master-final-2026-11`.
+
+None of these refs will ever be deleted or force-pushed. The two `rebase/…` tags are deliberately
+**not** being moved forward — a tag that moves is worse than a tag that is honestly labelled stale.
+
+---
+
+## 8. How this fork tracks upstream from now on
+
+The 4,909-commit gap happened because this fork tracked upstream by *occasional manual merge* with no
+trigger and no cadence. That is the thing being fixed, not just the gap it produced.
+
+**From the cutover forward, this fork follows upstream's `stable` channel.** Upstream ships on four
+channels — `stable`, `beta`, `nightly`, `canary` (see [doc/CHANNELS.md](doc/CHANNELS.md)). `stable`
+moves every week or two, and only after a release has soaked as a `beta` for at least three days.
+
+One thing to be precise about: upstream's channels are documented as **npm dist-tags and Docker image
+tags**, for people who *install* Paperclip. This fork is a **git clone**, so it cannot "install from a
+dist-tag." Following `stable` here means something concrete and different:
+
+- **Sync against upstream's stable release tags, never against `upstream/master`.** Upstream's stable
+  releases carry calver tags (`YYYY.MDD.P`). Those are the only commits that have been vetted and
+  promoted; `upstream/master` is the `canary` channel by definition, and merging it is how a fork
+  acquires other people's un-soaked regressions.
+- **Cadence: one sync per upstream stable release, or monthly, whichever comes first.** A one-release
+  gap is a readable diff. A twelve-release gap required a 5-phase project, a revert, and a downstream
+  outage.
+- **Verify the tag resolves to what you think it does.** This is not hypothetical: the local
+  `v2026.1106.0` tag in this repository resolves to `d69631b01b`, dated **2026-10-22**, three weeks
+  and 2,597 commits behind the November tip. An earlier revision of the COM-521 plan measured the
+  upstream gap against that tag and was wrong because of it (see the correction note at the top of
+  this document). Always `git show --no-patch --format='%H %ci' <tag>` before you measure anything
+  against it.
