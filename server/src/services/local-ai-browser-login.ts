@@ -72,6 +72,12 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
             : "Codex browser sign-in requires an installed Codex CLI. Install Codex on this execution host or restore Paperclip's runtime dependencies, then start sign-in again.";
           throw new Error("Browser login runtime unavailable");
         }
+      } else {
+        try { await ensureCommandResolvable("claude", home, process.env); }
+        catch {
+          state.error = "Claude sign-in requires the Claude CLI on this host. Install Claude Code on this execution host and ensure claude is on Paperclip's PATH, then start sign-in again.";
+          throw new Error("Browser login runtime unavailable");
+        }
       }
       if (controller.signal.aborted) throw new Error("Local sign-in cancelled before launch");
       const env = { ...process.env,
