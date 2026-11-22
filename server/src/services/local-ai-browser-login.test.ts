@@ -163,6 +163,16 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(resolveCodexCommand).not.toHaveBeenCalled();
   });
 
+  it("reports a missing Claude CLI without revealing the host PATH", async () => {
+    const home = await fakeCli("unrelated", "exit 0");
+    process.env.PATH = "/usr/bin:/bin";
+    const login = startLocalBrowserLogin("anthropic", home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+    expect(login.error).toMatch(/requires the Claude CLI.*Install Claude Code.*Paperclip's PATH/);
+    expect(JSON.stringify(login)).not.toContain(process.env.PATH);
+    expect(login.authorizationUrl).toBeUndefined();
+  });
+
   it("reports a missing terminal prerequisite without exposing spawn details", async () => {
     targetPlatform("linux", "x64");
     const home = await fakeCli("codex", "exit 0");
